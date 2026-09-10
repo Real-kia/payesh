@@ -15,11 +15,12 @@ JCS/Ed25519 manifest trust verification, safe archive staging, atomic
 activation, an explicit install/activation-separated lifecycle state machine,
 durable per-server store, and browser routes. Not yet accepted: no real
 `payesh-privd` wiring, no provisioned production signing key, and only
-synthetic in-process archive fixtures tested. An explicit, reported OpenAPI
-contract mismatch (async `policyId`/`Job`-wrapped `/policies`+`/modules` in
-the package-01 sketch vs. the synchronous, idempotency-keyed routes actually
-implemented in 05/06/08) needs lead reconciliation before either package is
-accepted; see `docs/handoffs/06.md` and `docs/handoffs/08.md`. Package 05
+synthetic in-process archive fixtures tested. The OpenAPI contract mismatch
+found while building package 08 (async `policyId`/`Job`-wrapped
+`/policies`+`/modules` in the package-01 sketch vs. the synchronous,
+idempotency-keyed routes actually implemented in 05/06/08) has been
+reconciled: `api/openapi.yaml`/`scripts/contract-check.mjs` now describe the
+real routes; see `docs/handoffs/06.md` and `docs/handoffs/08.md`. Package 05
 (traffic allowances, alerts, and incidents) Checkpoint A has completed its
 internal Critical/Major review and fix cycles but is likewise not yet accepted
 as the full package milestone because external acceptance work remains.
@@ -163,9 +164,9 @@ for real, and add the `payesh run` CLI workflow and target discovery. For
 package 06: wire real `payesh-privd module.invoke` actions for
 enable/disable/health-check, provision a production release-signing key, add
 durable audit-event persistence, and run acceptance tests against real signed
-module release artifacts on a disposable Linux host. Before accepting either,
-reconcile the reported `api/openapi.yaml` contract mismatch (see
-`docs/handoffs/06.md`/`08.md`). For package 05: request package acceptance
+module release artifacts on a disposable Linux host (the `api/openapi.yaml`
+contract mismatch has been reconciled — see `docs/handoffs/06.md`/`08.md`).
+For package 05: request package acceptance
 with the external Linux/provider/observer/notification and soak evidence
 called out above. After all three, connect the remaining
 real-data/external-observer seams (and packages 07, 09) without expanding
