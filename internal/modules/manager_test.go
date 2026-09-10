@@ -174,3 +174,47 @@ var errFailingHealthCheck = &staticError{"health check refused to start"}
 type staticError struct{ msg string }
 
 func (e *staticError) Error() string { return e.msg }
+
+func TestManagerDisableRunsDeactivateHookAndBlocksOnFailure(t *testing.T) {
+	manager, priv, server := testManager(t)
+	archive := buildTarGz(t, []tarEntry{{name: "bin/cpu-controls", typeflag: tar.TypeReg, body: []byte("binary")}})
+	manifest, sig := signedManifest(t, priv, "cpu-controls", archive)
+	installed, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "cpu-controls", Manifest: manifest, ManifestSignatureB64: sig, Archive: archive, ExpectedRevision: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := manager.Enable(context.Background(), server.ID, "cpu-controls", installed.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hookCalled := false
+	manager.DeactivateHooks = map[string]func(context.Context, contracts.ServerID) error{
+		"cpu-controls": func(context.Context, contracts.ServerID) error {
+			hookCalled = true
+			return errFailingHealthCheck
+		},
+	}
+	if _, err := manager.Disable(context.Background(), server.ID, "cpu-controls", enabled.Revision); err == nil {
+		t.Fatal("expected a failing deactivate hook to block disable")
+	}
+	if !hookCalled {
+		t.Fatal("expected the deactivate hook to run")
+	}
+	still, err := manager.Store.GetModuleInstallation(context.Background(), server.ID, "cpu-controls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.State != contracts.ModuleEnabled {
+		t.Fatalf("expected the module to remain enabled after a failed cleanup, got %s", still.State)
+	}
+
+	manager.DeactivateHooks["cpu-controls"] = func(context.Context, contracts.ServerID) error { return nil }
+	disabled, err := manager.Disable(context.Background(), server.ID, "cpu-controls", enabled.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.State != contracts.ModuleInstalledDisabled {
+		t.Fatalf("expected installed-disabled once cleanup succeeds, got %s", disabled.State)
+	}
+}

@@ -13,6 +13,12 @@ cycles, but still awaits the package acceptance evidence listed below. Package 0
 now has a **module-framework Checkpoint A** (catalog, trust verification, safe
 archive staging, lifecycle, durable store, HTTP routes); it is not accepted and
 has no real `payesh-privd` wiring or provisioned production signing key yet.
+Package 08 now has a **CPU Controls Checkpoint A** (quota math, real cgroup v2
+file-format adapter, PID-reuse-safe process identity, preview/apply/revert
+lifecycle, durable shared `ControlPolicy` store, HTTP routes, and a
+module-disable cleanup hook); it is not accepted — no real CPU-load
+enforcement test has run on any Linux host, disposable or otherwise. Package
+07 (Port Traffic) and 09 (Bandwidth Controls) remain unstarted.
 
 ## Completed in this session
 
@@ -173,6 +179,26 @@ has no real `payesh-privd` wiring or provisioned production signing key yet.
   `internal/monitoring/store.go` (a `*time.Time` dereference bug and a stale
   `RollupPage{}` return from an earlier edit) that left `go build ./...`
   failing before any package-06 work began.
+- Package-08 Checkpoint A adds CPU Controls: integer-millicore quota math
+  matching PLAN.md's worked "1 core = 25% of a 4-vCPU server" example; a real
+  cgroup v2 `cpu.max`/`cgroup.procs` file-format adapter (`internal/cpucontrol`,
+  `FSCgroup`) that refuses to write into any directory it did not create
+  itself (an ownership-marker file distinguishes a Payesh-created dedicated
+  group from a pre-existing shared one) and walks ancestors to detect an
+  inherited stricter quota; `/proc/<pid>/stat`-based process-identity
+  verification so a reused PID cannot inherit a stale policy; a
+  preview→apply→verify→revert `Manager` that records a verification mismatch
+  as durably `failed` rather than success and restores exactly the quota
+  (or "no limit") `Apply` found beforehand; a shared `contracts.ControlPolicy`
+  record and `control_policies`/`control_policy_requests` store designed for
+  package 09 (Bandwidth Controls) to reuse; HTTP routes; and a
+  `modules.Manager.DeactivateHooks` mechanism so disabling cpu-controls first
+  reverts its active policies (a failing cleanup blocks the disable). A known,
+  explicitly reported OpenAPI contract mismatch (the package-01 foundation
+  sketch's async `policyId`/`Job`-wrapped `/policies` family vs. this
+  checkpoint's synchronous, idempotency-keyed, target-addressed routes — the
+  same pattern already used for package 05 traffic and package 06 modules)
+  needs lead reconciliation before acceptance; see `docs/handoffs/08.md`.
 
 ## Verification
 
@@ -219,5 +245,12 @@ package 06, the next inputs are real `payesh-privd module.invoke` actions for
 enable/disable/health-check, a provisioned production release-signing key,
 durable audit-event persistence, and Linux acceptance tests against real
 signed module release artifacts rather than only synthetic in-process
-fixtures — see `docs/handoffs/06.md`. Do not describe this checkpoint as a
-complete monitoring product.
+fixtures — see `docs/handoffs/06.md`. For package 08, the next inputs are
+real CPU-load enforcement tests on a disposable Linux host, shared-group/
+parent-quota/PID-reuse/restart/OpenRC acceptance scenarios, the `payesh run`
+CLI workflow, and target discovery — see `docs/handoffs/08.md`. Before
+accepting either package 06 or 08, reconcile `api/openapi.yaml`'s async
+`policyId`/`Job`-wrapped `/policies` and `/modules` sketch against the
+synchronous, idempotency-keyed routes actually implemented (documented in
+both handoffs). Do not describe this checkpoint as a complete monitoring
+product.

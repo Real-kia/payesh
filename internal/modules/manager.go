@@ -35,6 +35,10 @@ type Manager struct {
 	RootDir     string
 	HealthCheck HealthCheckFunc
 	Now         func() time.Time
+	// DeactivateHooks lets a control module (e.g. cpu-controls) register a
+	// cleanup function run before Disable takes effect. Keyed by module ID;
+	// a module with no registered hook disables with no extra cleanup step.
+	DeactivateHooks map[string]func(ctx context.Context, serverID contracts.ServerID) error
 }
 
 func (m *Manager) now() time.Time {
@@ -177,8 +181,18 @@ func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, modul
 	return m.simpleTransition(ctx, serverID, moduleID, expectedRevision, EventEnable)
 }
 
-// Disable deactivates an enabled module back to installed-disabled.
+// Disable deactivates an enabled module back to installed-disabled. If a
+// DeactivateHooks entry is registered for moduleID, it runs first and must
+// succeed: "disabling ... must first revert its active policies and verify
+// cleanup" (PLAN.md section 11). A hook failure leaves the module enabled
+// rather than reporting a false success — the caller can retry once the
+// underlying problem (e.g. a control policy that failed to revert) is fixed.
 func (m *Manager) Disable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
+	if hook, ok := m.DeactivateHooks[moduleID]; ok && hook != nil {
+		if err := hook(ctx, serverID); err != nil {
+			return contracts.ModuleInstallation{}, fmt.Errorf("modules: cleanup before disable failed: %w", err)
+		}
+	}
 	return m.simpleTransition(ctx, serverID, moduleID, expectedRevision, EventDisable)
 }
 

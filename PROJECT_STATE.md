@@ -4,12 +4,22 @@ Updated: 2026-09-10
 
 ## Current milestone
 
-Package 06 (signed optional-module framework) — Checkpoint A implemented:
-curated catalog, JCS/Ed25519 manifest trust verification, safe archive
-staging, atomic activation, an explicit install/activation-separated
-lifecycle state machine, durable per-server store, and browser routes. Not
-yet accepted: no real `payesh-privd` wiring, no provisioned production
-signing key, and only synthetic in-process archive fixtures tested. Package 05
+Package 08 (CPU Controls) — Checkpoint A implemented: millicore quota math,
+a real cgroup v2 file-format adapter with ownership-marker enforcement and
+parent-quota detection, PID-reuse-safe process identity verification, a
+preview/apply/verify/revert lifecycle, a shared `ControlPolicy` store meant
+for package 09 to reuse, and a module-disable cleanup hook. Not yet accepted:
+no real CPU-load test has run on any Linux host. Package 06 (signed
+optional-module framework) Checkpoint A implemented: curated catalog,
+JCS/Ed25519 manifest trust verification, safe archive staging, atomic
+activation, an explicit install/activation-separated lifecycle state machine,
+durable per-server store, and browser routes. Not yet accepted: no real
+`payesh-privd` wiring, no provisioned production signing key, and only
+synthetic in-process archive fixtures tested. An explicit, reported OpenAPI
+contract mismatch (async `policyId`/`Job`-wrapped `/policies`+`/modules` in
+the package-01 sketch vs. the synchronous, idempotency-keyed routes actually
+implemented in 05/06/08) needs lead reconciliation before either package is
+accepted; see `docs/handoffs/06.md` and `docs/handoffs/08.md`. Package 05
 (traffic allowances, alerts, and incidents) Checkpoint A has completed its
 internal Critical/Major review and fix cycles but is likewise not yet accepted
 as the full package milestone because external acceptance work remains.
@@ -85,6 +95,19 @@ as the full package milestone because external acceptance work remains.
   traversal/absolute paths, and any entry that would exceed the manifest's
   declared unpacked size. Module lifecycle rows use the same compare-and-swap
   revision and idempotency-key pattern as package-05 traffic configuration.
+- Package 08 CPU quotas are always a budget for an explicitly named,
+  Payesh-owned dedicated cgroup, never "the whole server": every write is
+  refused unless this process itself created the target directory (an
+  ownership-marker file makes that checkable), and an inherited stricter
+  ancestor quota is detected and reported rather than silently promised away.
+  A process-group target's identity is re-verified via `/proc` start-time
+  immediately before every Apply, so a reused PID can never inherit a stale
+  policy. Every Apply/Revert reads the quota back and durably records
+  `failed` — never a false "applied"/"reverted" — on any mismatch, and Revert
+  always restores exactly what the matching Apply found beforehand.
+  `ControlPolicy` (contracts) and its store are intentionally control-kind-
+  generic so package 09 (Bandwidth Controls) reuses the same CAS/idempotency
+  machinery instead of re-deriving it.
 
 ## Known risks / unrun acceptance work
 
@@ -108,6 +131,16 @@ as the full package milestone because external acceptance work remains.
   configures one). Only synthetic in-process archive fixtures were tested, not
   a real signed official module release on a real Linux host. Audit-event
   persistence does not exist for any package yet.
+- Package 08 has no real CPU-load enforcement test — this development host
+  has no cgroupfs at all, so `cgroupRootDir()`'s default `/sys/fs/cgroup`
+  points nowhere real here; tests exercise the file-format/ownership/CAS
+  logic against a temp-directory stand-in instead, which is real and correct
+  file-format behavior but cannot prove kernel enforcement. `payesh run`
+  (local CLI helper to place an unmanaged workload in its own dedicated
+  group) and target discovery (enumerating existing systemd/OpenRC services)
+  are not implemented; a caller must name a target explicitly. `pidfd`-based
+  identity is documented but not implemented — only the portable `/proc`
+  start-time check is.
 
 ## Verification
 
@@ -115,19 +148,26 @@ The current workspace passes `go test ./...`, `go test -race ./...`, `go vet
 ./...`, `make lint`, `make build`, `make build-matrix`, `make web-check`, and
 `make contract-check`, including the final disabled-rule, forecast-continuity,
 retirement-authority, effective-at, and delayed-period identity regressions,
-plus the new `internal/trust` and `internal/modules` suites (JCS
-canonicalization, Ed25519 verification, archive-safety, lifecycle-transition,
-and manager/HTTP integration tests). In this sandbox, Go commands use
+plus the `internal/trust`, `internal/modules`, and `internal/cpucontrol`
+suites (JCS canonicalization, Ed25519 verification, archive-safety,
+lifecycle-transition, and manager/HTTP integration tests; cgroup v2
+file-format/ownership behavior, PID-reuse-safe identity verification, and the
+CPU-controls preview/apply/revert lifecycle). In this sandbox, Go commands use
 `GOCACHE=/private/tmp/payesh-go-cache`.
 
 ## Next milestone
 
-For package 06: wire real `payesh-privd module.invoke` actions for
+For package 08: run real CPU-load enforcement tests on a disposable Linux
+host, exercise shared-group/parent-quota/PID-reuse/restart/OpenRC scenarios
+for real, and add the `payesh run` CLI workflow and target discovery. For
+package 06: wire real `payesh-privd module.invoke` actions for
 enable/disable/health-check, provision a production release-signing key, add
 durable audit-event persistence, and run acceptance tests against real signed
-module release artifacts on a disposable Linux host. For package 05: request
-package acceptance with the external Linux/provider/observer/notification and
-soak evidence called out above. After both, connect the remaining
-real-data/external-observer seams (and packages 07–09) without expanding
+module release artifacts on a disposable Linux host. Before accepting either,
+reconcile the reported `api/openapi.yaml` contract mismatch (see
+`docs/handoffs/06.md`/`08.md`). For package 05: request package acceptance
+with the external Linux/provider/observer/notification and soak evidence
+called out above. After all three, connect the remaining
+real-data/external-observer seams (and packages 07, 09) without expanding
 traffic into automatic control policy ahead of an explicit owner-selected
 policy.

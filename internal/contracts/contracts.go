@@ -723,6 +723,69 @@ func (i ModuleInstallation) Validate() error {
 	return nil
 }
 
+// ControlPolicyState is the durable lifecycle of one applied control
+// (CPU/Bandwidth quota, and later similar controls). It is deliberately
+// separate from ModuleState: installing a module never applies a policy, and
+// a policy can be pending/applied/reverted/failed independently of whether
+// its owning module later gets disabled.
+type ControlPolicyState string
+
+const (
+	ControlPolicyPending  ControlPolicyState = "pending"
+	ControlPolicyApplied  ControlPolicyState = "applied"
+	ControlPolicyReverted ControlPolicyState = "reverted"
+	ControlPolicyFailed   ControlPolicyState = "failed"
+)
+
+// ControlPolicy is the shared per-server, per-target control record listed
+// in PLAN.md section 13's minimum data model. Parameters is a control-kind-
+// specific typed payload (for example internal/cpucontrol's quota
+// parameters), versioned and validated by the owning control package rather
+// than by this shared envelope — the same pattern ModuleInvocationRequest
+// uses for module-defined operation arguments.
+type ControlPolicy struct {
+	ID         string             `json:"id"`
+	ServerID   ServerID           `json:"server_id"`
+	ModuleID   string             `json:"module_id"`
+	Kind       string             `json:"kind"`
+	TargetKind string             `json:"target_kind"`
+	TargetName string             `json:"target_name"`
+	State      ControlPolicyState `json:"state"`
+	Parameters json.RawMessage    `json:"parameters,omitempty"`
+	Revision   uint64             `json:"revision,string"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+	Error      *Error             `json:"error,omitempty"`
+}
+
+var controlPolicyStates = map[ControlPolicyState]bool{
+	ControlPolicyPending: true, ControlPolicyApplied: true, ControlPolicyReverted: true, ControlPolicyFailed: true,
+}
+
+func (p ControlPolicy) Validate() error {
+	if p.ServerID == "" {
+		return errors.New("server_id is required")
+	}
+	if !safeContractIdentifier(p.ModuleID) || !safeContractIdentifier(p.Kind) {
+		return errors.New("module_id and kind are invalid")
+	}
+	if p.TargetKind != "service" && p.TargetKind != "process-group" {
+		return errors.New("target_kind must be service or process-group")
+	}
+	if p.TargetName == "" || len(p.TargetName) > 256 {
+		return errors.New("target_name must be 1..256 characters")
+	}
+	if !controlPolicyStates[p.State] {
+		return errors.New("invalid control policy state")
+	}
+	if len(p.Parameters) > MaxEnvelopeBytes {
+		return errors.New("control policy parameters exceed the size limit")
+	}
+	if p.UpdatedAt.IsZero() {
+		return errors.New("updated_at is required")
+	}
+	return nil
+}
+
 type FleetResult[T any] struct {
 	Items     []T                `json:"items"`
 	Succeeded []ServerID         `json:"succeeded"`
