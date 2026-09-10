@@ -1,0 +1,806 @@
+openapi: 3.0.3
+info:
+  title: Payesh API
+  version: 0.1.0-foundation
+  description: |
+    Versioned REST contract for Payesh. Foundation endpoints are specified
+    here; implementation is intentionally deferred to later milestones.
+servers:
+  - url: /api/v1
+x-max-request-bytes: 1048576
+x-max-response-bytes: 1048576
+x-pagination-max-items: 200
+paths:
+  /setup:
+    post:
+      operationId: completeSetup
+      summary: Consume the one-time setup secret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetupRequest' }
+      responses:
+        '201': { description: Owner account created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /session:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '204': { description: Session cookie established }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      operationId: logout
+      security:
+        - SessionCookie: []
+          CSRFToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFHeader'
+      responses:
+        '204': { description: Session expired }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /servers:
+    get:
+      operationId: listServers
+      security:
+        - SessionCookie: []
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses:
+        '200':
+          description: Known servers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /servers/{serverId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerID'
+    get:
+      operationId: getServer
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Server detail, content: { application/json: { schema: { $ref: '#/components/schemas/Server' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      operationId: updateServerLabel
+      summary: Rename a server without changing its stable identity
+      security:
+        - SessionCookie: []
+          CSRFToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServerLabelUpdateRequest' }
+      responses:
+        '200': { description: Server label updated, content: { application/json: { schema: { $ref: '#/components/schemas/Server' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /servers/{serverId}/metrics:
+    parameters:
+      - $ref: '#/components/parameters/ServerID'
+    get:
+      operationId: queryMetrics
+      security:
+        - SessionCookie: []
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { name: resolution, in: query, schema: { type: string, enum: [raw, minute, hour] } }
+        - { name: limit, in: query, description: 'Maximum samples returned.', schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, description: 'Opaque pagination cursor.', schema: { type: string, maxLength: 256 } }
+        - { name: gaps_cursor, in: query, description: 'Opaque coverage-gap pagination cursor.', schema: { type: string, maxLength: 256 } }
+      responses:
+        '200': { description: Metric samples and coverage, content: { application/json: { schema: { $ref: '#/components/schemas/MetricQuery' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /jobs/{jobId}:
+    parameters:
+      - { name: jobId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+    get:
+      operationId: getJob
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Durable job state, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: cancelJob
+      summary: Request cancellation of a cancellable job
+      security:
+        - SessionCookie: []
+          CSRFToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelJobRequest' }
+      responses:
+        '202': { description: Cancellation recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /servers/{serverId}/enrollment:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    post:
+      operationId: enrollServer
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentRequest' } } } }
+      responses: { '202': { description: Enrollment job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    delete:
+      operationId: revokeServer
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CSRFHeader' }]
+      responses: { '202': { description: Revocation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /servers/{serverId}/traffic:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: queryTraffic
+      security: [{ SessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: scope, in: query, schema: { type: string, maxLength: 128 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Traffic periods, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: configureTrafficAllowance
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAllowanceRequest' } } } }
+      responses: { '200': { description: Durable traffic configuration and active-period preview, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficConfigurationResult' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/traffic/forecast:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: forecastTraffic
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: scope, in: query, required: true, schema: { type: string, maxLength: 128 } }, { name: direction, in: query, required: true, schema: { type: string, enum: [inbound, outbound, combined] } }, { name: as_of, in: query, schema: { type: string, format: date-time } }]
+      responses: { '200': { description: Labelled host-side recent-rate traffic estimate, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficForecast' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/logs/sources:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: listLogSources
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Allowed log sources, content: { application/json: { schema: { $ref: '#/components/schemas/LogSourcePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/logs:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: queryLogs
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: source, in: query, required: true, schema: { type: string, maxLength: 128 } }, { $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: severity, in: query, schema: { type: string, maxLength: 32 } }, { name: search, in: query, schema: { type: string, maxLength: 256 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Bounded log page, content: { application/json: { schema: { $ref: '#/components/schemas/LogQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/logs/live:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: tailLogs
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: source, in: query, required: true, schema: { type: string, maxLength: 128 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }, { name: max_events, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }, { name: max_bytes, in: query, schema: { type: integer, minimum: 1024, maximum: 1048576, default: 262144 } }, { name: max_duration_seconds, in: query, schema: { type: integer, minimum: 1, maximum: 300, default: 30 } }]
+      responses: { '200': { description: Bounded live-log event stream for registered file or journald sources, content: { application/x-ndjson: { schema: { $ref: '#/components/schemas/LiveLogEvent' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /alerts/rules:
+    get:
+      operationId: listAlertRules
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Alert rules, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: createAlertRule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleRequest' } } } }
+      responses: { '201': { description: Rule created, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /alerts/rules/{ruleId}:
+    parameters: [{ name: ruleId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
+    patch:
+      operationId: updateAlertRule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleUpdateRequest' } } } }
+      responses: { '200': { description: Rule updated, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+    put:
+      operationId: replaceAlertRule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleUpdateRequest' } } } }
+      responses: { '200': { description: Rule replaced, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /alerts:
+    get:
+      operationId: listAlerts
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: server_id, in: query, schema: { type: string } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Alert states, content: { application/json: { schema: { $ref: '#/components/schemas/AlertStatePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /alerts/history:
+    get:
+      operationId: queryAlertHistory
+      security: [{ SessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Alert history page, content: { application/json: { schema: { $ref: '#/components/schemas/AlertHistoryQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /maintenance-windows:
+    get:
+      operationId: listMaintenanceWindows
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Scheduled maintenance windows, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindowPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: createMaintenanceWindow
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindowRequest' } } } }
+      responses: { '201': { description: Maintenance window created, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindow' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /incidents/{incidentId}:
+    parameters: [{ name: incidentId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
+    get:
+      operationId: getIncident
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: Incident snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/IncidentSnapshot' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /modules:
+    get:
+      operationId: listModules
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Signed module catalog, content: { application/json: { schema: { $ref: '#/components/schemas/ModulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/modules:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: listServerModules
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Module installations, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallationPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: installModule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleJobRequest' } } } }
+      responses: { '202': { description: Module job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/modules/{moduleId}/enable:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
+    post:
+      operationId: enableModule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
+      responses: { '202': { description: Module lifecycle job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/modules/{moduleId}/disable:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
+    post:
+      operationId: disableModule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
+      responses: { '202': { description: Module lifecycle job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/modules/{moduleId}/remove:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
+    post:
+      operationId: removeModule
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
+      responses: { '202': { description: Module removal job; active policies are reverted before removal, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/policies:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: listPolicies
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: applyPolicy
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyRequest' } } } }
+      responses: { '202': { description: Policy job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/policies/preview:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    post:
+      operationId: previewPolicy
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPreviewRequest' } } } }
+      responses: { '200': { description: Policy safety preview, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/policies/{policyId}/effective:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/PolicyID' }]
+    get:
+      operationId: getEffectivePolicyState
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: Effective policy state, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyEffectiveState' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /servers/{serverId}/policies/{policyId}/revert:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/PolicyID' }]
+    post:
+      operationId: revertPolicy
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyRevertRequest' } } } }
+      responses: { '202': { description: Revert job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /releases:
+    get:
+      operationId: listReleases
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Verified release metadata, content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /updates:
+    post:
+      operationId: startUpdate
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
+      responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /updates/preflight:
+    post:
+      operationId: preflightUpdate
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdatePreflightRequest' } } } }
+      responses: { '200': { description: Per-machine compatibility and headroom results, content: { application/json: { schema: { $ref: '#/components/schemas/UpdatePreflight' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /settings:
+    get:
+      operationId: getSettings
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: Owner settings, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    patch:
+      operationId: updateSettings
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsRequest' } } } }
+      responses: { '200': { description: Settings updated, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /backups:
+    get:
+      operationId: listBackups
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Backup records, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: createBackup
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BackupRequest' } } } }
+      responses: { '202': { description: Backup job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /backups/export:
+    post:
+      operationId: exportBackup
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExportRequest' } } } }
+      responses: { '202': { description: Protected export job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /backups/import:
+    post:
+      operationId: importBackup
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ImportRequest' } } } }
+      responses: { '202': { description: Verified import job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /role-transitions:
+    post:
+      operationId: startRoleTransition
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoleTransitionRequest' } } } }
+      responses: { '202': { description: Preflighted role-transition job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      security: [{ SessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: target_id, in: query, schema: { type: string, maxLength: 128 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: Redacted audit-event page, content: { application/json: { schema: { $ref: '#/components/schemas/AuditEventPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: payesh_session
+      description: Secure, HttpOnly, SameSite session cookie.
+    CSRFToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Per-session token required on browser-originated mutations.
+  parameters:
+    ServerID:
+      name: serverId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{16,128}$' }
+    From:
+      name: from
+      in: query
+      required: true
+      description: UTC start; range must be no longer than 31 days.
+      schema: { type: string, format: date-time }
+      x-max-duration: P31D
+    To:
+      name: to
+      in: query
+      required: true
+      description: UTC end; range must be no longer than 31 days.
+      schema: { type: string, format: date-time }
+      x-max-duration: P31D
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Stable operation identity used for safe retries.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    CSRFHeader:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: CSRF token issued with the authenticated session.
+      schema: { type: string, minLength: 16, maxLength: 256 }
+    ModuleID:
+      name: moduleId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    PolicyID:
+      name: policyId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+  responses:
+    BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    Conflict: { description: State or revision conflict, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    ServiceUnavailable: { description: 'The source or derived data is temporarily unavailable; retry later.', content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    TooManyRequests:
+      description: 'Login attempts are throttled. The API error uses code auth.rate_limited and retryable true.'
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } }
+  headers:
+    RetryAfter:
+      description: Whole seconds to wait before the next login attempt.
+      schema: { type: integer, minimum: 1, maximum: 3600 }
+  schemas:
+    SetupRequest:
+      type: object
+      required: [setup_secret, password]
+      properties:
+        setup_secret: { type: string, minLength: 16, writeOnly: true }
+        password: { type: string, minLength: 12, writeOnly: true }
+    LoginRequest:
+      type: object
+      required: [password]
+      properties: { password: { type: string, writeOnly: true } }
+    Server:
+      type: object
+      required: [id, name, role, architecture, platform, capabilities, connection_state, freshness_state, configuration_revision]
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9_-]{16,128}$' }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        role: { type: string, enum: [standalone, hub, node, cli-only] }
+        architecture: { type: string, enum: [amd64, arm64] }
+        platform: { type: string }
+        capabilities: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }
+        version: { type: string }
+        last_heartbeat: { type: string, format: date-time, nullable: true }
+        connection_state: { type: string, enum: [connected, disconnected, never-connected, revoked] }
+        freshness_state: { type: string, enum: [fresh, stale, unknown] }
+        freshness_reason: { type: string, maxLength: 256 }
+        configuration_revision: { $ref: '#/components/schemas/DecimalUint64' }
+    ServerLabelUpdateRequest:
+      type: object
+      required: [name, expected_revision]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        expected_revision: { $ref: '#/components/schemas/DecimalUint64' }
+    ServerPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Server' } }, next_cursor: { type: string, maxLength: 256 } }
+    AuditEvent:
+      type: object
+      required: [id, occurred_at, actor_type, action, target_type, result, revision, redacted]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        occurred_at: { type: string, format: date-time }
+        actor_type: { type: string, enum: [owner, node, local-cli, system] }
+        actor_id: { type: string, maxLength: 128 }
+        action: { type: string, minLength: 1, maxLength: 128 }
+        target_type: { type: string, enum: [server, module, policy, release, backup, role-transition] }
+        target_id: { type: string, maxLength: 128 }
+        result: { type: string, enum: [succeeded, failed, denied] }
+        revision: { $ref: '#/components/schemas/DecimalUint64' }
+        redacted: { type: boolean }
+        correlation_id: { type: string, maxLength: 128 }
+    AuditEventPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AuditEvent' } }, next_cursor: { type: string, maxLength: 256 } }
+    DecimalUint64:
+      type: string
+      pattern: '^(0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]|1844674407370955161[0-5])$'
+      description: Unsigned 64-bit integer encoded as decimal; values must be <= 18446744073709551615.
+      x-max-value: '18446744073709551615'
+    Rollup:
+      type: object
+      required: [server_id, metric, bucket_start, bucket_seconds, sample_count, observed_seconds, coverage]
+      properties:
+        server_id: { type: string, minLength: 16, maxLength: 128 }
+        metric: { type: string, minLength: 1, maxLength: 128 }
+        bucket_start: { type: string, format: date-time }
+        bucket_seconds: { type: integer, enum: [60, 3600] }
+        sample_count: { type: integer, minimum: 1, maximum: 1000000 }
+        observed_seconds: { type: number, minimum: 0 }
+        minimum: { type: number, nullable: true }
+        maximum: { type: number, nullable: true }
+        weighted_mean: { type: number, nullable: true }
+        counter_delta: { $ref: '#/components/schemas/DecimalUint64' }
+        coverage: { type: string, enum: [complete, gap, uncertain] }
+    MetricQuery:
+      type: object
+      required: [samples, rollups, coverage]
+      properties:
+        samples: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/MetricSample' } }
+        rollups: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Rollup' } }
+        coverage: { type: object, additionalProperties: { type: number, minimum: 0, maximum: 1 } }
+        gaps: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/CoverageGap' } }
+        next_cursor: { type: string, maxLength: 256 }
+        gaps_next_cursor: { type: string, maxLength: 256 }
+        truncated: { type: boolean }
+    MetricSample:
+      type: object
+      required: [server_id, collector_epoch, sequence, observed_at, received_at, values]
+      properties:
+        server_id: { type: string }
+        collector_epoch: { type: string }
+        sequence: { $ref: '#/components/schemas/DecimalUint64' }
+        observed_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        timestamp_uncertainty: { type: string, enum: [none, source-clock-ahead, receipt-clock-ahead, unknown] }
+        values: { type: object, additionalProperties: { type: number } }
+        counters: { type: object, additionalProperties: { $ref: '#/components/schemas/DecimalUint64' } }
+        units: { type: object, additionalProperties: { type: string, maxLength: 32 } }
+        validity: { type: object, additionalProperties: { type: string, enum: [valid, unavailable, stale, uncertain] } }
+    Job:
+      type: object
+      required: [id, kind, state, revision, idempotency_key, expires_at, progress]
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        state: { type: string, enum: [queued, running, cancelling, succeeded, failed, cancelled, recovery-required] }
+        revision: { $ref: '#/components/schemas/DecimalUint64' }
+        idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+        target_server_id: { type: string }
+        expires_at: { type: string, format: date-time }
+        cancel_requested: { type: boolean }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        error: { $ref: '#/components/schemas/APIError' }
+    CancelJobRequest:
+      type: object
+      required: [idempotency_key, expected_revision]
+      properties:
+        idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+        expected_revision: { $ref: '#/components/schemas/DecimalUint64' }
+    CoverageGap:
+      type: object
+      required: [collector_epoch, from_sequence, to_sequence, reason]
+      properties:
+        collector_epoch: { type: string, minLength: 1, maxLength: 128 }
+        from_sequence: { $ref: '#/components/schemas/DecimalUint64' }
+        to_sequence: { $ref: '#/components/schemas/DecimalUint64' }
+        reason: { type: string, enum: [spool-eviction, transport-disconnect, out-of-order, retention] }
+    EnrollmentRequest:
+      type: object
+      required: [token, idempotency_key]
+      properties: { token: { type: string, minLength: 16, maxLength: 256 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 } }
+    TrafficQuery:
+      type: object
+      required: [periods]
+      properties: { periods: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/TrafficPeriod' } }, next_cursor: { type: string, maxLength: 256 } }
+    TrafficPeriod:
+      type: object
+      required: [scope, from, to, timezone, allowance_bytes, direction, counted_bytes, continuity]
+      properties: { scope: { type: string, maxLength: 128 }, interfaces: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }, from: { type: string, format: date-time }, to: { type: string, format: date-time }, timezone: { type: string, maxLength: 64 }, allowance_bytes: { $ref: '#/components/schemas/DecimalUint64' }, direction: { type: string, enum: [inbound, outbound, combined] }, counted_bytes: { $ref: '#/components/schemas/DecimalUint64' }, continuity: { type: string, enum: [complete, gap, uncertain] } }
+    TrafficAllowanceRequest:
+      type: object
+      required: [idempotency_key, expected_revision, scope, allowance_bytes, direction]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, scope: { type: string, maxLength: 128 }, interfaces: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }, reset_day: { type: integer, minimum: 1, maximum: 31, default: 1 }, timezone: { type: string, maxLength: 64, default: UTC }, allowance_bytes: { $ref: '#/components/schemas/DecimalUint64' }, warning_percentages: { type: array, maxItems: 8, items: { type: integer, minimum: 1, maximum: 100 } }, direction: { type: string, enum: [inbound, outbound, combined] }, start_new_period: { type: boolean, default: false } }
+    TrafficAllowance:
+      type: object
+      required: [scope, direction, allowance_bytes, reset_day, timezone]
+      properties: { scope: { type: string, maxLength: 128 }, interfaces: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }, direction: { type: string, enum: [inbound, outbound, combined] }, allowance_bytes: { $ref: '#/components/schemas/DecimalUint64' }, reset_day: { type: integer, minimum: 1, maximum: 31 }, timezone: { type: string, maxLength: 64 }, warning_percentages: { type: array, maxItems: 8, items: { type: integer, minimum: 1, maximum: 100 } } }
+    TrafficConfigurationResult:
+      type: object
+      required: [allowance, period, configuration_revision]
+      properties: { allowance: { $ref: '#/components/schemas/TrafficAllowance' }, period: { $ref: '#/components/schemas/TrafficPeriod' }, preview: { $ref: '#/components/schemas/TrafficPeriodPreview' }, configuration_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    TrafficPeriodPreview:
+      type: object
+      required: [current, proposed, allowance_effect, schedule_effect, starts_at]
+      properties: { current: { $ref: '#/components/schemas/TrafficPeriod' }, proposed: { $ref: '#/components/schemas/TrafficPeriod' }, allowance_effect: { type: string, maxLength: 64 }, schedule_effect: { type: string, maxLength: 64 }, starts_at: { type: string, format: date-time } }
+    TrafficForecast:
+      type: object
+      required: [available, as_of, period_end, observed_bytes, estimated_bytes_at_end, estimated_remaining_bytes, usable_duration_seconds, coverage]
+      properties: { available: { type: boolean }, label: { type: string, maxLength: 64 }, reason: { type: string, maxLength: 128 }, as_of: { type: string, format: date-time }, period_end: { type: string, format: date-time }, observed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, estimated_bytes_at_end: { $ref: '#/components/schemas/DecimalUint64' }, estimated_remaining_bytes: { $ref: '#/components/schemas/DecimalUint64' }, usable_duration_seconds: { type: integer, minimum: 0 }, coverage: { type: number, minimum: 0, maximum: 1 } }
+    LogSource:
+      type: object
+      required: [id, label]
+      properties: { id: { type: string, maxLength: 128 }, label: { type: string, maxLength: 256 } }
+    LogSourcePage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/LogSource' } }, next_cursor: { type: string, maxLength: 256 } }
+    LogQuery:
+      type: object
+      required: [entries]
+      properties: { entries: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/LogEntry' } }, next_cursor: { type: string, maxLength: 256 }, truncated: { type: boolean } }
+    LogEntry:
+      type: object
+      required: [source_id, cursor, timestamp, text]
+      properties: { source_id: { type: string, maxLength: 128 }, cursor: { type: string, maxLength: 256 }, timestamp: { type: string, format: date-time }, severity: { type: string, maxLength: 32 }, text: { type: string, maxLength: 65536 }, truncated: { type: boolean }, redacted: { type: boolean } }
+    LiveLogEvent:
+      type: object
+      required: [entry, sequence]
+      properties: { entry: { $ref: '#/components/schemas/LogEntry' }, sequence: { $ref: '#/components/schemas/DecimalUint64' }, dropped_events: { type: integer, minimum: 0, maximum: 10000 } }
+    AlertRuleRequest:
+      type: object
+      required: [name, expression, idempotency_key]
+      properties: { name: { type: string, minLength: 1, maxLength: 128 }, expression: { type: string, minLength: 1, maxLength: 1024 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, server_id: { type: string, maxLength: 128 }, enabled: { type: boolean, default: true }, duration_seconds: { type: integer, minimum: 1, maximum: 86400, default: 300 }, recovery_threshold: { type: number }, reminder_seconds: { type: integer, minimum: 0, maximum: 604800, default: 3600 }, group_key: { type: string, maxLength: 128 } }
+    AlertRuleUpdateRequest:
+      type: object
+      minProperties: 1
+      properties: { name: { type: string, minLength: 1, maxLength: 128 }, expression: { type: string, minLength: 1, maxLength: 1024 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, enabled: { type: boolean }, duration_seconds: { type: integer, minimum: 1, maximum: 86400 }, recovery_threshold: { type: number }, reminder_seconds: { type: integer, minimum: 0, maximum: 604800 }, group_key: { type: string, maxLength: 128 } }
+    AlertRule:
+      allOf: [{ $ref: '#/components/schemas/AlertRuleRequest' }, { type: object, required: [id, created_at, effective_at], properties: { id: { type: string, maxLength: 128 }, created_at: { type: string, format: date-time }, effective_at: { type: string, format: date-time } } }]
+    AlertRulePage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AlertRule' } }, next_cursor: { type: string, maxLength: 256 } }
+    AlertState:
+      type: object
+      required: [id, rule_id, state]
+      properties: { id: { type: string, maxLength: 128 }, rule_id: { type: string, maxLength: 128 }, server_id: { type: string, maxLength: 128 }, state: { type: string, enum: [pending, firing, recovered] }, pending_since: { type: string, format: date-time }, firing_since: { type: string, format: date-time }, recovered_at: { type: string, format: date-time }, last_observation: { type: string, format: date-time }, last_value: { type: number }, last_notified_at: { type: string, format: date-time }, incident_id: { type: string, maxLength: 128 }, precision_warning: { type: string, maxLength: 256 } }
+    AlertStatePage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AlertState' } }, next_cursor: { type: string, maxLength: 256 } }
+    AlertHistoryQuery:
+      type: object
+      required: [events]
+      properties: { events: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AlertHistoryEvent' } }, next_cursor: { type: string, maxLength: 256 } }
+    AlertHistoryEvent:
+      type: object
+      required: [id, alert_id, state, occurred_at]
+      properties: { id: { type: string, maxLength: 128 }, alert_id: { type: string, maxLength: 128 }, server_id: { type: string, maxLength: 128 }, state: { type: string, enum: [pending, firing, recovered, suppressed] }, occurred_at: { type: string, format: date-time }, reason: { type: string, maxLength: 512 }, value: { type: number }, incident_id: { type: string, maxLength: 128 } }
+    MaintenanceWindowRequest:
+      type: object
+      required: [idempotency_key, starts_at, ends_at]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, starts_at: { type: string, format: date-time }, ends_at: { type: string, format: date-time }, server_ids: { type: array, maxItems: 20, items: { type: string } }, reason: { type: string, maxLength: 512 } }
+    MaintenanceWindow:
+      allOf: [{ $ref: '#/components/schemas/MaintenanceWindowRequest' }, { type: object, required: [id], properties: { id: { type: string, maxLength: 128 } } }]
+    MaintenanceWindowPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/MaintenanceWindow' } }, next_cursor: { type: string, maxLength: 256 } }
+    IncidentSnapshot:
+      type: object
+      required: [id, state, started_at, summary, evidence]
+      properties: { id: { type: string, maxLength: 128 }, server_id: { type: string, maxLength: 128 }, group_key: { type: string, maxLength: 128 }, state: { type: string, enum: [open, recovered] }, started_at: { type: string, format: date-time }, ended_at: { type: string, format: date-time }, summary: { type: string, maxLength: 512 }, events: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AlertHistoryEvent' } }, evidence: { type: array, maxItems: 200, items: { type: string, maxLength: 4096 } }, truncated: { type: boolean } }
+    Module:
+      type: object
+      required: [id, version, signing_key_id]
+      properties: { id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, signing_key_id: { type: string, maxLength: 128 }, capabilities: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } } }
+    ModulePage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Module' } }, next_cursor: { type: string, maxLength: 256 } }
+    ModuleInstallation:
+      type: object
+      required: [module_id, version, state]
+      properties: { module_id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, state: { type: string, enum: [unavailable, available, downloading, verifying, installing, installed-disabled, enabled, updating, removing, failed] } }
+    ModuleInstallationPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/ModuleInstallation' } }, next_cursor: { type: string, maxLength: 256 } }
+    ModuleJobRequest:
+      type: object
+      required: [module_id, idempotency_key, expected_revision]
+      properties: { module_id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    ModuleLifecycleRequest:
+      type: object
+      required: [idempotency_key, expected_revision]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    PolicyRequest:
+      type: object
+      required: [module_id, idempotency_key, expected_revision, configuration]
+      properties: { module_id: { type: string, maxLength: 128 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, configuration: { type: object, maxProperties: 64, additionalProperties: true } }
+    Policy:
+      allOf: [{ $ref: '#/components/schemas/PolicyRequest' }, { type: object, required: [id], properties: { id: { type: string, maxLength: 128 } } }]
+    PolicyPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Policy' } }, next_cursor: { type: string, maxLength: 256 } }
+    PolicyPreviewRequest:
+      allOf: [{ $ref: '#/components/schemas/PolicyRequest' }]
+    PolicyPreview:
+      type: object
+      required: [eligible, management_safe, expected_effect]
+      properties: { eligible: { type: boolean }, management_safe: { type: boolean }, expected_effect: { type: string, maxLength: 2048 }, refusal_code: { type: string, maxLength: 128 }, capability_limits: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } } }
+    PolicyEffectiveState:
+      type: object
+      required: [policy_id, effective, verified_at]
+      properties: { policy_id: { type: string, maxLength: 128 }, effective: { type: boolean }, verified_at: { type: string, format: date-time }, details: { type: string, maxLength: 2048 } }
+    PolicyRevertRequest:
+      type: object
+      required: [idempotency_key, expected_revision]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    Release:
+      type: object
+      required: [format, release, created_at, min_core, signing_key_id, artifacts]
+      properties: { format: { type: string, enum: [payesh.release.v1] }, release: { type: string, maxLength: 64 }, created_at: { type: string, format: date-time }, min_core: { type: string, maxLength: 64 }, signing_key_id: { type: string, maxLength: 128 }, artifacts: { type: array, minItems: 1, maxItems: 32, items: { $ref: '#/components/schemas/ReleaseArtifact' } } }
+    ReleaseArtifact:
+      type: object
+      required: [name, os, arch, sha256, compressed_bytes, unpacked_bytes, url]
+      properties: { name: { type: string, maxLength: 128 }, os: { type: string, enum: [linux] }, arch: { type: string, enum: [amd64, arm64] }, sha256: { type: string, pattern: '^[A-Fa-f0-9]{64}$' }, compressed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, unpacked_bytes: { $ref: '#/components/schemas/DecimalUint64' }, url: { type: string, format: uri, maxLength: 2048 } }
+    ReleasePage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Release' } }, next_cursor: { type: string, maxLength: 256 } }
+    UpdateRequest:
+      type: object
+      required: [release, selected_server_ids, idempotency_key]
+      properties: { release: { type: string, maxLength: 64 }, selected_server_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    UpdatePreflightRequest:
+      type: object
+      required: [release, selected_server_ids]
+      properties: { release: { type: string, maxLength: 64 }, selected_server_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } } }
+    UpdatePreflight:
+      type: object
+      required: [release, results, partial]
+      properties: { release: { type: string, maxLength: 64 }, results: { type: array, minItems: 1, maxItems: 20, items: { $ref: '#/components/schemas/UpdatePreflightResult' } }, partial: { type: boolean } }
+    UpdatePreflightResult:
+      type: object
+      required: [server_id, eligible, checks]
+      properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, eligible: { type: boolean }, checks: { type: array, maxItems: 32, items: { type: string, maxLength: 512 } }, required_staging_bytes: { $ref: '#/components/schemas/DecimalUint64' }, required_backup_bytes: { $ref: '#/components/schemas/DecimalUint64' } }
+    Settings:
+      type: object
+      properties: { sampling_interval_seconds: { type: integer, minimum: 5, maximum: 3600 }, retention_days: { type: integer, minimum: 1, maximum: 3650 }, timezone: { type: string, maxLength: 64 } }
+    SettingsRequest:
+      allOf: [{ $ref: '#/components/schemas/Settings' }, { type: object, required: [idempotency_key, expected_revision], properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } } }]
+    BackupRequest:
+      type: object
+      required: [idempotency_key]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, destination: { type: string, maxLength: 256 } }
+    Backup:
+      type: object
+      required: [id, state]
+      properties: { id: { type: string, maxLength: 128 }, state: { type: string, enum: [queued, running, succeeded, failed] }, created_at: { type: string, format: date-time } }
+    BackupPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Backup' } }, next_cursor: { type: string, maxLength: 256 } }
+    ExportRequest:
+      type: object
+      required: [idempotency_key]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, include_history: { type: boolean, default: true }, destination: { type: string, maxLength: 256 } }
+    ImportRequest:
+      type: object
+      required: [idempotency_key, expected_revision, artifact]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, artifact: { type: string, minLength: 1, maxLength: 256 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    RoleTransitionRequest:
+      type: object
+      required: [idempotency_key, expected_revision, from_role, to_role]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, from_role: { type: string, enum: [standalone, hub, node, cli-only] }, to_role: { type: string, enum: [standalone, hub, node, cli-only] }, selected_server_ids: { type: array, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } } }
+    APIError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code: { type: string, pattern: '^[a-z0-9_.-]+$' }
+        message: { type: string, maxLength: 512 }
+        retryable: { type: boolean }
+        correlation_id: { type: string, maxLength: 128 }
+        fields: { type: object, additionalProperties: { type: string, maxLength: 256 } }

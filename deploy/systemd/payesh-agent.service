@@ -1,0 +1,30 @@
+[Unit]
+Description=Payesh local monitoring agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=payesh
+Group=payesh
+ExecStartPre=/bin/sh -c '/usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null'
+ExecStart=/bin/bash -o pipefail -c '/usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null'
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+# The local ingest process consumes the node-sample stream. Bash pipefail keeps
+# either child failure visible to systemd. Keep routine acknowledgements out of
+# journald; diagnostics remain available on stderr.
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
