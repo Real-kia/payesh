@@ -1,0 +1,1 @@
+{"server_id":"server-0123456789","collector_epoch":"epoch-0123456789","sequence":"42","observed_at":"2026-09-08T00:00:00Z","received_at":"2026-09-08T00:00:01Z","values":{"cpu.utilization":0.25},"counters":{"net.eth0.rx_bytes":"9007199254740993"},"units":{"cpu.utilization":"ratio","net.eth0.rx_bytes":"bytes"},"validity":{"cpu.utilization":"valid","net.eth0.rx_bytes":"valid"}}

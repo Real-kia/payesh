@@ -1,0 +1,8 @@
+/var/log/payesh/*.log /var/log/payesh/*.err {
+    size 5M
+    rotate 4
+    missingok
+    notifempty
+    compress
+    copytruncate
+}

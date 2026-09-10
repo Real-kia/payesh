@@ -1,0 +1,72 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: make lint
+      - run: go vet ./...
+      - run: GOOS=linux GOARCH=${{ matrix.arch }} make build
+  frontend-contract:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: node scripts/contract-check.mjs
+  linux-distributions:
+    # Images are pinned to explicit oldest/current representatives. This job
+    # validates the declared distro matrix; privileged service/control tests
+    # remain package-specific disposable-VM work.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debian-12, image: 'debian:12', manager: apt-get, init: systemd }
+          - { name: debian-13, image: 'debian:13', manager: apt-get, init: systemd }
+          - { name: fedora-42, image: 'fedora:42', manager: dnf, init: systemd }
+          - { name: fedora-43, image: 'fedora:43', manager: dnf, init: systemd }
+          - { name: rocky-9, image: 'rockylinux:9', manager: dnf, init: systemd }
+          - { name: rocky-10, image: 'rockylinux:10', manager: dnf, init: systemd }
+          - { name: alma-9, image: 'almalinux:9', manager: dnf, init: systemd }
+          - { name: alma-10, image: 'almalinux:10', manager: dnf, init: systemd }
+          - { name: alpine-3.22, image: 'alpine:3.22', manager: apk, init: openrc }
+          - { name: alpine-3.23, image: 'alpine:3.23', manager: apk, init: openrc }
+    name: distro-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Linux smoke artifacts
+        run: GOOS=linux GOARCH=amd64 make build
+      - name: Inspect pinned distribution image
+        run: >-
+          docker run --rm -v "$PWD/dist:/dist:ro" ${{ matrix.image }} sh -c
+          'test -s /etc/os-release && grep -qE "^(ID|VERSION_ID)=" /etc/os-release && command -v ${{ matrix.manager }} && test -e /sbin/init && if [ "${{ matrix.init }}" = systemd ]; then test -x /lib/systemd/systemd || test -x /usr/lib/systemd/systemd; else test -x /sbin/openrc-init; fi && /dist/payesh-agent && cat /etc/os-release'

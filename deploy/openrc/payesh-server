@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+
+name="payesh-server"
+description="Payesh local monitoring server"
+command="/usr/bin/payesh-server"
+command_args="-db=/var/lib/payesh/payesh.db -listen=127.0.0.1:8787"
+command_user="payesh:payesh"
+supervisor="supervise-daemon"
+supervise_daemon_args="--respawn-delay 5"
+output_log="/var/log/payesh/server.log"
+error_log="/var/log/payesh/server.err"
+
+depend() {
+	need net
+	after firewall
+}

@@ -1,0 +1,1 @@
+{"items":[{"id":"server-0123456789","name":"node-a","role":"node","architecture":"amd64","platform":"linux","capabilities":["metrics"],"configuration_revision":"9007199254740993"}],"succeeded":["server-0123456789"],"failed":{"server-abcdefghijkl":{"code":"node.offline","message":"heartbeat expired","retryable":true}},"partial":true}

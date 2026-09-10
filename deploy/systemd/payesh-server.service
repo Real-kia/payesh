@@ -1,0 +1,24 @@
+[Unit]
+Description=Payesh local monitoring server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=payesh
+Group=payesh
+EnvironmentFile=-/etc/payesh/payesh.env
+ExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=127.0.0.1:8787
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

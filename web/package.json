@@ -1,0 +1,25 @@
+{
+  "name": "payesh-web",
+  "private": true,
+  "version": "0.1.0-foundation",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "svelte": "5.38.7",
+    "uplot": "1.6.32"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "6.2.1",
+    "svelte-check": "4.3.1",
+    "typescript": "5.9.2",
+    "vite": "7.1.5",
+    "yaml": "2.8.1"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "node build-check.mjs && svelte-check --tsconfig ./tsconfig.json"
+  }
+}
