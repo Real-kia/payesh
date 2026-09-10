@@ -193,12 +193,15 @@ enforcement test has run on any Linux host, disposable or otherwise. Package
   record and `control_policies`/`control_policy_requests` store designed for
   package 09 (Bandwidth Controls) to reuse; HTTP routes; and a
   `modules.Manager.DeactivateHooks` mechanism so disabling cpu-controls first
-  reverts its active policies (a failing cleanup blocks the disable). A known,
-  explicitly reported OpenAPI contract mismatch (the package-01 foundation
-  sketch's async `policyId`/`Job`-wrapped `/policies` family vs. this
-  checkpoint's synchronous, idempotency-keyed, target-addressed routes — the
-  same pattern already used for package 05 traffic and package 06 modules)
-  needs lead reconciliation before acceptance; see `docs/handoffs/08.md`.
+  reverts its active policies (a failing cleanup blocks the disable). The
+  OpenAPI contract mismatch discovered while building this package (the
+  package-01 foundation sketch's async `policyId`/`Job`-wrapped `/policies`
+  and `/modules` families vs. the synchronous, idempotency-keyed,
+  target-addressed routes actually implemented for packages 05/06/08) has
+  been reconciled: `api/openapi.yaml` and `scripts/contract-check.mjs` now
+  describe the real routes/schemas (new `/servers/{serverId}/modules/{moduleId}/install`,
+  `/servers/{serverId}/cpu-policies...`; corrected `Module`/`ModuleInstallation`/`Policy`
+  schemas). See `docs/handoffs/08.md`.
 
 ## Verification
 
@@ -248,9 +251,8 @@ signed module release artifacts rather than only synthetic in-process
 fixtures — see `docs/handoffs/06.md`. For package 08, the next inputs are
 real CPU-load enforcement tests on a disposable Linux host, shared-group/
 parent-quota/PID-reuse/restart/OpenRC acceptance scenarios, the `payesh run`
-CLI workflow, and target discovery — see `docs/handoffs/08.md`. Before
-accepting either package 06 or 08, reconcile `api/openapi.yaml`'s async
-`policyId`/`Job`-wrapped `/policies` and `/modules` sketch against the
-synchronous, idempotency-keyed routes actually implemented (documented in
-both handoffs). Do not describe this checkpoint as a complete monitoring
-product.
+CLI workflow, and target discovery — see `docs/handoffs/08.md`. The
+`api/openapi.yaml` mismatch against packages 05/06/08 has been reconciled
+(see above); a fresh review pass should still confirm the reconciled
+document against real client usage before acceptance. Do not describe this
+checkpoint as a complete monitoring product.

@@ -261,12 +261,15 @@ paths:
       security: [{ SessionCookie: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Module installations, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallationPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/modules/{moduleId}/install:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
       operationId: installModule
+      summary: Verify a signed manifest/archive and stage a module to installed-disabled
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleJobRequest' } } } }
-      responses: { '202': { description: Module job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallRequest' } } } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /servers/{serverId}/modules/{moduleId}/enable:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
@@ -274,15 +277,16 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '202': { description: Module lifecycle job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /servers/{serverId}/modules/{moduleId}/disable:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
       operationId: disableModule
+      summary: Revert active policies for this module (see the module's DeactivateHooks) before disabling
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '202': { description: Module lifecycle job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /servers/{serverId}/modules/{moduleId}/remove:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
@@ -290,42 +294,40 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '202': { description: Module removal job; active policies are reverted before removal, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
-  /servers/{serverId}/policies:
+      responses: { '200': { description: Resulting module installation state; only legal once installed-disabled or failed, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/cpu-policies:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
-      operationId: listPolicies
+      operationId: listCPUPolicies
       security: [{ SessionCookie: [] }]
-      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
-      responses: { '200': { description: Control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+      responses: { '200': { description: CPU control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/preview:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
-      operationId: applyPolicy
+      operationId: previewCPUPolicy
+      summary: Read-only current-vs-proposed quota comparison; applies nothing
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyRequest' } } } }
-      responses: { '202': { description: Policy job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
-  /servers/{serverId}/policies/preview:
-    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreviewRequest' } } } }
+      responses: { '200': { description: Preview of the effect of applying this quota, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/apply:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
-      operationId: previewPolicy
+      operationId: applyCPUPolicy
+      summary: Write, read back, and durably record a cgroup v2 CPU quota for this dedicated target
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPreviewRequest' } } } }
-      responses: { '200': { description: Policy safety preview, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
-  /servers/{serverId}/policies/{policyId}/effective:
-    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/PolicyID' }]
-    get:
-      operationId: getEffectivePolicyState
-      security: [{ SessionCookie: [] }]
-      responses: { '200': { description: Effective policy state, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyEffectiveState' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
-  /servers/{serverId}/policies/{policyId}/revert:
-    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/PolicyID' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyApplyRequest' } } } }
+      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/revert:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
-      operationId: revertPolicy
+      operationId: revertCPUPolicy
+      summary: Restore exactly the quota (or absence of one) the matching apply found beforehand
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyRevertRequest' } } } }
-      responses: { '202': { description: Revert job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyRevertRequest' } } } }
+      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /releases:
     get:
       operationId: listReleases
@@ -450,6 +452,16 @@ components:
       in: path
       required: true
       schema: { type: string, minLength: 1, maxLength: 128 }
+    TargetKind:
+      name: targetKind
+      in: path
+      required: true
+      schema: { type: string, enum: [service, process-group] }
+    TargetName:
+      name: targetName
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 256 }
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
@@ -691,50 +703,57 @@ components:
       required: [id, state, started_at, summary, evidence]
       properties: { id: { type: string, maxLength: 128 }, server_id: { type: string, maxLength: 128 }, group_key: { type: string, maxLength: 128 }, state: { type: string, enum: [open, recovered] }, started_at: { type: string, format: date-time }, ended_at: { type: string, format: date-time }, summary: { type: string, maxLength: 512 }, events: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/AlertHistoryEvent' } }, evidence: { type: array, maxItems: 200, items: { type: string, maxLength: 4096 } }, truncated: { type: boolean } }
     Module:
+      description: A curated catalog entry (internal/modules.Catalog), not yet installed on any particular server.
       type: object
-      required: [id, version, signing_key_id]
-      properties: { id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, signing_key_id: { type: string, maxLength: 128 }, capabilities: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } } }
+      required: [id, name, latest_version, resource_estimate_source]
+      properties: { id: { type: string, maxLength: 128 }, name: { type: string, maxLength: 128 }, description: { type: string, maxLength: 1024 }, latest_version: { type: string, maxLength: 64 }, dependencies: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, required_privileges: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, estimated_compressed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, estimated_unpacked_bytes: { $ref: '#/components/schemas/DecimalUint64' }, resource_estimate_source: { type: string, enum: [unmeasured, release-benchmark] } }
     ModulePage:
       type: object
       required: [items]
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Module' } }, next_cursor: { type: string, maxLength: 256 } }
+    ModuleManifest:
+      description: Signed catalog artifact description, verified (JCS/Ed25519) before any byte is staged. See docs/contracts/RELEASE_FORMAT.md.
+      type: object
+      required: [format, module_id, module_version, min_core, protocol_min, protocol_max, os, architecture, compressed_bytes, unpacked_bytes, sha256, signing_key_id, created_at]
+      properties: { format: { type: string, enum: [payesh.module-manifest.v1] }, module_id: { type: string, maxLength: 128 }, module_version: { type: string, maxLength: 64 }, min_core: { type: string, maxLength: 64 }, max_core: { type: string, maxLength: 64 }, protocol_min: { type: string, maxLength: 16 }, protocol_max: { type: string, maxLength: 16 }, os: { type: string, maxLength: 64 }, architecture: { type: string, maxLength: 64 }, required_capabilities: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, dependencies: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, required_privileges: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, compressed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, unpacked_bytes: { $ref: '#/components/schemas/DecimalUint64' }, sha256: { type: string, minLength: 64, maxLength: 64 }, signing_key_id: { type: string, maxLength: 128 }, created_at: { type: string, format: date-time } }
     ModuleInstallation:
       type: object
-      required: [module_id, version, state]
-      properties: { module_id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, state: { type: string, enum: [unavailable, available, downloading, verifying, installing, installed-disabled, enabled, updating, removing, failed] } }
+      required: [server_id, module_id, state, revision, updated_at]
+      properties: { server_id: { type: string, maxLength: 128 }, module_id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, state: { type: string, enum: [unavailable, available, downloading, verifying, installing, installed-disabled, enabled, updating, removing, failed] }, revision: { $ref: '#/components/schemas/DecimalUint64' }, updated_at: { type: string, format: date-time }, error: { $ref: '#/components/schemas/APIError' } }
     ModuleInstallationPage:
       type: object
       required: [items]
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/ModuleInstallation' } }, next_cursor: { type: string, maxLength: 256 } }
-    ModuleJobRequest:
+    ModuleInstallRequest:
       type: object
-      required: [module_id, idempotency_key, expected_revision]
-      properties: { module_id: { type: string, maxLength: 128 }, version: { type: string, maxLength: 64 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+      required: [idempotency_key, expected_revision, manifest, manifest_signature_b64, archive_base64]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, manifest: { $ref: '#/components/schemas/ModuleManifest' }, manifest_signature_b64: { type: string, minLength: 1, maxLength: 512, description: 'Detached Ed25519 signature over the manifest RFC 8785 canonical JSON, unpadded base64url.' }, archive_base64: { type: string, description: 'Standard (padded) base64 of the verified module archive bytes.' } }
     ModuleLifecycleRequest:
       type: object
       required: [idempotency_key, expected_revision]
       properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
-    PolicyRequest:
-      type: object
-      required: [module_id, idempotency_key, expected_revision, configuration]
-      properties: { module_id: { type: string, maxLength: 128 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, configuration: { type: object, maxProperties: 64, additionalProperties: true } }
     Policy:
-      allOf: [{ $ref: '#/components/schemas/PolicyRequest' }, { type: object, required: [id], properties: { id: { type: string, maxLength: 128 } } }]
+      description: Shared per-server/module/target control record (contracts.ControlPolicy). CPU Controls' parameters is CPUQuotaParameters; Bandwidth Controls (package 09) reuses this same shape with its own kind/parameters.
+      type: object
+      required: [id, server_id, module_id, kind, target_kind, target_name, state, revision, updated_at]
+      properties: { id: { type: string, maxLength: 512 }, server_id: { type: string, maxLength: 128 }, module_id: { type: string, maxLength: 128 }, kind: { type: string, maxLength: 128 }, target_kind: { type: string, enum: [service, process-group] }, target_name: { type: string, maxLength: 256 }, state: { type: string, enum: [pending, applied, reverted, failed] }, parameters: { type: object, additionalProperties: true }, revision: { $ref: '#/components/schemas/DecimalUint64' }, updated_at: { type: string, format: date-time }, error: { $ref: '#/components/schemas/APIError' } }
     PolicyPage:
       type: object
       required: [items]
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Policy' } }, next_cursor: { type: string, maxLength: 256 } }
-    PolicyPreviewRequest:
-      allOf: [{ $ref: '#/components/schemas/PolicyRequest' }]
-    PolicyPreview:
+    CPUPolicyPreviewRequest:
       type: object
-      required: [eligible, management_safe, expected_effect]
-      properties: { eligible: { type: boolean }, management_safe: { type: boolean }, expected_effect: { type: string, maxLength: 2048 }, refusal_code: { type: string, maxLength: 128 }, capability_limits: { type: array, maxItems: 64, items: { type: string, maxLength: 256 } } }
-    PolicyEffectiveState:
+      required: [millicores]
+      properties: { millicores: { $ref: '#/components/schemas/DecimalUint64' }, total_cores: { type: integer, minimum: 0, maximum: 1000000, description: 'Optional, caller-supplied, used only to phrase the human-readable description.' } }
+    CPUPolicyPreview:
       type: object
-      required: [policy_id, effective, verified_at]
-      properties: { policy_id: { type: string, maxLength: 128 }, effective: { type: boolean }, verified_at: { type: string, format: date-time }, details: { type: string, maxLength: 2048 } }
-    PolicyRevertRequest:
+      required: [current_millicores, current_unlimited, proposed_millicores, description]
+      properties: { current_millicores: { $ref: '#/components/schemas/DecimalUint64' }, current_unlimited: { type: boolean }, proposed_millicores: { $ref: '#/components/schemas/DecimalUint64' }, description: { type: string, maxLength: 512 }, parent_stricter: { type: boolean }, parent_millicores: { $ref: '#/components/schemas/DecimalUint64' } }
+    CPUPolicyApplyRequest:
+      type: object
+      required: [idempotency_key, expected_revision, millicores]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, millicores: { $ref: '#/components/schemas/DecimalUint64' }, process_pid: { type: integer, minimum: 1, description: Required when targetKind is process-group. }, process_start_ticks: { $ref: '#/components/schemas/DecimalUint64' } }
+    CPUPolicyRevertRequest:
       type: object
       required: [idempotency_key, expected_revision]
       properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
