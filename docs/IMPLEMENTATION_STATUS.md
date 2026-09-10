@@ -9,7 +9,10 @@ it is not a working dashboard or an accepted milestone. Package 03 / milestone
 M2 now has a **local-monitoring Checkpoint A**; Linux/distribution acceptance is
 still pending. Package 04 remains at Checkpoint A awaiting its acceptance gates.
 Package 05 Checkpoint A has completed its internal Critical/Major review and fix
-cycles, but still awaits the package acceptance evidence listed below.
+cycles, but still awaits the package acceptance evidence listed below. Package 06
+now has a **module-framework Checkpoint A** (catalog, trust verification, safe
+archive staging, lifecycle, durable store, HTTP routes); it is not accepted and
+has no real `payesh-privd` wiring or provisioned production signing key yet.
 
 ## Completed in this session
 
@@ -149,6 +152,28 @@ cycles, but still awaits the package acceptance evidence listed below.
   delivery, and alert-rule creation/reconciliation is bounded at 20,000 total
   and 4,096 per-server rows, including disabled rules.
 
+- Package-06 Checkpoint A adds the signed optional-module framework: an
+  RFC-8785-subset JCS canonicalizer and Ed25519 detached-signature verifier
+  (`internal/trust`), the curated three-module catalog with per-server
+  eligibility checks, safe tar.gz archive staging (checksum/size verified
+  before extraction; absolute paths, traversal, and every symlink/hardlink
+  entry rejected; atomic activation preserving the previous release),
+  an explicit lifecycle state machine that keeps install separate from
+  activation and preserves the previous working state on a failed update,
+  and a durable per-server `module_installations`/`module_lifecycle_requests`
+  store with the same compare-and-swap-revision and idempotency-key
+  conventions as the package-05 traffic endpoint. Browser routes expose the
+  catalog, per-server status, and install/enable/disable/remove. This is not
+  the package-06 acceptance gate: `payesh-privd` still has no real
+  `module.invoke` actions, no production release-signing key is provisioned,
+  audit-event persistence does not exist for any package yet, and only
+  synthetic in-process archive fixtures were exercised (no real Linux host,
+  no real official module release artifact). See `docs/handoffs/06.md`.
+  This session also fixed two pre-existing build-breaking regressions in
+  `internal/monitoring/store.go` (a `*time.Time` dereference bug and a stale
+  `RollupPage{}` return from an earlier edit) that left `go build ./...`
+  failing before any package-06 work began.
+
 ## Verification
 
 Run from the repository root:
@@ -189,5 +214,10 @@ Review and accept the package-03 handoff in a disposable Linux matrix, then
 continue package-04 with persisted auth/enrollment state, WebSocket framing,
 bounded offline spool and installer/SSH flows. Connect the M1 previews to
 authenticated API records after those seams are stable. Run the committed CI
-workflow and focused security/schema review before accepting M0/M2. Do not
-describe this checkpoint as a complete monitoring product.
+workflow and focused security/schema review before accepting M0/M2. For
+package 06, the next inputs are real `payesh-privd module.invoke` actions for
+enable/disable/health-check, a provisioned production release-signing key,
+durable audit-event persistence, and Linux acceptance tests against real
+signed module release artifacts rather than only synthetic in-process
+fixtures — see `docs/handoffs/06.md`. Do not describe this checkpoint as a
+complete monitoring product.

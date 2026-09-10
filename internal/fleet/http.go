@@ -13,6 +13,7 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
 )
@@ -28,6 +29,7 @@ type API struct {
 	trustedProxies []*net.IPNet
 	alerts         http.Handler
 	traffic        http.Handler
+	modules        http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -56,6 +58,10 @@ type Options struct {
 	// is nil; production browser mode supplies the package-05 service so POST
 	// configuration has a real owner.
 	TrafficService *traffic.Service
+	// ModuleService optionally owns the catalog and the per-server
+	// install/enable/disable/remove lifecycle. Routes are unavailable (fall
+	// through to the monitoring 404) when this is nil.
+	ModuleService *modules.Service
 }
 
 func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Options) (*API, error) {
@@ -79,7 +85,11 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.TrafficService != nil {
 		trafficHandler = sessions.Middleware(options.TrafficService.Handler())
 	}
-	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	var moduleHandler http.Handler
+	if options.ModuleService != nil {
+		moduleHandler = sessions.Middleware(options.ModuleService.Handler())
+	}
+	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -111,6 +121,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	trimmedPath := strings.TrimRight(r.URL.Path, "/")
 	if a.traffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && (strings.HasSuffix(trimmedPath, "/traffic") || strings.HasSuffix(trimmedPath, "/traffic/forecast")) {
 		a.traffic.ServeHTTP(w, r)
+		return
+	}
+	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
+		a.modules.ServeHTTP(w, r)
 		return
 	}
 	a.monitoring.ServeHTTP(w, r)

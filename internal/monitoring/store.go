@@ -997,6 +997,35 @@ CREATE TABLE IF NOT EXISTS incidents (
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS incidents_server_time ON incidents(server_id, started_at, id);
+-- Durable per-server optional-module lifecycle (package 06). revision is a
+-- compare-and-swap counter so concurrent install/enable/disable/remove
+-- requests for the same module cannot race each other's state transition.
+CREATE TABLE IF NOT EXISTS module_installations (
+  server_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  version TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  error_json TEXT,
+  PRIMARY KEY (server_id, module_id),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS module_installations_server ON module_installations(server_id, module_id);
+-- Idempotent lifecycle-request results, mirroring traffic_allowance_requests:
+-- a repeated Install/Enable/Disable/Remove click with the same key returns
+-- the original outcome instead of running the action twice.
+CREATE TABLE IF NOT EXISTS module_lifecycle_requests (
+  server_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (server_id, module_id, idempotency_key),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS module_lifecycle_requests_created ON module_lifecycle_requests(created_at);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)

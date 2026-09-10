@@ -590,6 +590,139 @@ func (g CoverageGap) Validate() error {
 	return nil
 }
 
+// ModuleState is the package-06 optional-module lifecycle. Install and
+// activation are kept separate: a completed download/install lands on
+// installed-disabled, never enabled, so a downloaded extra cannot silently
+// begin enforcing anything.
+type ModuleState string
+
+const (
+	ModuleUnavailable       ModuleState = "unavailable"
+	ModuleAvailable         ModuleState = "available"
+	ModuleDownloading       ModuleState = "downloading"
+	ModuleVerifying         ModuleState = "verifying"
+	ModuleInstalling        ModuleState = "installing"
+	ModuleInstalledDisabled ModuleState = "installed-disabled"
+	ModuleEnabled           ModuleState = "enabled"
+	ModuleUpdating          ModuleState = "updating"
+	ModuleRemoving          ModuleState = "removing"
+	ModuleFailed            ModuleState = "failed"
+)
+
+const ModuleManifestFormat = "payesh.module-manifest.v1"
+
+// ModuleManifest is the signed catalog description of one module release for
+// one OS/architecture. It never carries a request-provided download URL;
+// only the trusted catalog names eligible artifacts.
+type ModuleManifest struct {
+	Format               string    `json:"format"`
+	ModuleID             string    `json:"module_id"`
+	ModuleVersion        string    `json:"module_version"`
+	MinCore              string    `json:"min_core"`
+	MaxCore              string    `json:"max_core,omitempty"`
+	ProtocolMin          string    `json:"protocol_min"`
+	ProtocolMax          string    `json:"protocol_max"`
+	OS                   string    `json:"os"`
+	Architecture         string    `json:"architecture"`
+	RequiredCapabilities []string  `json:"required_capabilities,omitempty"`
+	Dependencies         []string  `json:"dependencies,omitempty"`
+	RequiredPrivileges   []string  `json:"required_privileges,omitempty"`
+	CompressedBytes      uint64    `json:"compressed_bytes,string"`
+	UnpackedBytes        uint64    `json:"unpacked_bytes,string"`
+	SHA256               string    `json:"sha256"`
+	SigningKeyID         string    `json:"signing_key_id"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+// ModuleCatalogEntry is the curated, official-modules-only listing shown
+// before any server-specific eligibility check. ResourceEstimateSource
+// distinguishes a real release benchmark from an as-yet-unmeasured estimate;
+// it must never be presented to an owner as a measured cost when unmeasured.
+type ModuleCatalogEntry struct {
+	ID                       string   `json:"id"`
+	Name                     string   `json:"name"`
+	Description              string   `json:"description"`
+	LatestVersion            string   `json:"latest_version"`
+	Dependencies             []string `json:"dependencies,omitempty"`
+	RequiredPrivileges       []string `json:"required_privileges,omitempty"`
+	EstimatedCompressedBytes uint64   `json:"estimated_compressed_bytes,string"`
+	EstimatedUnpackedBytes   uint64   `json:"estimated_unpacked_bytes,string"`
+	ResourceEstimateSource   string   `json:"resource_estimate_source"`
+}
+
+// ModuleInstallation is the durable per-server module lifecycle record.
+type ModuleInstallation struct {
+	ServerID  ServerID    `json:"server_id"`
+	ModuleID  string      `json:"module_id"`
+	Version   string      `json:"version,omitempty"`
+	State     ModuleState `json:"state"`
+	Revision  uint64      `json:"revision,string"`
+	UpdatedAt time.Time   `json:"updated_at"`
+	Error     *Error      `json:"error,omitempty"`
+}
+
+func (m ModuleManifest) Validate() error {
+	if m.Format != ModuleManifestFormat {
+		return errors.New("unsupported module manifest format")
+	}
+	if !safeContractIdentifier(m.ModuleID) {
+		return errors.New("module_id is invalid")
+	}
+	if m.ModuleVersion == "" || len(m.ModuleVersion) > 64 {
+		return errors.New("module_version is required")
+	}
+	if m.MinCore == "" {
+		return errors.New("min_core is required")
+	}
+	if _, ok := parseProtocolVersion(m.ProtocolMin); !ok {
+		return errors.New("protocol_min is invalid")
+	}
+	if _, ok := parseProtocolVersion(m.ProtocolMax); !ok {
+		return errors.New("protocol_max is invalid")
+	}
+	if m.OS == "" || m.Architecture == "" {
+		return errors.New("os and architecture are required")
+	}
+	if len(m.RequiredCapabilities) > 32 || len(m.Dependencies) > 32 || len(m.RequiredPrivileges) > 32 {
+		return errors.New("module manifest inventory exceeds limit")
+	}
+	if m.CompressedBytes == 0 || m.UnpackedBytes == 0 {
+		return errors.New("module manifest sizes are required")
+	}
+	if len(m.SHA256) != 64 {
+		return errors.New("module manifest sha256 is invalid")
+	}
+	if m.SigningKeyID == "" || len(m.SigningKeyID) > 128 {
+		return errors.New("signing_key_id is required")
+	}
+	if m.CreatedAt.IsZero() {
+		return errors.New("created_at is required")
+	}
+	return nil
+}
+
+var moduleStates = map[ModuleState]bool{
+	ModuleUnavailable: true, ModuleAvailable: true, ModuleDownloading: true,
+	ModuleVerifying: true, ModuleInstalling: true, ModuleInstalledDisabled: true,
+	ModuleEnabled: true, ModuleUpdating: true, ModuleRemoving: true, ModuleFailed: true,
+}
+
+func (i ModuleInstallation) Validate() error {
+	if i.ServerID == "" {
+		return errors.New("server_id is required")
+	}
+	if !safeContractIdentifier(i.ModuleID) {
+		return errors.New("module_id is invalid")
+	}
+	if !moduleStates[i.State] {
+		return errors.New("invalid module state")
+	}
+	if i.UpdatedAt.IsZero() {
+		return errors.New("updated_at is required")
+	}
+	return nil
+}
+
 type FleetResult[T any] struct {
 	Items     []T                `json:"items"`
 	Succeeded []ServerID         `json:"succeeded"`
