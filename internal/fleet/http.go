@@ -13,6 +13,7 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
@@ -30,6 +31,7 @@ type API struct {
 	alerts         http.Handler
 	traffic        http.Handler
 	modules        http.Handler
+	cpuControl     http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -62,6 +64,9 @@ type Options struct {
 	// install/enable/disable/remove lifecycle. Routes are unavailable (fall
 	// through to the monitoring 404) when this is nil.
 	ModuleService *modules.Service
+	// CPUControlService optionally owns cpu-controls preview/apply/revert.
+	// Routes are unavailable (fall through to the monitoring 404) when nil.
+	CPUControlService *cpucontrol.Service
 }
 
 func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Options) (*API, error) {
@@ -89,7 +94,11 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.ModuleService != nil {
 		moduleHandler = sessions.Middleware(options.ModuleService.Handler())
 	}
-	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	var cpuControlHandler http.Handler
+	if options.CPUControlService != nil {
+		cpuControlHandler = sessions.Middleware(options.CPUControlService.Handler())
+	}
+	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -125,6 +134,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
 		a.modules.ServeHTTP(w, r)
+		return
+	}
+	if a.cpuControl != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/cpu-policies") {
+		a.cpuControl.ServeHTTP(w, r)
 		return
 	}
 	a.monitoring.ServeHTTP(w, r)

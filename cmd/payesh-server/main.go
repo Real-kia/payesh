@@ -15,6 +15,7 @@ import (
 
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/fleet"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
@@ -137,8 +138,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configure module trust registry:", registryErr)
 			os.Exit(1)
 		}
-		moduleService := modules.NewService(&modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir()})
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService})
+		cpuManager := &cpucontrol.Manager{Store: store, FS: cpucontrol.FSCgroup{Root: cgroupRootDir()}}
+		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir()}
+		// Disabling cpu-controls must first revert its active policies
+		// (PLAN.md section 11); wiring this hook here, rather than inside
+		// internal/modules, keeps that package free of a cpucontrol import.
+		moduleManager.DeactivateHooks = map[string]func(context.Context, contracts.ServerID) error{
+			cpucontrol.ModuleID: cpuManager.RevertAllForServer,
+		}
+		moduleService := modules.NewService(moduleManager)
+		cpuControlService := cpucontrol.NewService(cpuManager)
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -245,6 +255,18 @@ func moduleRootDir() string {
 		return dir
 	}
 	return "/var/lib/payesh/modules"
+}
+
+// cgroupRootDir defaults to the conventional cgroup v2 mount point. It is
+// overridable for the same reason moduleRootDir is: this development host
+// has no real cgroupfs, so cpu-controls routes exist and can be exercised
+// (the file-format logic is real; see internal/cpucontrol), but nothing
+// here has been verified against actual kernel enforcement.
+func cgroupRootDir() string {
+	if dir := strings.TrimSpace(os.Getenv("PAYESH_CGROUP_ROOT")); dir != "" {
+		return dir
+	}
+	return "/sys/fs/cgroup"
 }
 
 // evaluateUnreachable is the liveness side of the package-05 ingestion seam.

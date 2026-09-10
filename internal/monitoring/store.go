@@ -1026,6 +1026,38 @@ CREATE TABLE IF NOT EXISTS module_lifecycle_requests (
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS module_lifecycle_requests_created ON module_lifecycle_requests(created_at);
+-- Shared control-policy record (package 08 CPU Controls today; package 09
+-- Bandwidth Controls reuses this same table/shape). One row per server/
+-- module/target: a second Apply for the same target is a revision-CAS
+-- update to the same row, never a duplicate policy.
+CREATE TABLE IF NOT EXISTS control_policies (
+  server_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  parameters_json TEXT NOT NULL DEFAULT '{}',
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  error_json TEXT,
+  PRIMARY KEY (server_id, module_id, target_kind, target_name),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS control_policies_server ON control_policies(server_id, state);
+CREATE TABLE IF NOT EXISTS control_policy_requests (
+  server_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (server_id, module_id, target_kind, target_name, idempotency_key),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS control_policy_requests_created ON control_policy_requests(created_at);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
