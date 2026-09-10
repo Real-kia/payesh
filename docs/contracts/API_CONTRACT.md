@@ -35,10 +35,17 @@ sample count, observed duration, extrema, weighted mean, and counter delta.
 Traffic periods include timezone, allowance, direction, counted bytes, and
 continuity. Logs support bounded history and a capped NDJSON live tail with
 source/cursor metadata. Alert history and maintenance windows are first-class
-resources. Module lifecycle jobs cover install, enable, disable, and remove;
-policy callers use preview, effective-state, apply, and revert operations.
-Update preflight reports per-machine eligibility before a selected rollout,
-while backup export/import and role-transition jobs retain recoverable history.
+resources. Update preflight reports per-machine eligibility before a selected
+rollout, while backup export/import and role-transition jobs retain
+recoverable history.
+
+Module install/enable/disable/remove (`POST /servers/{serverId}/modules/{moduleId}/...`)
+and CPU control preview/apply/revert (`POST /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/...`)
+are synchronous, bounded `idempotency_key` + `expected_revision` operations
+that return the resulting `ModuleInstallation`/`Policy` record directly, the
+same convention as traffic configuration below — not the generic async
+`Job`-wrapped, `policyId`-addressed contract this document originally
+sketched (see `docs/handoffs/06.md`/`08.md` for that reconciliation).
 
 Package-05 traffic configuration is `POST /servers/{serverId}/traffic` with a
 bounded `idempotency_key` and `expected_revision`. It accepts selected interface
