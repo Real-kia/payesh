@@ -1,11 +1,11 @@
 # Payesh memory
 
-Updated: 2026-09-09. Keep this file under roughly 500 words; revise instead of appending a transcript. Start with [plans/README.md](plans/README.md) for AI assignments; [PLAN.md](PLAN.md) is the full specification.
+Updated: 2026-09-10. Keep this file under roughly 500 words; revise instead of appending a transcript. Start with [plans/README.md](plans/README.md) for AI assignments; [PLAN.md](PLAN.md) is the full specification; [PROJECT_STATE.md](PROJECT_STATE.md) and [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) carry current implementation evidence — do not duplicate it here.
 
 ## Confirmed preferences and scope
 
 - Keep chat replies short; put extensive explanations in project documents.
-- Current authorization: package 02 UI/UX Checkpoint A was explicitly started on 2026-09-09 after package 01 foundation work. Continue only in the package order and scope requested; do not publish, deploy, install skills, or operate production systems.
+- Continue only in the package order and scope requested; do not publish, deploy, install skills, or operate production systems without asking.
 - Project: Payesh, open-source Linux VPS monitoring. Repo: https://github.com/Real-kia/payesh
 - Audience: VPS owners, including beginners, with one or multiple servers. GitHub popularity is a goal, not guaranteed.
 - Highest priority: low resource overhead, followed by simple setup/use and modern, polished, lightweight UI/charts.
@@ -33,7 +33,7 @@ Updated: 2026-09-09. Keep this file under roughly 500 words; revise instead of a
 ## Handoff state
 
 - PLAN.md contains competitor comparisons, design-skill workflow, interfaces, installation roles, controls, migration, updates, benchmarks and ordered milestones.
-- plans/ splits implementation into 11 packages plus mandatory shared context. Workers read shared context, their package, approved contracts and dependency handoffs; one lead integrates/reviews. Package 01/M0 is ready for stronger-model review; package 02 has a fixture-only Checkpoint A preview and packages 03–11 remain unstarted.
-- Package 01 foundation scaffold is ready for stronger-model review: fail-fast Go artifact targets; node-vs-hub metric contracts; typed module/hello/audit records; full bounded/authenticated OpenAPI surface; JCS/Ed25519 release format; protocol/data-model docs; fixtures; parsed contract checks; CI distro smoke matrix; npm lockfile; minimal Svelte shell; ownership ADR; and review-resolution record. Feature behavior remains unimplemented. No skill installation has been performed.
-- Package 02 preview supplies responsive light/dark onboarding, overview, and server detail fixtures with explicit unavailable/stale/loading/error states. It has no API/auth/live-data integration; see `docs/handoffs/02.md` and `design-system/payesh/MASTER.md`.
+- plans/ splits implementation into 11 packages plus mandatory shared context. Workers read shared context, their package, approved contracts and dependency handoffs; one lead integrates/reviews.
+- Status as of this update: package 01/M0 ready for stronger-model review; package 02 has a fixture-only Checkpoint A preview; packages 03–06 have Checkpoint A implemented, each with acceptance still pending (see per-package `docs/handoffs/*.md` and `docs/IMPLEMENTATION_STATUS.md` for exact gaps); packages 07–11 unstarted.
+- Repo git history starts fresh at this session (origin set to the GitHub URL above; not yet pushed — no GitHub auth in this environment).
 - Keep confirmed requirements distinct from defaults; consult the plan before changing scope.

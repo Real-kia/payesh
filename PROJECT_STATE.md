@@ -4,9 +4,15 @@ Updated: 2026-09-10
 
 ## Current milestone
 
-Package 05 (traffic allowances, alerts, and incidents) — Checkpoint A has
-completed its internal Critical/Major review and fix cycles. It is not yet
-accepted as the full package milestone because external acceptance work remains.
+Package 06 (signed optional-module framework) — Checkpoint A implemented:
+curated catalog, JCS/Ed25519 manifest trust verification, safe archive
+staging, atomic activation, an explicit install/activation-separated
+lifecycle state machine, durable per-server store, and browser routes. Not
+yet accepted: no real `payesh-privd` wiring, no provisioned production
+signing key, and only synthetic in-process archive fixtures tested. Package 05
+(traffic allowances, alerts, and incidents) Checkpoint A has completed its
+internal Critical/Major review and fix cycles but is likewise not yet accepted
+as the full package milestone because external acceptance work remains.
 
 ## Completed
 
@@ -69,6 +75,16 @@ accepted as the full package milestone because external acceptance work remains.
   are required before forwarded client addresses affect throttling.
 - Package 05 traffic is explicitly a host-side estimate, not provider billing;
   control-policy actions remain outside this package.
+- Package 06 never imports an optional module's implementation and never
+  accepts a request-provided download URL; only the hardcoded catalog names
+  eligible module IDs. A manifest's Ed25519 signature (over its RFC-8785-
+  subset canonical JSON) and its archive's declared size/SHA-256 are verified
+  before any byte is written to disk. Install and activation are separate
+  states; a completed install always lands on installed-disabled. Archive
+  extraction rejects every symlink/hardlink entry outright, all path
+  traversal/absolute paths, and any entry that would exceed the manifest's
+  declared unpacked size. Module lifecycle rows use the same compare-and-swap
+  revision and idempotency-key pattern as package-05 traffic configuration.
 
 ## Known risks / unrun acceptance work
 
@@ -84,18 +100,34 @@ accepted as the full package milestone because external acceptance work remains.
   operational condition, not silent replay weakening.
 - Full package-03/package-04 acceptance gates and real browser/assistive-tech
   validation remain outstanding.
+- Package 06 has no real `payesh-privd` wiring yet (that binary is still an
+  unimplemented stub), so Enable/Disable only flip durable state today — they
+  do not start/stop a real process or tear down kernel rules. No production
+  module-signing key is provisioned (the server's trust registry is empty by
+  default, so installs fail closed on "unknown signing key" until an operator
+  configures one). Only synthetic in-process archive fixtures were tested, not
+  a real signed official module release on a real Linux host. Audit-event
+  persistence does not exist for any package yet.
 
 ## Verification
 
 The current workspace passes `go test ./...`, `go test -race ./...`, `go vet
 ./...`, `make lint`, `make build`, `make build-matrix`, `make web-check`, and
 `make contract-check`, including the final disabled-rule, forecast-continuity,
-retirement-authority, effective-at, and delayed-period identity regressions.
-In this sandbox, Go commands use `GOCACHE=/private/tmp/payesh-go-cache`.
+retirement-authority, effective-at, and delayed-period identity regressions,
+plus the new `internal/trust` and `internal/modules` suites (JCS
+canonicalization, Ed25519 verification, archive-safety, lifecycle-transition,
+and manager/HTTP integration tests). In this sandbox, Go commands use
+`GOCACHE=/private/tmp/payesh-go-cache`.
 
 ## Next milestone
 
-Complete the fresh final Part 5 review, then request package acceptance with
-the external Linux/provider/observer/notification and soak evidence called out
-above. After acceptance, connect the remaining real-data/external-observer
-seams without expanding traffic into automatic control policy.
+For package 06: wire real `payesh-privd module.invoke` actions for
+enable/disable/health-check, provision a production release-signing key, add
+durable audit-event persistence, and run acceptance tests against real signed
+module release artifacts on a disposable Linux host. For package 05: request
+package acceptance with the external Linux/provider/observer/notification and
+soak evidence called out above. After both, connect the remaining
+real-data/external-observer seams (and packages 07–09) without expanding
+traffic into automatic control policy ahead of an explicit owner-selected
+policy.

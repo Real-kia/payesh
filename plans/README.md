@@ -1,10 +1,10 @@
 # Payesh build packages — start here
 
 Planning baseline: 2026-09-08. Package 02/M1 has a fixture-only preview checkpoint;
-package 03/M2 has **Checkpoint A implemented** with acceptance pending; packages 04–11
-remain **not started**. Package 01/M0 foundation scaffolding is **ready for review**;
-these files and the status record do not claim that the product or finalized contracts
-are accepted.
+packages 03/M2, 04, 05, and 06 have **Checkpoint A implemented** with acceptance
+pending; packages 07–11 remain **not started**. Package 01/M0 foundation scaffolding
+is **ready for review**; these files and the status record do not claim that the
+product or finalized contracts are accepted.
 
 ## One AI or several?
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"net"
@@ -15,8 +16,10 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/fleet"
+	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
+	"github.com/Real-kia/payesh/internal/trust"
 )
 
 func main() {
@@ -129,7 +132,13 @@ func main() {
 		// Traffic-generated alerts must share the same durable state machine and
 		// delivery configuration as the rest of the server's alerts.
 		trafficService.Alerts = alertService.Engine
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService})
+		moduleRegistry, registryErr := moduleTrustRegistryFromEnvironment()
+		if registryErr != nil {
+			fmt.Fprintln(os.Stderr, "configure module trust registry:", registryErr)
+			os.Exit(1)
+		}
+		moduleService := modules.NewService(&modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir()})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -208,6 +217,34 @@ func alertDestinationsFromEnvironment() []alerts.NotificationDestination {
 		destinations = append(destinations, alerts.NotificationDestination{Kind: "telegram", URL: apiURL, Secret: token, ChatID: os.Getenv("PAYESH_ALERT_TELEGRAM_CHAT_ID"), Enabled: true})
 	}
 	return destinations
+}
+
+// moduleTrustRegistryFromEnvironment builds the pinned module-signing trust
+// anchor from PAYESH_MODULE_TRUST_KEY_ID/PAYESH_MODULE_TRUST_PUBLIC_KEY_B64
+// (a raw unpadded-base64url Ed25519 public key). No production release-
+// signing key is committed to this repository or generated here (see
+// docs/contracts/RELEASE_FORMAT.md); an empty registry is intentional and
+// safe: the catalog and status routes keep working, while every install
+// request fails closed with "unknown signing key" until an operator
+// provisions a real anchor.
+func moduleTrustRegistryFromEnvironment() (*trust.Registry, error) {
+	keyID := strings.TrimSpace(os.Getenv("PAYESH_MODULE_TRUST_KEY_ID"))
+	publicKeyB64 := strings.TrimSpace(os.Getenv("PAYESH_MODULE_TRUST_PUBLIC_KEY_B64"))
+	if keyID == "" || publicKeyB64 == "" {
+		return trust.NewRegistry()
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(publicKeyB64)
+	if err != nil {
+		return nil, fmt.Errorf("PAYESH_MODULE_TRUST_PUBLIC_KEY_B64 is not valid unpadded base64url: %w", err)
+	}
+	return trust.NewRegistry(trust.Anchor{KeyID: keyID, PublicKey: publicKey})
+}
+
+func moduleRootDir() string {
+	if dir := strings.TrimSpace(os.Getenv("PAYESH_MODULE_ROOT")); dir != "" {
+		return dir
+	}
+	return "/var/lib/payesh/modules"
 }
 
 // evaluateUnreachable is the liveness side of the package-05 ingestion seam.
