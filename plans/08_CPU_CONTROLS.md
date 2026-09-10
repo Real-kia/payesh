@@ -1,6 +1,8 @@
 # 08 — CPU controls for safe workload targets
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: Checkpoint A implemented in the working tree (see `docs/handoffs/08.md`);
+real CPU-load enforcement on disposable Linux, the `payesh run` CLI
+workflow, and target discovery remain outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Hard; cgroup/privilege review.
 Master milestone: M5 module.
 

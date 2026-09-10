@@ -4,6 +4,16 @@ SQLite is owned by `payesh-server` and later local standalone storage. The agent
 build graph must not depend on SQLite. All timestamps are UTC RFC 3339 values;
 display and billing timezones are explicit settings.
 
+This is the target contract, not an implementation-status report — see
+`docs/IMPLEMENTATION_STATUS.md` for what actually exists today. As of this
+writing, `servers`, `metric_samples`, `rollups`, `traffic_periods`,
+`traffic_allowances`, `log_sources`, `log_entries`, `alert_rules`/`alert_states`/`alert_history`,
+`maintenance_windows`, `incidents`, `module_installations`, and
+`control_policies` are real SQLite tables (`internal/monitoring/store.go`
+and its `*_store.go` companions). `jobs` and `audit_events` are only wire
+contracts (`contracts.Job`, `contracts.AuditEvent`) with no backing table
+yet — no package has persisted either one.
+
 ## Entities
 
 | Entity | Identity and required semantics |

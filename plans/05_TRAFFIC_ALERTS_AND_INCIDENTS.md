@@ -1,6 +1,10 @@
 # 05 — Traffic allowances, alerts and incidents
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: Checkpoint A implemented in the working tree, with internal
+Critical/Major review and fix cycles complete (see `docs/handoffs/05.md`);
+provider-billing comparison, Linux traffic instrumentation, external outage
+observation, real notification endpoints, and resource soaks remain
+outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Medium–hard; time/accounting review.
 Master milestone: M4.
 

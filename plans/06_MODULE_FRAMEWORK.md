@@ -1,6 +1,8 @@
 # 06 — Signed optional-module framework
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: Checkpoint A implemented in the working tree (see `docs/handoffs/06.md`);
+real `payesh-privd` wiring, a provisioned production signing key, and
+Linux/real-archive acceptance remain outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Hard; supply-chain/privilege review.
 Master milestone: M5 foundation.
 

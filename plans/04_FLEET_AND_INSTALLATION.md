@@ -1,6 +1,8 @@
 # 04 — Fleet identity, transport and installation
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: Checkpoint A implemented in the working tree (see `docs/handoffs/04.md`);
+persistence, WebSocket framing, offline spool, renewal/recovery, SSH/direct
+installers, and Linux acceptance remain outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Hard; security review required.
 Master milestone: M3.
 
