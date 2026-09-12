@@ -26,6 +26,21 @@ func TestLoopbackListenAddress(t *testing.T) {
 	}
 }
 
+func TestEnvironmentBool(t *testing.T) {
+	t.Setenv("PAYESH_TEST_BOOL", "true")
+	if value, err := environmentBool("PAYESH_TEST_BOOL", false); err != nil || !value {
+		t.Fatalf("environment bool value=%t err=%v", value, err)
+	}
+	t.Setenv("PAYESH_TEST_BOOL", "not-a-bool")
+	if _, err := environmentBool("PAYESH_TEST_BOOL", false); err == nil {
+		t.Fatal("invalid environment boolean was accepted")
+	}
+	t.Setenv("PAYESH_TEST_BOOL", "")
+	if value, err := environmentBool("PAYESH_TEST_BOOL", true); err != nil || !value {
+		t.Fatalf("environment bool fallback=%t err=%v", value, err)
+	}
+}
+
 func TestNodeTransportConfigRequiresExplicitCompleteTLSConfiguration(t *testing.T) {
 	if config, err := newNodeTransportConfig("", "", ""); err != nil || config.Enabled() {
 		t.Fatalf("empty node transport should be disabled: config=%+v err=%v", config, err)

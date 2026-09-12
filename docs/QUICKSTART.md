@@ -41,6 +41,49 @@ resources require the configured bearer token or browser setup/session flow;
 do not expose this development listener publicly. Stop the processes with
 Ctrl-C. The SQLite database and identity file remain in the paths you chose.
 
+## Public HTTPS or no-domain access
+
+Keep the Payesh server on loopback and put an HTTPS proxy in front of it. The
+helper verifies DNS and occupied ports before making changes, installs Caddy
+using the host package manager, and lets Caddy obtain and renew the public
+certificate automatically:
+
+```sh
+sudo scripts/configure-public-access.sh \
+  --domain payesh.example.com --upstream 127.0.0.1:8787 --apply
+```
+
+The domain must already resolve to the server. The helper never stops an
+existing listener on ports 80 or 443. Run it without `--apply` for a dry run.
+
+A domain is optional. With no domain, the helper deliberately keeps Payesh on
+loopback and prints an SSH tunnel command. This avoids exposing login/session
+traffic over plain HTTP while still providing encrypted access:
+
+```sh
+scripts/configure-public-access.sh
+ssh -N -L 8787:127.0.0.1:8787 root@SERVER_IP
+```
+
+Then open `http://127.0.0.1:8787` on the administrator workstation. The helper
+warns that unattended browser access and publicly trusted TLS require a
+domain.
+
+## Notification acceptance
+
+Webhook and Telegram credentials remain environment-only. An operator can
+send one synthetic Payesh alert through the production notifier with:
+
+```sh
+PAYESH_ALERT_WEBHOOK_URL=https://hooks.example.com/payesh \
+PAYESH_ALERT_WEBHOOK_SECRET='replace-me' \
+go run ./scripts/notification-acceptance
+```
+
+For Telegram, set `PAYESH_ALERT_TELEGRAM_TOKEN` and
+`PAYESH_ALERT_TELEGRAM_CHAT_ID`. Rotate any test token shared through chat or
+logs after acceptance.
+
 ## Build a local release bundle
 
 After installing the pinned web dependencies, `make web-check` produces the
