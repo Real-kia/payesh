@@ -38,6 +38,9 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
 - The acceptance tooling now measures bounded isolated-path throughput and
   durable-ledger sample overshoot. Collector-driven kernel quota overshoot,
   whole-process resource overhead, and 24-hour retention remain unmeasured.
+  A precision-safe provider comparison command now exists, but acceptance still
+  requires an authoritative provider total covering the exact same period,
+  interfaces, direction, reset boundary, and byte units.
   `scripts/resource-benchmark.sh` now provides bounded, process-tree-scoped
   JSON/TSV CPU, RSS, and (on Linux) block-I/O evidence, but representative
   30-minute and 24-hour workloads still need to be run. The disposable Ubuntu

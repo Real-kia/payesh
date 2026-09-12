@@ -13,6 +13,7 @@ authorized owner performs the external Ed25519 signing step.
 - [Update and recovery](docs/UPDATE_AND_RECOVERY.md)
 - [Uninstall and detachment](docs/UNINSTALL.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Provider billing comparison](docs/BILLING_COMPARISON.md)
 - [Contributing and release preparation](docs/CONTRIBUTING.md)
 - [Linux support matrix](docs/support/LINUX_MATRIX.md)
 - [Release format](docs/contracts/RELEASE_FORMAT.md)
