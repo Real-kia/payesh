@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,6 +154,146 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 			t.Fatalf("node %s durable samples=%+v", id, page.Samples)
 		}
 	}
+}
+
+// TestAgentRenewsAndDeliversAction exercises the live websocket behavior that
+// unit tests cannot prove: an authenticated node renews and atomically persists
+// its identity, reconnects after predecessor revocation, then receives and
+// completes a durable typed action. The action handler is deliberately a
+// side-effect-free no-op.
+func TestAgentRenewsAndDeliversAction(t *testing.T) {
+	if os.Getenv("PAYESH_LIVE_TRANSPORT_ACCEPTANCE") != "1" {
+		t.Skip("set PAYESH_LIVE_TRANSPORT_ACCEPTANCE=1 to run the disposable TLS renewal/action acceptance")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Second)
+	store, err := monitoring.OpenStore(ctx, filepath.Join(t.TempDir(), "hub.db"), monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ca, err := NewCertificateAuthority(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := NewHub(ca, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := contracts.ServerID("server-renew-action-012345")
+	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "renew-action", Role: "node", Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics", "actions"}, ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := ca.IssueEnrollment(id, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentJob, created, err := store.CreateJob(ctx, contracts.Job{ID: "enroll-renew-action-01", Kind: "enrollment", State: contracts.JobQueued, IdempotencyKey: "enroll-renew-action-key", TargetServerID: id, ExpiresAt: now.Add(time.Minute)}, "renew-action-enrollment", now)
+	if err != nil || !created {
+		t.Fatalf("create enrollment job: created=%v err=%v", created, err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/node/bootstrap/v1", BootstrapWebSocketHandler(hub))
+	mux.Handle("/node/v1", WebSocketHandler(hub))
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert, serverKey, err := disposableServerCertificate()
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	serverTLSCert, err := tls.X509KeyPair(serverCert, serverKey)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	tlsListener := tls.NewListener(listener, &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequestClientCert, Certificates: []tls.Certificate{serverTLSCert}})
+	server := &http.Server{Handler: mux}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(tlsListener) }()
+	defer func() {
+		_ = server.Close()
+		_ = <-serveDone
+	}()
+	parsedServerCert, _ := x509.ParseCertificate(serverTLSCert.Certificate[0])
+	serverTrust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: parsedServerCert.Raw})
+	endpoint := "wss://" + tlsListener.Addr().String()
+	identity, err := BootstrapAgent(ctx, endpoint+"/node/bootstrap/v1", enrollmentJob.ID, enrollment.Token, serverTrust, nil)
+	if err != nil {
+		t.Fatal("bootstrap:", err)
+	}
+	oldFingerprint := identity.Fingerprint
+	// Only the node-side scheduling hint is shortened. The authenticated
+	// certificate remains CA-issued and valid, while the replacement retains
+	// its normal validity and therefore does not create a renewal loop.
+	identity.NotAfter = now.Add(-time.Second)
+	identityPath := filepath.Join(t.TempDir(), "node-identity.json")
+	if err := SaveNodeIdentity(identityPath, identity); err != nil {
+		t.Fatal(err)
+	}
+	spool, err := OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), MaxSpoolBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actionCalls atomic.Int32
+	client := &AgentClient{
+		URL: endpoint + "/node/v1", Identity: identity, IdentityPath: identityPath, TrustPEM: serverTrust, Spool: spool,
+		Hello: contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics", "actions"}},
+		ActionHandler: func(_ context.Context, request contracts.ActionRequest) contracts.ActionResponse {
+			actionCalls.Add(1)
+			return contracts.ActionResponse{RequestID: request.RequestID, Accepted: true, Revision: 1}
+		},
+	}
+	batches := make(chan contracts.SampleBatch)
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- client.Run(ctx, batches) }()
+
+	var renewed NodeIdentity
+	for ctx.Err() == nil {
+		renewed, err = LoadNodeIdentity(identityPath)
+		if err == nil && renewed.Fingerprint != oldFingerprint {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("timed out waiting for persisted renewal")
+	}
+	if _, err := ca.Verify(identity.CertificatePEM, time.Now().UTC()); err == nil || err.Error() != "certificate_revoked" {
+		t.Fatalf("predecessor certificate verification error=%v", err)
+	}
+	if got, err := ca.Verify(renewed.CertificatePEM, time.Now().UTC()); err != nil || got != id {
+		t.Fatalf("replacement certificate verification id=%s err=%v", got, err)
+	}
+
+	actionNow := time.Now().UTC()
+	request := contracts.ActionRequest{Protocol: contracts.HelperProtocol, RequestID: "request-renew-action-01", Action: "acceptance.noop", Target: "acceptance", TargetServerID: id, IdempotencyKey: "action-renew-idem-01", ExpectedRevision: 0, Deadline: actionNow.Add(5 * time.Second), Arguments: []byte(`{"mode":"no-op"}`)}
+	job := contracts.Job{ID: "action-renew-delivery-01", Kind: "action", State: contracts.JobQueued, IdempotencyKey: request.IdempotencyKey, TargetServerID: id, ExpiresAt: request.Deadline}
+	if _, created, err := hub.CreateActionJob(ctx, job, request, "renew-action-request", actionNow); err != nil || !created {
+		t.Fatalf("create action job: created=%v err=%v", created, err)
+	}
+	for ctx.Err() == nil {
+		completed, found, getErr := store.GetJob(ctx, job.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if found && completed.State == contracts.JobSucceeded {
+			if completed.Result == nil || !completed.Result.Accepted || actionCalls.Load() != 1 {
+				t.Fatalf("action result=%+v calls=%d", completed.Result, actionCalls.Load())
+			}
+			cancel()
+			if runErr := <-agentDone; runErr != nil {
+				t.Fatal("agent shutdown:", runErr)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for durable action completion")
 }
 
 func disposableServerCertificate() ([]byte, []byte, error) {

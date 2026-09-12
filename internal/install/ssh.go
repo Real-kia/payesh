@@ -57,9 +57,10 @@ type SSHHostKey struct {
 }
 
 type SSHEndpoint struct {
-	Host string
-	Port int
-	User string
+	Host        string
+	Port        int
+	User        string
+	BindAddress string
 }
 
 // SSHTransport is the only side-effecting dependency of the orchestrator.
@@ -153,6 +154,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("validate credentials", err)
 	}
 	artifactPaths := make(map[string]string, len(requiredArtifacts(opts.Role)))
+	artifactDigests := make(map[string]string, len(requiredArtifacts(opts.Role)))
 	if err := opts.VerifyArtifact("payesh-install", opts.InstallerPath); err != nil {
 		return result, sshStage("verify installer", errors.New("installer verification failed"))
 	}
@@ -167,7 +169,12 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		if verifyErr := opts.VerifyArtifact(name, path); verifyErr != nil {
 			return result, sshStage("verify artifact", errors.New("artifact verification failed"))
 		}
+		digest, digestErr := ArtifactDigest(path, name == "web-assets")
+		if digestErr != nil {
+			return result, sshStage("verify artifact", errors.New("artifact digest failed"))
+		}
 		artifactPaths[name] = path
+		artifactDigests[name] = digest
 	}
 	transport := opts.Transport
 	if transport == nil {
@@ -247,6 +254,9 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	}
 
 	installCommand := shellQuote(remoteDir+"/payesh-install") + " --install --role " + shellQuote(opts.Role) + " --artifact-dir " + shellQuote(remoteDir)
+	for _, name := range requiredArtifacts(opts.Role) {
+		installCommand += " --artifact-sha256 " + shellQuote(name+"="+artifactDigests[name])
+	}
 	if opts.Start {
 		installCommand += " --start"
 	}
@@ -291,6 +301,9 @@ func validateSSHTarget(endpoint SSHEndpoint) error {
 		}
 	}
 	if endpoint.Port < 1 || endpoint.Port > 65535 || endpoint.User == "" || strings.ContainsAny(endpoint.User, " \t\r\n/'`$") {
+		return ErrSSHInvalidTarget
+	}
+	if endpoint.BindAddress != "" && net.ParseIP(endpoint.BindAddress) == nil {
 		return ErrSSHInvalidTarget
 	}
 	return nil
@@ -540,6 +553,22 @@ type OpenSSHTransport struct {
 }
 
 func (OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHostKey, error) {
+	if endpoint.BindAddress != "" {
+		known, err := os.CreateTemp("", ".payesh-keyscan-")
+		if err != nil {
+			return nil, errors.New("prepare bound host-key scan")
+		}
+		knownPath := known.Name()
+		_ = known.Close()
+		defer os.Remove(knownPath)
+		args := []string{"-b", endpoint.BindAddress, "-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "PreferredAuthentications=none", "-o", "ConnectTimeout=10", "-o", "UserKnownHostsFile=" + knownPath, "-o", "StrictHostKeyChecking=accept-new", "--", endpoint.User + "@" + endpoint.Host, "exit"}
+		_, _ = runCommand(ctx, "ssh", args, nil, nil)
+		body, readErr := os.ReadFile(knownPath)
+		if readErr != nil || len(bytes.TrimSpace(body)) == 0 {
+			return nil, errors.New("bound SSH host-key scan failed")
+		}
+		return ParseSSHKeyscan(endpoint.Host, endpoint.Port, body)
+	}
 	args := []string{"-T", "10", "-p", strconv.Itoa(endpoint.Port), endpoint.Host}
 	out, err := runCommand(ctx, "ssh-keyscan", args, nil, nil)
 	if err != nil {
@@ -555,11 +584,34 @@ func (t OpenSSHTransport) Upload(ctx context.Context, endpoint SSHEndpoint, know
 	if destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination || strings.HasPrefix(filepath.Base(destination), "-") {
 		return errors.New("unsafe SCP destination path")
 	}
+	// Prefer rsync when installed on both endpoints. It uses an atomic temporary
+	// destination and reliably closes on provider SFTP implementations that can
+	// leave a completed SCP transfer waiting forever. A failed/unavailable
+	// rsync attempt falls back to the universally available SCP path.
+	if _, lookErr := exec.LookPath("rsync"); lookErr == nil {
+		args := t.rsyncArgs(endpoint, knownHosts, source, destination, recursive)
+		if _, rsyncErr := t.runAuthCommand(ctx, "rsync", args, auth, nil); rsyncErr == nil {
+			return nil
+		}
+	}
 	args := t.scpArgs(endpoint, knownHosts, source, destination, recursive)
 	if _, err := t.runAuthCommand(ctx, "scp", args, auth, nil); err != nil {
 		return errors.New("SCP transfer failed")
 	}
 	return nil
+}
+
+func (t OpenSSHTransport) rsyncArgs(endpoint SSHEndpoint, knownHosts, source, destination string, recursive bool) []string {
+	sshCommand := "ssh -p " + strconv.Itoa(endpoint.Port) + " -o BatchMode=yes -o ConnectTimeout=" + t.timeout() + " -o UserKnownHostsFile=" + shellQuote(knownHosts) + " -o StrictHostKeyChecking=yes"
+	if endpoint.BindAddress != "" {
+		sshCommand += " -b " + endpoint.BindAddress
+	}
+	args := []string{"--archive", "--compress", "--timeout=120", "--rsh=" + sshCommand, "--"}
+	if recursive {
+		source = strings.TrimRight(source, string(filepath.Separator)) + string(filepath.Separator)
+		destination = strings.TrimRight(destination, "/") + "/"
+	}
+	return append(args, source, endpoint.User+"@"+endpoint.Host+":"+destination)
 }
 
 func (t OpenSSHTransport) Run(ctx context.Context, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
@@ -568,11 +620,23 @@ func (t OpenSSHTransport) Run(ctx context.Context, endpoint SSHEndpoint, knownHo
 }
 
 func (t OpenSSHTransport) sshArgs(endpoint SSHEndpoint, knownHosts, command string) []string {
-	return []string{"-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes", "--", endpoint.User + "@" + endpoint.Host, command}
+	args := []string{"-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	if endpoint.BindAddress != "" {
+		args = append(args, "-b", endpoint.BindAddress)
+	}
+	return append(args, "--", endpoint.User+"@"+endpoint.Host, command)
 }
 
 func (t OpenSSHTransport) scpArgs(endpoint SSHEndpoint, knownHosts, source, destination string, recursive bool) []string {
-	args := []string{"-P", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	// Force the legacy SCP wire protocol. Some older/provider-patched SFTP
+	// servers receive the complete file but never close the subsystem, leaving
+	// automation blocked until its context expires. Source and destination are
+	// independently validated and the destination is a Payesh-owned absolute
+	// staging path, so this does not reintroduce remote shell expansion.
+	args := []string{"-O", "-C", "-P", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	if endpoint.BindAddress != "" {
+		args = append(args, "-o", "BindAddress="+endpoint.BindAddress)
+	}
 	if recursive {
 		args = append(args, "-r")
 	}

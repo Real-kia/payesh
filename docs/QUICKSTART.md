@@ -119,3 +119,11 @@ exercise first install, artifact replacement, failed-verification recovery,
 restart/resume state, and safe uninstall with and without explicit data
 removal. It does not modify `/`, systemd, OpenRC, or a real host. Live-host
 acceptance still requires a disposable supported Linux machine.
+
+For maintainers, `TestLiveSSHInstall` is an opt-in disposable-host gate. It
+requires `PAYESH_LIVE_SSH_INSTALL=1`, target/user/key, an explicitly confirmed
+host-key fingerprint, and a directory of already verified role artifacts. Set
+`PAYESH_SSH_BIND_ADDRESS` when a VPN or multi-interface workstation must select
+the SSH source address. The orchestrator re-hashes every transferred artifact
+on the target before installation; it never accepts an unsigned release merely
+because this acceptance gate uses locally built inputs.
