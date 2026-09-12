@@ -27,6 +27,20 @@ The signature covers those exact canonical JSON bytes. Verification rejects
 unknown key IDs, expired/revoked keys, malformed detached signatures, mismatched
 hashes/sizes, unsupported OS/architecture, unsafe archive paths (including
 symlink escapes), and oversized extraction.
+
+## Offline release signing and validation
+
+`make release-package` intentionally emits an unsigned bundle with
+`signing_key_id=unavailable-local`. An authorized operator may sign that exact
+bundle with `make release-sign RELEASE_DIR=... RELEASE_SIGNING_KEY=/absolute/path/to/private.key RELEASE_SIGNING_KEY_ID=release-2026`.
+The signer accepts an operator-owned Ed25519 seed/private-key file (raw, hex,
+or base64), requires a regular owner-only file, refuses symlinked inputs and
+an existing `.sig`, updates the key ID and manifest atomically, and writes the
+detached signature without a trailing newline. It never generates, stores, or
+prints private key material. The corresponding verifier invocation must pass
+the explicit public-key anchor and matching key ID, for example:
+`make release-validate RELEASE_DIR=... RELEASE_PUBLIC_KEY=/path/to/release.pub RELEASE_SIGNING_KEY_ID=release-2026`.
+Unsigned local bundles remain valid for local byte-integrity checks only.
 URLs are informational until an authenticated transport fetches the exact
 manifest. Installers must not treat a checksum delivered beside an untrusted
 bootstrap script as independent authentication.

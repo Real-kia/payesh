@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -20,6 +23,45 @@ func TestLoopbackListenAddress(t *testing.T) {
 		if loopbackListenAddress(address) {
 			t.Fatalf("non-loopback address accepted: %s", address)
 		}
+	}
+}
+
+func TestNodeTransportConfigRequiresExplicitCompleteTLSConfiguration(t *testing.T) {
+	if config, err := newNodeTransportConfig("", "", ""); err != nil || config.Enabled() {
+		t.Fatalf("empty node transport should be disabled: config=%+v err=%v", config, err)
+	}
+	for _, values := range [][3]string{
+		{"127.0.0.1:9797", "", "/tmp/key"},
+		{"127.0.0.1:9797", "/tmp/cert", ""},
+		{"not-an-address", "/tmp/cert", "/tmp/key"},
+		{"", "/tmp/cert", "/tmp/key"},
+	} {
+		if _, err := newNodeTransportConfig(values[0], values[1], values[2]); err == nil {
+			t.Fatalf("accepted unsafe node transport config: %q", values)
+		}
+	}
+	config, err := newNodeTransportConfig("127.0.0.1:9797", "/tmp/cert", "/tmp/key")
+	if err != nil || !config.Enabled() || config.CertFile != "/tmp/cert" || config.KeyFile != "/tmp/key" {
+		t.Fatalf("valid node transport config rejected: config=%+v err=%v", config, err)
+	}
+}
+
+func TestNodeTransportTLSAllowsBootstrapHandshakeButRequiresRouteAuth(t *testing.T) {
+	config := nodeTransportTLSConfig(tls.Certificate{})
+	if config.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("node transport allowed pre-TLS 1.3 handshake: %v", config.MinVersion)
+	}
+	if config.ClientAuth != tls.RequestClientCert {
+		t.Fatalf("node transport must permit bootstrap handshake with route-level auth, got %v", config.ClientAuth)
+	}
+}
+
+func TestUnavailableCPUServiceFailsClosed(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/servers/server-local-0001/cpu-policies/service/svc/apply", nil)
+	unavailableCPUService{}.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", recorder.Code)
 	}
 }
 

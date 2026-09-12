@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+name="Payesh CPU Controls module"
+command="${PAYESH_CPU_BINARY}"
+command_args="--db /var/lib/payesh/payesh.db --server-id ${PAYESH_SERVER_ID} --state-dir /var/lib/payesh/cpu-controls/${PAYESH_SERVER_ID} --socket /run/payesh/cpu-controls.sock ${PAYESH_CPU_MODULE_ARGS}"
+command_user="root:payesh"
+command_background="yes"
+pidfile="/run/payesh-cpu-controls.pid"
+output_log="/var/log/payesh/cpu-controls.log"
+error_log="/var/log/payesh/cpu-controls.log"
+
+depend() {
+	need net
+	after payesh-server
+}
+
+start_pre() {
+	if [ -z "${PAYESH_CPU_BINARY}" ] || [ -z "${PAYESH_SERVER_ID}" ]; then
+		eerror "PAYESH_CPU_BINARY and PAYESH_SERVER_ID must be set in /etc/conf.d/payesh-cpu-controls"
+		return 1
+	fi
+	checkpath --directory --mode 0700 --owner root:root "/var/lib/payesh/cpu-controls/${PAYESH_SERVER_ID}"
+	checkpath --directory --mode 0750 --owner root:payesh /run/payesh
+	checkpath --directory --mode 0750 --owner root:root /var/log/payesh
+}

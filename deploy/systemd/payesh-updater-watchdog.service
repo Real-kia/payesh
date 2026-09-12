@@ -1,0 +1,20 @@
+[Unit]
+Description=Payesh independent update recovery watchdog
+After=local-fs.target
+Before=payesh-server.service payesh-agent.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/payesh-updater-watchdog --journal /var/lib/payesh/update/journal.json
+User=root
+Group=root
+Restart=always
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh/update /opt/payesh/releases
+
+[Install]
+WantedBy=multi-user.target

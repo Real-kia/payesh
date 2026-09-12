@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
@@ -100,6 +101,20 @@ func buildModuleInstallation(serverID contracts.ServerID, moduleID, version, sta
 // ErrModuleRevisionConflict rather than silently reordering two concurrent
 // lifecycle requests for the same module.
 func (s *Store) TransitionModuleInstallation(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64, next contracts.ModuleInstallation) (contracts.ModuleInstallation, error) {
+	return s.transitionModuleInstallation(ctx, serverID, moduleID, expectedRevision, next, "", "")
+}
+
+// TransitionModuleInstallationAudited performs the module CAS and its
+// redacted lifecycle audit insert in one SQLite transaction. A successful
+// state transition therefore cannot become durable without its audit record.
+func (s *Store) TransitionModuleInstallationAudited(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64, next contracts.ModuleInstallation, action, result string) (contracts.ModuleInstallation, error) {
+	if action == "" || result == "" {
+		return contracts.ModuleInstallation{}, errors.New("module audit action and result are required")
+	}
+	return s.transitionModuleInstallation(ctx, serverID, moduleID, expectedRevision, next, action, result)
+}
+
+func (s *Store) transitionModuleInstallation(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64, next contracts.ModuleInstallation, auditAction, auditResult string) (contracts.ModuleInstallation, error) {
 	if !validStoreServerID(serverID) {
 		return contracts.ModuleInstallation{}, errors.New("server_id must be a bounded URL-safe identifier")
 	}
@@ -123,7 +138,12 @@ func (s *Store) TransitionModuleInstallation(ctx context.Context, serverID contr
 		}
 		errorJSON = string(encoded)
 	}
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO module_installations(server_id,module_id,version,state,revision,updated_at,error_json) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(server_id,module_id) DO UPDATE SET version=excluded.version,state=excluded.state,revision=excluded.revision,updated_at=excluded.updated_at,error_json=excluded.error_json
 WHERE module_installations.revision=?`,
@@ -137,6 +157,19 @@ WHERE module_installations.revision=?`,
 	}
 	if changed != 1 {
 		return contracts.ModuleInstallation{}, ErrModuleRevisionConflict
+	}
+	if auditAction != "" {
+		auditID := fmt.Sprintf("module:%s:%s:%d", serverID, moduleID, next.Revision)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(id,occurred_at,actor_type,action,target_type,target_id,result,revision,redacted) VALUES(?,?,?,?,?,?,?,?,1)`,
+			auditID, FormatPersistedTime(next.UpdatedAt), "system", auditAction, "module", fmt.Sprintf("%s/%s", serverID, moduleID), auditResult, int64(next.Revision)); err != nil {
+			return contracts.ModuleInstallation{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE id IN (SELECT id FROM audit_events ORDER BY occurred_at DESC,id DESC LIMIT -1 OFFSET ?)`, MaxAuditEvents); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return contracts.ModuleInstallation{}, err
 	}
 	return next, nil
 }

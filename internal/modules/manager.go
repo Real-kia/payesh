@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
@@ -17,12 +18,28 @@ import (
 // check so a hung module process cannot block a lifecycle request forever.
 const DefaultHealthCheckTimeout = 10 * time.Second
 
+var ErrModuleExecutorUnavailable = errors.New("module_executor_unavailable")
+
 // HealthCheckFunc runs a module's own bounded self-check after staging. The
-// real payesh-privd module.invoke("health") call is not implemented yet (see
-// docs/handoffs/06.md); Manager accepts this as an injected function so a
-// production server can supply the real check once that seam exists, while
-// tests and interim deployments can supply a deterministic stub.
+// production server uses the typed payesh-privd module.invoke("health")
+// executor when configured; tests and controlled integrations may inject a
+// deterministic callback instead.
 type HealthCheckFunc func(ctx context.Context, moduleID, installDir string) error
+
+// ModuleInvocation is the narrow operation surface the server hands to the
+// privileged helper. Implementations must not turn these fields into shell
+// input; the in-tree privd client sends them as typed JSON.
+type ModuleInvocation struct {
+	ServerID      contracts.ServerID
+	ModuleID      string
+	ModuleVersion string
+	Operation     string
+	InstallDir    string
+}
+
+type ModuleExecutor interface {
+	Invoke(ctx context.Context, invocation ModuleInvocation) error
+}
 
 // Manager implements the package-06 lifecycle: eligibility, trust-verified
 // staging, atomic activation, and durable state transitions. It never
@@ -30,15 +47,31 @@ type HealthCheckFunc func(ctx context.Context, moduleID, installDir string) erro
 // download URL; RootDir only ever receives bytes this process already
 // verified against a catalog-approved manifest.
 type Manager struct {
-	Store       *monitoring.Store
-	Trust       *trust.Registry
-	RootDir     string
-	HealthCheck HealthCheckFunc
-	Now         func() time.Time
+	Store   *monitoring.Store
+	Trust   *trust.Registry
+	RootDir string
+	// LocalServerID binds direct filesystem work to this installation. An empty
+	// value fails closed; a fleet row's role label alone is not host identity.
+	LocalServerID contracts.ServerID
+	HealthCheck   HealthCheckFunc
+	Executor      ModuleExecutor
+	Now           func() time.Time
 	// DeactivateHooks lets a control module (e.g. cpu-controls) register a
 	// cleanup function run before Disable takes effect. Keyed by module ID;
 	// a module with no registered hook disables with no extra cleanup step.
 	DeactivateHooks map[string]func(ctx context.Context, serverID contracts.ServerID) error
+	// LifecycleMu is shared with control managers so enable/disable/remove and
+	// policy application cannot cross in the gap between host cleanup and the
+	// durable module-state transition.
+	LifecycleMu *sync.RWMutex
+}
+
+func (m *Manager) lockLifecycle() func() {
+	if m.LifecycleMu == nil {
+		return func() {}
+	}
+	m.LifecycleMu.Lock()
+	return m.LifecycleMu.Unlock
 }
 
 func (m *Manager) now() time.Time {
@@ -74,6 +107,8 @@ type InstallRequest struct {
 // rather than a silently stuck "installing" row. It intentionally lands on
 // installed-disabled, never enabled: activation is a separate Enable call.
 func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.ModuleInstallation, error) {
+	unlock := m.lockLifecycle()
+	defer unlock()
 	if req.ModuleID == "" || req.Manifest.ModuleID != req.ModuleID {
 		return contracts.ModuleInstallation{}, errors.New("modules: module_id must match the manifest")
 	}
@@ -90,6 +125,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 	}
 	if !found {
 		return contracts.ModuleInstallation{}, errors.New("modules: server not found")
+	}
+	if server.Role != "standalone" {
+		return contracts.ModuleInstallation{}, fmt.Errorf("%w: remote node installation is not configured", ErrModuleExecutorUnavailable)
+	}
+	if m.LocalServerID == "" || req.ServerID != m.LocalServerID {
+		return contracts.ModuleInstallation{}, fmt.Errorf("%w: target is not the configured local installation", ErrModuleExecutorUnavailable)
 	}
 	if eligibility := CheckEligibility(server, entry, req.Manifest); !eligibility.Eligible {
 		return contracts.ModuleInstallation{}, fmt.Errorf("modules: server is not eligible: %s", eligibility.Reason)
@@ -118,6 +159,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		}
 		return contracts.ModuleInstallation{}, fmt.Errorf("modules: manifest verification failed: %w", verifyErr)
 	}
+	if policyErr := validateManifestPolicy(req.Manifest, entry, server, m.now()); policyErr != nil {
+		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyFailed, "", req.Manifest.ModuleVersion, wireError("manifest_policy_failed", policyErr)); failErr != nil {
+			return contracts.ModuleInstallation{}, failErr
+		}
+		return contracts.ModuleInstallation{}, policyErr
+	}
 
 	installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, EventInstallStart, "", req.Manifest.ModuleVersion, nil)
 	if err != nil {
@@ -145,7 +192,16 @@ func (m *Manager) verifyManifest(req InstallRequest) error {
 }
 
 func (m *Manager) stageAndActivate(ctx context.Context, req InstallRequest, staged, active string) error {
-	if err := StageArchive(req.Archive, req.Manifest.CompressedBytes, req.Manifest.UnpackedBytes, req.Manifest.SHA256, staged); err != nil {
+	check := m.HealthCheck
+	if check == nil {
+		if m.Executor == nil {
+			return fmt.Errorf("%w: privileged module health check is not configured", ErrModuleExecutorUnavailable)
+		}
+		check = func(checkCtx context.Context, moduleID, installDir string) error {
+			return m.Executor.Invoke(checkCtx, ModuleInvocation{ServerID: req.ServerID, ModuleID: moduleID, ModuleVersion: req.Manifest.ModuleVersion, Operation: "health", InstallDir: installDir})
+		}
+	}
+	if err := StageArchive(req.Archive, req.Manifest.CompressedBytes, req.Manifest.UnpackedBytes, req.Manifest.SHA256, staged, "bin/"+req.ModuleID); err != nil {
 		return err
 	}
 	previousBackup, err := ActivateAtomic(staged, active)
@@ -153,32 +209,55 @@ func (m *Manager) stageAndActivate(ctx context.Context, req InstallRequest, stag
 		os.RemoveAll(staged)
 		return err
 	}
-	check := m.HealthCheck
-	if check == nil {
-		check = func(context.Context, string, string) error { return nil }
-	}
 	healthCtx, cancel := context.WithTimeout(ctx, DefaultHealthCheckTimeout)
 	defer cancel()
 	if err := check(healthCtx, req.ModuleID, active); err != nil {
 		// A failed health check is not success. Roll back to whatever was
 		// active before, mirroring the release-update recovery contract.
-		os.RemoveAll(active)
+		if removeErr := os.RemoveAll(active); removeErr != nil {
+			return fmt.Errorf("modules: health check failed (%v) and failed release could not be removed: %w", err, removeErr)
+		}
 		if previousBackup != "" {
-			os.Rename(previousBackup, active)
+			if restoreErr := os.Rename(previousBackup, active); restoreErr != nil {
+				return fmt.Errorf("modules: health check failed (%v) and previous release could not be restored: %w", err, restoreErr)
+			}
 		}
 		return fmt.Errorf("modules: health check failed: %w", err)
 	}
 	if previousBackup != "" {
-		os.RemoveAll(previousBackup)
+		if err := os.RemoveAll(previousBackup); err != nil {
+			return fmt.Errorf("modules: installed release is healthy but previous release cleanup failed: %w", err)
+		}
 	}
 	return nil
 }
 
-// Enable activates an installed-disabled module. It does not itself start
-// any kernel/background work yet — that hook is the payesh-privd
-// module.invoke wiring left for the next integration step (docs/handoffs/06.md).
+// Enable activates an installed-disabled module through the privileged
+// executor, then records the durable state transition. A failed helper call
+// leaves the module installed-disabled so it can be retried safely.
 func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
-	return m.simpleTransition(ctx, serverID, moduleID, expectedRevision, EventEnable)
+	unlock := m.lockLifecycle()
+	defer unlock()
+	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
+	if err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	if current.Revision != expectedRevision {
+		return contracts.ModuleInstallation{}, monitoring.ErrModuleRevisionConflict
+	}
+	if _, err := NextState(current.State, EventEnable, ""); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	if m.Executor == nil {
+		return contracts.ModuleInstallation{}, fmt.Errorf("%w: privileged module executor is not configured", ErrModuleExecutorUnavailable)
+	}
+	if err := m.Executor.Invoke(ctx, ModuleInvocation{ServerID: serverID, ModuleID: moduleID, ModuleVersion: current.Version, Operation: "enable", InstallDir: m.installDir(serverID, moduleID)}); err != nil {
+		return contracts.ModuleInstallation{}, fmt.Errorf("modules: enable helper call failed: %w", err)
+	}
+	return m.advance(ctx, serverID, moduleID, current, EventEnable, "", current.Version, nil)
 }
 
 // Disable deactivates an enabled module back to installed-disabled. If a
@@ -188,15 +267,39 @@ func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, modul
 // rather than reporting a false success — the caller can retry once the
 // underlying problem (e.g. a control policy that failed to revert) is fixed.
 func (m *Manager) Disable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
+	unlock := m.lockLifecycle()
+	defer unlock()
+	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
+	if err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+	if current.Revision != expectedRevision {
+		return contracts.ModuleInstallation{}, monitoring.ErrModuleRevisionConflict
+	}
+	if _, err := NextState(current.State, EventDisable, ""); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
 	if hook, ok := m.DeactivateHooks[moduleID]; ok && hook != nil {
 		if err := hook(ctx, serverID); err != nil {
 			return contracts.ModuleInstallation{}, fmt.Errorf("modules: cleanup before disable failed: %w", err)
 		}
 	}
+	if m.Executor == nil {
+		return contracts.ModuleInstallation{}, fmt.Errorf("%w: privileged module executor is not configured", ErrModuleExecutorUnavailable)
+	}
+	if err := m.Executor.Invoke(ctx, ModuleInvocation{ServerID: serverID, ModuleID: moduleID, ModuleVersion: current.Version, Operation: "disable", InstallDir: m.installDir(serverID, moduleID)}); err != nil {
+		return contracts.ModuleInstallation{}, fmt.Errorf("modules: disable helper call failed: %w", err)
+	}
 	return m.simpleTransition(ctx, serverID, moduleID, expectedRevision, EventDisable)
 }
 
 func (m *Manager) simpleTransition(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64, event Event) (contracts.ModuleInstallation, error) {
+	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
 	if err != nil {
 		return contracts.ModuleInstallation{}, err
@@ -212,6 +315,11 @@ func (m *Manager) simpleTransition(ctx context.Context, serverID contracts.Serve
 // already failed: disable first stops userspace work and reverts active
 // policies, which is enforced by the lifecycle table, not by this method.
 func (m *Manager) Remove(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
+	unlock := m.lockLifecycle()
+	defer unlock()
+	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
 	if err != nil {
 		return contracts.ModuleInstallation{}, err
@@ -236,6 +344,23 @@ func (m *Manager) Remove(ctx context.Context, serverID contracts.ServerID, modul
 	return m.advance(ctx, serverID, moduleID, removing, EventRemoveOK, "", "", nil)
 }
 
+func (m *Manager) ensureLocalServer(ctx context.Context, serverID contracts.ServerID) error {
+	server, found, err := m.Store.GetServer(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("modules: server not found")
+	}
+	if server.Role != "standalone" {
+		return fmt.Errorf("%w: remote node execution is not configured", ErrModuleExecutorUnavailable)
+	}
+	if m.LocalServerID == "" || serverID != m.LocalServerID {
+		return fmt.Errorf("%w: target is not the configured local installation", ErrModuleExecutorUnavailable)
+	}
+	return nil
+}
+
 // advance validates the transition, then persists it with the store's own
 // CAS so a concurrent lifecycle request for the same module cannot silently
 // interleave with this one.
@@ -244,9 +369,13 @@ func (m *Manager) advance(ctx context.Context, serverID contracts.ServerID, modu
 	if err != nil {
 		return contracts.ModuleInstallation{}, err
 	}
-	return m.Store.TransitionModuleInstallation(ctx, serverID, moduleID, current.Revision, contracts.ModuleInstallation{
+	result := "success"
+	if next == contracts.ModuleFailed {
+		result = "failure"
+	}
+	return m.Store.TransitionModuleInstallationAudited(ctx, serverID, moduleID, current.Revision, contracts.ModuleInstallation{
 		Version: version, State: next, Error: moduleErr,
-	})
+	}, "module."+string(event), result)
 }
 
 func wireError(code string, err error) *contracts.Error {

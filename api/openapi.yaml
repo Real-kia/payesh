@@ -151,6 +151,16 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CSRFHeader' }]
       responses: { '202': { description: Revocation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /servers/{serverId}/enrollment-token:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    post:
+      operationId: issueEnrollmentToken
+      summary: Issue a short-lived, single-use node pairing token
+      description: The owner may retrieve the token only in this response. The cleartext token is held in bounded process memory until expiry and is never persisted or logged.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentTokenRequest' } } } }
+      responses: { '201': { description: Pairing token issued, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentToken' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/traffic:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
@@ -269,7 +279,7 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallRequest' } } } }
-      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/modules/{moduleId}/enable:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
@@ -277,7 +287,7 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/modules/{moduleId}/disable:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
@@ -286,7 +296,7 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/modules/{moduleId}/remove:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
@@ -294,13 +304,13 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
-      responses: { '200': { description: Resulting module installation state; only legal once installed-disabled or failed, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting module installation state; only legal once installed-disabled or failed, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/cpu-policies:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listCPUPolicies
       security: [{ SessionCookie: [] }]
-      responses: { '200': { description: CPU control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+      responses: { '200': { description: CPU control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/preview:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
@@ -309,7 +319,7 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreviewRequest' } } } }
-      responses: { '200': { description: Preview of the effect of applying this quota, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
+      responses: { '200': { description: Preview of the effect of applying this quota, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/apply:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
@@ -318,7 +328,7 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyApplyRequest' } } } }
-      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/revert:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
@@ -327,7 +337,59 @@ paths:
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyRevertRequest' } } } }
-      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/bandwidth-policies:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: listBandwidthPolicies
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: Bandwidth control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/bandwidth-policies/{bandwidthTargetKind}/{targetName}/preview:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
+    post:
+      operationId: previewBandwidthPolicy
+      summary: Validate scope, direction, action, ownership assumptions, and management exclusions without applying
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRequest' } } } }
+      responses: { '200': { description: Bandwidth policy preview, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/bandwidth-policies/{bandwidthTargetKind}/{targetName}/apply:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
+    post:
+      operationId: applyBandwidthPolicy
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRequest' } } } }
+      responses: { '200': { description: Durable configured or active policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/bandwidth-policies/{bandwidthTargetKind}/{targetName}/revert:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
+    post:
+      operationId: revertBandwidthPolicy
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRevertRequest' } } } }
+      responses: { '200': { description: Reverted durable policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/port-traffic-scopes:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    get:
+      operationId: listPortTrafficScopes
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: Durable desired port-traffic scopes, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+    post:
+      operationId: configurePortTrafficScope
+      summary: Persist a validated desired scope as pending until the privileged module activates owned nftables rules
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PortTrafficScopeRequest' } } } }
+      responses: { '200': { description: Pending durable scope policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/port-traffic-scopes/{scopeId}/revert:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }, { name: scopeId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:-]+$' } }]
+    post:
+      operationId: revertPortTrafficScope
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyRevertRequest' } } } }
+      responses: { '200': { description: Reverted durable scope policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /releases:
     get:
       operationId: listReleases
@@ -341,6 +403,23 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
       responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /installations:
+    post:
+      operationId: startSSHInstallation
+      summary: Enqueue a host-key-verified SSH installation without persisting credentials
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SSHInstallRequest' } } } }
+      responses: { '202': { description: SSH installation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /servers/{serverId}/install:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    post:
+      operationId: startServerSSHInstallation
+      summary: Enqueue an SSH installation for a selected server
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SSHInstallRequest' } } } }
+      responses: { '202': { description: SSH installation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
   /updates/preflight:
     post:
       operationId: preflightUpdate
@@ -457,6 +536,11 @@ components:
       in: path
       required: true
       schema: { type: string, enum: [service, process-group] }
+    BandwidthTargetKind:
+      name: bandwidthTargetKind
+      in: path
+      required: true
+      schema: { type: string, enum: [interface, local-port] }
     TargetName:
       name: targetName
       in: path
@@ -465,6 +549,7 @@ components:
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+    Forbidden: { description: CSRF token or owner authorization rejected, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     Conflict: { description: State or revision conflict, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     ServiceUnavailable: { description: 'The source or derived data is temporarily unavailable; retry later.', content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
@@ -610,6 +695,14 @@ components:
       type: object
       required: [token, idempotency_key]
       properties: { token: { type: string, minLength: 16, maxLength: 256 }, idempotency_key: { type: string, minLength: 1, maxLength: 128 } }
+    EnrollmentTokenRequest:
+      type: object
+      required: [idempotency_key]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 } }
+    EnrollmentToken:
+      type: object
+      required: [server_id, token, expires_at]
+      properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, token: { type: string, minLength: 16, maxLength: 256, writeOnly: true }, expires_at: { type: string, format: date-time } }
     TrafficQuery:
       type: object
       required: [periods]
@@ -736,11 +829,19 @@ components:
       description: Shared per-server/module/target control record (contracts.ControlPolicy). CPU Controls' parameters is CPUQuotaParameters; Bandwidth Controls (package 09) reuses this same shape with its own kind/parameters.
       type: object
       required: [id, server_id, module_id, kind, target_kind, target_name, state, revision, updated_at]
-      properties: { id: { type: string, maxLength: 512 }, server_id: { type: string, maxLength: 128 }, module_id: { type: string, maxLength: 128 }, kind: { type: string, maxLength: 128 }, target_kind: { type: string, enum: [service, process-group] }, target_name: { type: string, maxLength: 256 }, state: { type: string, enum: [pending, applied, reverted, failed] }, parameters: { type: object, additionalProperties: true }, revision: { $ref: '#/components/schemas/DecimalUint64' }, updated_at: { type: string, format: date-time }, error: { $ref: '#/components/schemas/APIError' } }
+      properties: { id: { type: string, maxLength: 512 }, server_id: { type: string, maxLength: 128 }, module_id: { type: string, maxLength: 128 }, kind: { type: string, maxLength: 128 }, target_kind: { type: string, enum: [service, process-group, interface, local-port] }, target_name: { type: string, maxLength: 256 }, state: { type: string, enum: [pending, applied, reverted, failed] }, parameters: { type: object, additionalProperties: true }, revision: { $ref: '#/components/schemas/DecimalUint64' }, updated_at: { type: string, format: date-time }, error: { $ref: '#/components/schemas/APIError' } }
     PolicyPage:
       type: object
       required: [items]
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Policy' } }, next_cursor: { type: string, maxLength: 256 } }
+    PortTrafficScope:
+      type: object
+      required: [id, protocol, interface, local_port, direction, tuple]
+      properties: { id: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:-]+$' }, protocol: { type: string, enum: [tcp, udp] }, interface: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:-]+$' }, local_port: { type: integer, minimum: 1, maximum: 65535 }, direction: { type: string, enum: [inbound, outbound] }, tuple: { type: string, enum: [original, translated] }, path: { type: string, enum: [local, forwarded], default: local } }
+    PortTrafficScopeRequest:
+      type: object
+      required: [idempotency_key, expected_revision, scope]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, scope: { $ref: '#/components/schemas/PortTrafficScope' } }
     CPUPolicyPreviewRequest:
       type: object
       required: [millicores]
@@ -757,6 +858,22 @@ components:
       type: object
       required: [idempotency_key, expected_revision]
       properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+    BandwidthManagementFlow:
+      type: object
+      required: [name, interface, protocol, local_port, port_role]
+      properties: { name: { type: string, minLength: 1, maxLength: 128 }, interface: { type: string, minLength: 1, maxLength: 128 }, protocol: { type: string, enum: [tcp, udp] }, local_port: { type: integer, minimum: 1, maximum: 65535 }, port_role: { type: string, enum: [local-service, remote-service] }, shared_port: { type: boolean } }
+    BandwidthPolicyRequest:
+      type: object
+      required: [interface, direction, action]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, interface: { type: string, minLength: 1, maxLength: 128 }, protocol: { type: string, enum: [tcp, udp] }, local_port: { type: integer, minimum: 1, maximum: 65535 }, direction: { type: string, enum: [inbound, outbound] }, action: { type: string, enum: [warn, throttle, block] }, bits_per_second: { $ref: '#/components/schemas/DecimalUint64' }, quota_bytes: { $ref: '#/components/schemas/DecimalUint64' }, usage_scope: { type: string, minLength: 1, maxLength: 128 }, usage_direction: { type: string, enum: [inbound, outbound, combined] } }
+    BandwidthPolicyRevertRequest:
+      type: object
+      required: [idempotency_key, expected_revision, interface, direction]
+      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, interface: { type: string, minLength: 1, maxLength: 128 }, protocol: { type: string, enum: [tcp, udp] }, local_port: { type: integer, minimum: 1, maximum: 65535 }, direction: { type: string, enum: [inbound, outbound] } }
+    BandwidthPolicyPreview:
+      type: object
+      required: [request, kernel_path, affects_network]
+      properties: { request: { $ref: '#/components/schemas/BandwidthPolicyRequest' }, kernel_path: { type: string, enum: [egress-shaper, ingress-policer-or-ifb] }, management_exclusions: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/BandwidthManagementFlow' } }, affects_network: { type: boolean }, warnings: { type: array, maxItems: 16, items: { type: string, maxLength: 512 } } }
     Release:
       type: object
       required: [format, release, created_at, min_core, signing_key_id, artifacts]
@@ -772,7 +889,11 @@ components:
     UpdateRequest:
       type: object
       required: [release, selected_server_ids, idempotency_key]
-      properties: { release: { type: string, maxLength: 64 }, selected_server_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' } }
+      properties: { release: { type: string, maxLength: 64 }, selected_server_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, expires_at: { type: string, format: date-time } }
+    SSHInstallRequest:
+      type: object
+      required: [server_id, host, port, user, idempotency_key]
+      properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, mode: { type: string, enum: [ssh], default: ssh }, host: { type: string, minLength: 1, maxLength: 255 }, port: { type: integer, minimum: 1, maximum: 65535 }, user: { type: string, minLength: 1, maxLength: 128 }, password: { type: string, maxLength: 1048576, writeOnly: true }, private_key: { type: string, maxLength: 1048576, writeOnly: true }, private_key_passphrase: { type: string, maxLength: 4096, writeOnly: true }, sudo_password: { type: string, maxLength: 4096, writeOnly: true }, expected_host_key_fingerprint: { type: string, maxLength: 256 }, role: { type: string, enum: [node, standalone, hub, cli-only], default: node }, listen: { type: string, maxLength: 128 }, start: { type: boolean, default: false }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expires_at: { type: string, format: date-time } }
     UpdatePreflightRequest:
       type: object
       required: [release, selected_server_ids]

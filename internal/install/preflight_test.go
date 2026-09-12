@@ -34,6 +34,25 @@ func TestCheckSelectsRoleArtifactsAndDetectsPlatform(t *testing.T) {
 	}
 }
 
+func TestCheckRejectsUnsafeOrMalformedListenAddress(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc", "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "run/systemd/system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/os-release"), []byte("ID=debian\nVERSION_ID=12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, listen := range []string{"127.0.0.1", "127.0.0.1:65536", "127.0.0.1:80\nExecStart=/bin/sh", "127.0.0.1:bad"} {
+		p, err := Check(root, "standalone", listen)
+		if err != nil || p.Supported {
+			t.Fatalf("unsafe listener accepted: %q preflight=%+v err=%v", listen, p, err)
+		}
+	}
+}
+
 func TestCheckRejectsSupportedDistributionWithoutInitSystem(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0700); err != nil {
@@ -93,5 +112,36 @@ func TestSupportedArchitectureMatrix(t *testing.T) {
 		if supportedArchitecture(architecture) {
 			t.Fatalf("unsupported architecture accepted: %s", architecture)
 		}
+	}
+}
+
+func TestCheckReportsOptionalCapabilitiesWithoutBlockingSupportedHost(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"etc", "run/systemd/system", "usr/bin", "proc/sys/kernel", "sys/fs/cgroup"} {
+		if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/os-release"), []byte("ID=debian\nVERSION_ID=12\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "proc/sys/kernel/osrelease"), []byte("6.1-test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr/bin/apt-get"), []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr/bin/ip"), []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Check(root, "node", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Supported || p.Capabilities.PackageManager != "apt" || p.Capabilities.Kernel != "6.1-test" || !p.Capabilities.HasIP || p.Capabilities.HasTC || p.Capabilities.HasNFT {
+		t.Fatalf("unexpected capability report: %+v", p)
+	}
+	if len(p.Warnings) == 0 {
+		t.Fatal("missing unsupported capability warnings")
 	}
 }

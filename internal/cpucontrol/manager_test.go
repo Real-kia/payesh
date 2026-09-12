@@ -22,8 +22,19 @@ func testManager(t *testing.T) (*Manager, contracts.ServerID) {
 	if err := store.EnsureServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.TransitionModuleInstallation(ctx, server.ID, ModuleID, 0, contracts.ModuleInstallation{State: contracts.ModuleEnabled, Version: "0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
 	procRoot := t.TempDir()
-	manager := &Manager{Store: store, FS: FSCgroup{Root: t.TempDir()}, ProcRoot: procRoot}
+	fs := FSCgroup{Root: t.TempDir(), OwnershipRoot: t.TempDir(), AllowPlainFilesystem: true}
+	manager := &Manager{Store: store, FS: fs, ProcRoot: procRoot, LocalServerID: server.ID}
+	manager.PrepareService = func(_ context.Context, _ Target, group GroupPath) error {
+		dir, err := fs.dir(group)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("4242\n"), 0o644)
+	}
 	return manager, server.ID
 }
 
@@ -61,7 +72,7 @@ func TestManagerApplyVerifiesAndPersists(t *testing.T) {
 	}
 }
 
-func TestManagerApplyThenRevertRestoresPreviousQuota(t *testing.T) {
+func TestManagerApplyThenRevertRestoresOriginalQuota(t *testing.T) {
 	manager, serverID := testManager(t)
 	target := Target{Kind: TargetKindService, Name: "nginx.service"}
 	first, err := manager.Apply(context.Background(), serverID, target, 1000, 0)
@@ -79,14 +90,14 @@ func TestManagerApplyThenRevertRestoresPreviousQuota(t *testing.T) {
 	if reverted.State != contracts.ControlPolicyReverted {
 		t.Fatalf("expected reverted, got %s", reverted.State)
 	}
-	// Revert restores what the second Apply found beforehand: 1000m, not
-	// "no limit".
+	// Updating a Payesh-owned policy must not replace the original baseline.
+	// Disabling after any number of edits restores the pre-Payesh state.
 	millicores, unlimited, err := manager.FS.ReadQuota(target.GroupPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unlimited || millicores != 1000 {
-		t.Fatalf("expected quota restored to 1000m, got millicores=%d unlimited=%v", millicores, unlimited)
+	if !unlimited || millicores != 0 {
+		t.Fatalf("expected original unlimited quota, got millicores=%d unlimited=%v", millicores, unlimited)
 	}
 }
 
@@ -112,7 +123,10 @@ func TestManagerRevertOnFirstApplyRemovesLimitEntirely(t *testing.T) {
 func TestManagerRejectsSharedForeignGroup(t *testing.T) {
 	manager, serverID := testManager(t)
 	target := Target{Kind: TargetKindService, Name: "shared-svc"}
-	dir := filepath.Join(manager.FS.(FSCgroup).Root, "payesh", "service-shared-svc")
+	dir, err := manager.FS.(FSCgroup).dir(target.GroupPath())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +146,12 @@ func TestManagerApplyRejectsReusedPID(t *testing.T) {
 	manager, serverID := testManager(t)
 	writeFakeStat(t, manager.ProcRoot, 555, "worker", 100)
 	target := Target{Kind: TargetKindProcessGroup, Name: "worker-batch-1", Process: &ProcessIdentity{PID: 555, StartTicks: 100}}
+	if err := manager.FS.EnsureDedicatedGroup(target.GroupPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.FS.AttachProcess(target.GroupPath(), 555); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := manager.Apply(context.Background(), serverID, target, 1000, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -182,5 +202,48 @@ func TestManagerRevertAllForServerSweepsAppliedPolicies(t *testing.T) {
 		if policy.State != contracts.ControlPolicyReverted {
 			t.Fatalf("expected %s to be recorded reverted, got %s", target.Name, policy.State)
 		}
+	}
+}
+
+func TestManagerRejectsApplyWhenModuleIsDisabled(t *testing.T) {
+	manager, serverID := testManager(t)
+	if _, err := manager.Store.TransitionModuleInstallation(context.Background(), serverID, ModuleID, 1, contracts.ModuleInstallation{State: contracts.ModuleInstalledDisabled, Version: "0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Apply(context.Background(), serverID, Target{Kind: TargetKindService, Name: "svc"}, 500, 0); err == nil {
+		t.Fatal("expected a disabled module to reject policy application")
+	}
+}
+
+func TestManagerRequiresSupervisorAdapterForService(t *testing.T) {
+	manager, serverID := testManager(t)
+	manager.PrepareService = nil
+	if _, err := manager.Apply(context.Background(), serverID, Target{Kind: TargetKindService, Name: "svc"}, 500, 0); err == nil {
+		t.Fatal("expected service apply to fail without a supervisor adapter")
+	}
+}
+
+func TestManagerRevertRefusesExternalQuotaChange(t *testing.T) {
+	manager, serverID := testManager(t)
+	target := Target{Kind: TargetKindService, Name: "svc"}
+	applied, err := manager.Apply(context.Background(), serverID, target, 500, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.FS.WriteQuota(target.GroupPath(), 750, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Revert(context.Background(), serverID, target, applied.Revision); err == nil {
+		t.Fatal("expected external quota drift to block revert")
+	}
+	failed, err := manager.Store.GetControlPolicy(context.Background(), serverID, ModuleID, target.Kind, target.Name)
+	if err != nil || failed.State != contracts.ControlPolicyFailed {
+		t.Fatalf("expected recovery-required failed state, policy=%+v err=%v", failed, err)
+	}
+	if err := manager.FS.WriteQuota(target.GroupPath(), 500, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Revert(context.Background(), serverID, target, failed.Revision); err != nil {
+		t.Fatalf("expected revert retry after external revalidation: %v", err)
 	}
 }

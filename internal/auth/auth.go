@@ -27,7 +27,15 @@ const (
 	// Failed-login keys are attacker-controlled (normally source addresses),
 	// so retain only a bounded number even when every request uses a new key.
 	maxThrottleEntries = 4096
+	maxSessions        = 256
 )
+
+// Repository persists the complete bounded browser-authentication state.
+// Implementations must replace the previous value atomically.
+type Repository interface {
+	LoadAuthState() (data []byte, found bool, err error)
+	SaveAuthState(data []byte) error
+}
 
 type passwordRecord struct{ salt, digest []byte }
 type sessionRecord struct {
@@ -52,14 +60,34 @@ type Manager struct {
 	sessions    map[string]sessionRecord // keyed by a SHA-256 session digest
 	throttle    map[string]throttleRecord
 	now         func() time.Time
+	repository  Repository
 }
 
 func New(setupSecret string) (*Manager, error) {
+	return NewPersistent(setupSecret, nil)
+}
+
+// NewPersistent restores owner, session, and throttling state when a
+// repository is supplied. The setup secret itself is never persisted.
+func NewPersistent(setupSecret string, repository Repository) (*Manager, error) {
 	if len(setupSecret) < 16 {
 		return nil, errors.New("setup secret must contain at least 16 characters")
 	}
 	d := sha256.Sum256([]byte(setupSecret))
-	return &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), throttle: make(map[string]throttleRecord), now: time.Now}, nil
+	m := &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), throttle: make(map[string]throttleRecord), now: time.Now, repository: repository}
+	if repository == nil {
+		return m, nil
+	}
+	data, found, err := repository.LoadAuthState()
+	if err != nil {
+		return nil, fmt.Errorf("load authentication state: %w", err)
+	}
+	if found {
+		if err := m.restore(data); err != nil {
+			return nil, fmt.Errorf("restore authentication state: %w", err)
+		}
+	}
+	return m, nil
 }
 
 // Setup consumes the one-time bootstrap secret and creates the sole owner.
@@ -80,9 +108,14 @@ func (m *Manager) Setup(secret, password string) error {
 	if err != nil {
 		return err
 	}
+	previousDigest := append([]byte(nil), m.setupDigest...)
 	m.owner, m.configured = r, true
 	for i := range m.setupDigest {
 		m.setupDigest[i] = 0
+	}
+	if err := m.persistLocked(); err != nil {
+		m.owner, m.configured, m.setupDigest = passwordRecord{}, false, previousDigest
+		return fmt.Errorf("persist owner setup: %w", err)
 	}
 	return nil
 }
@@ -127,15 +160,45 @@ func (m *Manager) Login(key, password string) (session, csrf string, err error) 
 			m.makeThrottleRoom()
 		}
 		m.throttle[key] = t
+		if err := m.persistLocked(); err != nil {
+			return "", "", fmt.Errorf("persist login throttle: %w", err)
+		}
 		return "", "", errors.New("invalid_credentials")
 	}
 	delete(m.throttle, key)
+	m.pruneExpiredSessions(now)
+	m.makeSessionRoom()
 	session = randomToken(32)
 	csrf = randomToken(24)
 	d := sha256.Sum256([]byte(session))
 	sessionKey := base64.RawURLEncoding.EncodeToString(d[:])
 	m.sessions[sessionKey] = sessionRecord{digest: d[:], expires: now.Add(sessionTTL), csrf: csrf}
+	if err := m.persistLocked(); err != nil {
+		delete(m.sessions, sessionKey)
+		return "", "", fmt.Errorf("persist session: %w", err)
+	}
 	return session, csrf, nil
+}
+
+func (m *Manager) pruneExpiredSessions(now time.Time) {
+	for key, record := range m.sessions {
+		if !now.Before(record.expires) {
+			delete(m.sessions, key)
+		}
+	}
+}
+
+func (m *Manager) makeSessionRoom() {
+	for len(m.sessions) >= maxSessions {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for key, record := range m.sessions {
+			if oldestKey == "" || record.expires.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = key, record.expires
+			}
+		}
+		delete(m.sessions, oldestKey)
+	}
 }
 
 func throttleExpiry(record throttleRecord) time.Time {
@@ -183,11 +246,12 @@ func randomToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func (m *Manager) Logout(session string) {
+func (m *Manager) Logout(session string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	d := sha256.Sum256([]byte(session))
 	delete(m.sessions, base64.RawURLEncoding.EncodeToString(d[:]))
-	m.mu.Unlock()
+	return m.persistLocked()
 }
 
 // Validate checks a session and returns its CSRF token. Expired sessions are
@@ -206,6 +270,7 @@ func (m *Manager) Validate(session string) (csrf string, ok bool) {
 	}
 	if !m.now().UTC().Before(s.expires) {
 		delete(m.sessions, key)
+		_ = m.persistLocked()
 		return "", false
 	}
 	if subtle.ConstantTimeCompare(d[:], s.digest) != 1 {
@@ -305,3 +370,73 @@ func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
 
 func (m *Manager) Configured() bool          { m.mu.Lock(); defer m.mu.Unlock(); return m.configured }
 func (m *Manager) SessionCookieName() string { return strings.TrimSpace("payesh_session") }
+
+type persistedState struct {
+	Configured bool                         `json:"configured"`
+	OwnerSalt  []byte                       `json:"owner_salt,omitempty"`
+	OwnerHash  []byte                       `json:"owner_hash,omitempty"`
+	Sessions   map[string]persistedSession  `json:"sessions,omitempty"`
+	Throttle   map[string]persistedThrottle `json:"throttle,omitempty"`
+}
+
+type persistedSession struct {
+	Digest  []byte    `json:"digest"`
+	Expires time.Time `json:"expires"`
+	CSRF    string    `json:"csrf"`
+}
+
+type persistedThrottle struct {
+	Failures     int       `json:"failures"`
+	Since        time.Time `json:"since"`
+	BlockedUntil time.Time `json:"blocked_until,omitempty"`
+}
+
+func (m *Manager) persistLocked() error {
+	if m.repository == nil {
+		return nil
+	}
+	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
+	for key, record := range m.sessions {
+		state.Sessions[key] = persistedSession{Digest: record.digest, Expires: record.expires, CSRF: record.csrf}
+	}
+	for key, record := range m.throttle {
+		state.Throttle[key] = persistedThrottle{Failures: record.failures, Since: record.since, BlockedUntil: record.blockedUntil}
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return m.repository.SaveAuthState(data)
+}
+
+func (m *Manager) restore(data []byte) error {
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	if !state.Configured || len(state.OwnerSalt) != 16 || len(state.OwnerHash) != 32 {
+		return errors.New("invalid persisted owner record")
+	}
+	if len(state.Sessions) > maxSessions || len(state.Throttle) > maxThrottleEntries {
+		return errors.New("persisted authentication state exceeds bounds")
+	}
+	m.configured = true
+	m.owner = passwordRecord{salt: append([]byte(nil), state.OwnerSalt...), digest: append([]byte(nil), state.OwnerHash...)}
+	for i := range m.setupDigest {
+		m.setupDigest[i] = 0
+	}
+	now := m.now().UTC()
+	for key, record := range state.Sessions {
+		if len(record.Digest) != sha256.Size || record.CSRF == "" || !now.Before(record.Expires) {
+			continue
+		}
+		m.sessions[key] = sessionRecord{digest: append([]byte(nil), record.Digest...), expires: record.Expires, csrf: record.CSRF}
+	}
+	for key, record := range state.Throttle {
+		value := throttleRecord{failures: record.Failures, since: record.Since, blockedUntil: record.BlockedUntil}
+		if key != "" && value.failures > 0 && now.Before(throttleExpiry(value)) {
+			m.throttle[key] = value
+		}
+	}
+	return nil
+}

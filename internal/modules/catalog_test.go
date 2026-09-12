@@ -33,8 +33,8 @@ func TestCheckEligibilityReportsMissingDependenciesAndCapabilities(t *testing.T)
 	if result.Eligible {
 		t.Fatal("expected missing traffic-accounting dependency and cgroup-v2 capability to fail eligibility")
 	}
-	want := map[string]bool{"traffic-accounting": true, "cgroup-v2": true}
-	if len(result.MissingCapabilities) != 2 {
+	want := map[string]bool{"traffic-accounting": true, "cgroup-v2": true, "tc": true, "nftables-counters": true}
+	if len(result.MissingCapabilities) != len(want) {
 		t.Fatalf("unexpected missing list: %v", result.MissingCapabilities)
 	}
 	for _, m := range result.MissingCapabilities {

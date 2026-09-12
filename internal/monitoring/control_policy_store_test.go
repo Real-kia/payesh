@@ -61,6 +61,15 @@ func TestTransitionControlPolicyCreatesThenAdvances(t *testing.T) {
 	if fetched.Revision != 2 || fetched.State != contracts.ControlPolicyReverted {
 		t.Fatalf("unexpected persisted state: %+v", fetched)
 	}
+	var auditCount int
+	var action, result string
+	var redacted bool
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*),MAX(action),MAX(result),MIN(redacted) FROM audit_events WHERE target_id=?`, fetched.ID).Scan(&auditCount, &action, &result, &redacted); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 2 || action != "control-policy.reverted" || result != "success" || !redacted {
+		t.Fatalf("unexpected policy audit rows: count=%d action=%q result=%q redacted=%v", auditCount, action, result, redacted)
+	}
 }
 
 func TestTransitionControlPolicyRejectsStaleRevision(t *testing.T) {
@@ -135,5 +144,54 @@ func TestControlPolicyRequestIdempotencyRoundTrip(t *testing.T) {
 	}
 	if record.RequestHash != "hash-1" {
 		t.Fatalf("unexpected record: %+v", record)
+	}
+}
+
+func TestControlPolicyUniqueKeyClaimIsAtomicAndReleasedOnRevert(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := testServer()
+	if err := store.EnsureServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	params := json.RawMessage(`{"scope":"one"}`)
+	if _, err := store.TransitionControlPolicyWithUniqueKey(ctx, server.ID, "port-traffic", "local-port", "one", 0, contracts.ControlPolicy{Kind: "port-traffic-scope", State: contracts.ControlPolicyPending, Parameters: params}, "", "tcp\x00eth0\x00443\x00inbound\x00translated\x00local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionControlPolicyWithUniqueKey(ctx, server.ID, "port-traffic", "local-port", "two", 0, contracts.ControlPolicy{Kind: "port-traffic-scope", State: contracts.ControlPolicyPending, Parameters: params}, "", "tcp\x00eth0\x00443\x00inbound\x00translated\x00local"); err != ErrControlPolicyUniqueConflict {
+		t.Fatalf("expected unique conflict, got %v", err)
+	}
+	if _, err := store.TransitionControlPolicyWithUniqueKey(ctx, server.ID, "port-traffic", "local-port", "one", 1, contracts.ControlPolicy{Kind: "port-traffic-scope", State: contracts.ControlPolicyReverted, Parameters: params}, "tcp\x00eth0\x00443\x00inbound\x00translated\x00local", "tcp\x00eth0\x00443\x00inbound\x00translated\x00local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionControlPolicyWithUniqueKey(ctx, server.ID, "port-traffic", "local-port", "two", 0, contracts.ControlPolicy{Kind: "port-traffic-scope", State: contracts.ControlPolicyPending, Parameters: params}, "", "tcp\x00eth0\x00443\x00inbound\x00translated\x00local"); err != nil {
+		t.Fatalf("released unique key was not reusable: %v", err)
+	}
+}
+
+func TestClaimControlPolicyRequestPreventsDuplicateWork(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := testServer()
+	if err := store.EnsureServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := store.ClaimControlPolicyRequest(ctx, server.ID, "port-traffic", "local-port", "one", "key", "hash"); err != nil || !claimed {
+		t.Fatalf("first claim=%v err=%v", claimed, err)
+	}
+	record, claimed, err := store.ClaimControlPolicyRequest(ctx, server.ID, "port-traffic", "local-port", "one", "key", "hash")
+	if err != nil || claimed || record.ResultJSON != `{}` {
+		t.Fatalf("second claim record=%+v claimed=%v err=%v", record, claimed, err)
+	}
+	if _, _, err := store.ClaimControlPolicyRequest(ctx, server.ID, "port-traffic", "local-port", "one", "key", "different"); err != ErrControlPolicyRequestConflict {
+		t.Fatalf("expected request conflict, got %v", err)
 	}
 }

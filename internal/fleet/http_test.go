@@ -5,9 +5,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
+	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/porttraffic"
 )
 
 func TestSetupLoginAndProtectedRead(t *testing.T) {
@@ -51,6 +54,58 @@ func TestSetupLoginAndProtectedRead(t *testing.T) {
 	}
 	if cookies[0].Secure {
 		t.Fatal("loopback HTTP session cookie unexpectedly requires TLS")
+	}
+}
+
+func TestOwnerAndSessionSurviveStoreReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "payesh.db")
+	store, err := monitoring.OpenStore(ctx, path, monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := NewAPI(store, "0123456789abcdef-bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"setup_secret":"0123456789abcdef-bootstrap","password":"long-enough-password"}`))
+	response := httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, setup)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("setup=%d", response.Code)
+	}
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/session", bytes.NewBufferString(`{"password":"long-enough-password"}`))
+	response = httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, login)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("login=%d", response.Code)
+	}
+	cookie := response.Result().Cookies()[0]
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = monitoring.OpenStore(ctx, path, monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	restarted, err := NewAPI(store, "different-secret-still-long-enough")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeatedSetup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"setup_secret":"different-secret-still-long-enough","password":"replacement-password"}`))
+	response = httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(response, repeatedSetup)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("setup after restart=%d", response.Code)
+	}
+	read := httptest.NewRequest(http.MethodGet, "/api/v1/servers", nil)
+	read.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(response, read)
+	if response.Code != http.StatusOK {
+		t.Fatalf("restored session read=%d", response.Code)
 	}
 }
 
@@ -125,6 +180,55 @@ func TestTrustedProxyConfigurationRejectsInvalidAddresses(t *testing.T) {
 	}
 	if _, err := parseTrustedProxyNetworks([]string{"10.0.0.0/99"}); err == nil {
 		t.Fatal("invalid trusted proxy CIDR was accepted")
+	}
+}
+
+func TestAuthenticatedPortTrafficScopeRouteUsesCSRFAndDurableCAS(t *testing.T) {
+	ctx := context.Background()
+	store, err := monitoring.OpenStore(ctx, ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	serverID := contracts.ServerID("server-port-api-0001")
+	if err := store.UpsertServer(ctx, contracts.Server{ID: serverID, Name: "local", Role: "standalone", Platform: "linux", Architecture: "amd64", ConnectionState: "connected", FreshnessState: "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	api, err := NewAPIWithOptions(store, "0123456789abcdef-bootstrap", Options{PortTrafficService: porttraffic.NewService(&porttraffic.Manager{Store: store})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"secret":"0123456789abcdef-bootstrap","password":"long-enough-password"}`))
+	response := httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, setup)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("setup=%d", response.Code)
+	}
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/session", bytes.NewBufferString(`{"password":"long-enough-password"}`))
+	response = httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, login)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("login=%d", response.Code)
+	}
+	cookie := response.Result().Cookies()[0]
+	csrf := response.Header().Get("X-CSRF-Token")
+	body := `{"idempotency_key":"scope-1","expected_revision":"0","scope":{"id":"web","protocol":"tcp","interface":"eth0","local_port":443,"direction":"inbound","tuple":"translated"}}`
+	path := "/api/v1/servers/" + string(serverID) + "/port-traffic-scopes"
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	request.AddCookie(cookie)
+	request.Header.Set("X-CSRF-Token", csrf)
+	response = httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"state":"pending"`)) {
+		t.Fatalf("scope route status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("scope route without CSRF=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

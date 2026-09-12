@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
+  import { ApiError, apiClient, mapWithConcurrency, type Job, type MetricQuery, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -10,7 +11,9 @@
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
 
-  const PREVIEW_MODE = import.meta.env.DEV || import.meta.env.VITE_PAYESH_PREVIEW === 'true';
+  // Development builds use the real API by default. Opt into fixtures
+  // explicitly so a local preview can never accidentally mask API failures.
+  const PREVIEW_MODE = import.meta.env.VITE_PAYESH_PREVIEW === 'true';
   const totalTrafficBytes = '1526000000000';
   const totalAllowanceBytes = '2500000000000';
 
@@ -22,8 +25,16 @@
   let detailTab: DetailTab = 'metrics';
   let chartRange: ChartRange = '15m';
   let theme: Theme = initialTheme();
-  let previewState: PreviewState = PREVIEW_MODE ? 'loading' : 'ready';
+  let previewState: PreviewState = 'loading';
   let previewLoadFailed = false;
+  let apiError = '';
+  let partialWarning = '';
+  let authExpired = false;
+  let logState: PreviewState = 'ready';
+  let logError = '';
+  let logEntries: PreviewLogEntry[] = [];
+  let apiAbortController: AbortController | null = null;
+  let logAbortController: AbortController | null = null;
   let notice = '';
   let setupStep = 1;
   let workspaceName = PREVIEW_MODE ? "Kia's workspace" : '';
@@ -37,14 +48,38 @@
   let savedUiState: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null = null;
   let chartData: PreviewChartData | null = null;
   let availableTabs: DetailTab[] = [];
+  type SessionState = 'unknown' | 'authenticated' | 'signed-out';
+  let sessionState: SessionState = PREVIEW_MODE ? 'authenticated' : 'unknown';
+  let authPassword = '';
+  let authBusy = false;
+  let authError = '';
+  let setupCompleted = false;
+  let latestJob: Job | null = null;
+  let jobError = '';
+  let jobBusy = false;
+  let jobPollController: AbortController | null = null;
+  let updateRelease = '';
+  let updateBusy = false;
+  let installHost = '';
+  let installPort = '22';
+  let installUser = '';
+  let installPassword = '';
+  let installKey = '';
+  let installFingerprint = '';
+  let installBusy = false;
+  let labelDraft = '';
+  let labelBusy = false;
 
   $: selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0];
-  $: displayServers = PREVIEW_MODE ? servers : [];
+  $: displayServers = servers;
   $: healthyCount = displayServers.filter((server) => server.displayState === 'healthy').length;
   $: attentionCount = displayServers.filter((server) => server.displayState !== 'healthy').length;
+  $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
+  $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
   $: chartData = selectedServer?.metricHistory?.ranges[chartRange] ?? null;
   $: availableTabs = selectedServer ? (['metrics', 'traffic', 'logs'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
+  $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
   function initialTheme(): Theme {
     if (typeof window === 'undefined') return 'light';
@@ -74,6 +109,7 @@
 
   function selectServer(server: PreviewServer) {
     detailTab = 'metrics';
+    labelDraft = server.name;
     navigate('server', server.id);
   }
 
@@ -87,7 +123,131 @@
     window.setTimeout(() => { notice = ''; }, 4200);
   }
 
-  function completeOnboarding() {
+  function operationKey(prefix: string): string {
+    if (typeof crypto === 'undefined') throw new Error('Secure operation identity is unavailable in this browser context.');
+    if (typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
+    if (typeof crypto.getRandomValues !== 'function') throw new Error('Secure operation identity is unavailable in this browser context.');
+    const random = crypto.getRandomValues(new Uint8Array(16));
+    return `${prefix}-${Array.from(random, (value) => value.toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  function recordJob(job: Job): void {
+    latestJob = job;
+    jobError = '';
+    void pollJob(job.id);
+  }
+
+  async function pollJob(jobId: string): Promise<void> {
+    jobPollController?.abort();
+    const controller = new AbortController();
+    jobPollController = controller;
+    jobBusy = true;
+    try {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const current = await apiClient.getJob(jobId, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        latestJob = current;
+        if (['succeeded', 'failed', 'cancelled', 'recovery-required'].includes(current.state)) return;
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, 1500);
+          controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('The request was aborted.', 'AbortError')); }, { once: true });
+        });
+      }
+      jobError = 'Job is still running. Reload its status to continue monitoring.';
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      jobError = error instanceof Error ? error.message : 'Unable to read job status.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally {
+      if (jobPollController === controller) jobBusy = false;
+    }
+  }
+
+  async function cancelLatestJob(): Promise<void> {
+    if (!latestJob || !['queued', 'running'].includes(latestJob.state)) return;
+    jobError = '';
+    try {
+      latestJob = await apiClient.cancelJob(latestJob.id, latestJob.revision, operationKey('cancel'));
+      void pollJob(latestJob.id);
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to cancel the job.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    }
+  }
+
+  async function submitLogin(): Promise<void> {
+    if (authPassword.length < 1 || authBusy) return;
+    authBusy = true; authError = '';
+    try {
+      await apiClient.login(authPassword);
+      authPassword = '';
+      authExpired = false;
+      sessionState = 'authenticated';
+      await loadApiData();
+    } catch (error) {
+      authError = error instanceof ApiError && error.retryAfterSeconds ? `${error.message}. Try again in ${error.retryAfterSeconds} seconds.` : error instanceof Error ? error.message : 'Unable to sign in.';
+    } finally { authBusy = false; }
+  }
+
+  async function signOut(): Promise<void> {
+    authError = '';
+    try { await apiClient.logout(); } catch (error) { if (!(error instanceof ApiError && error.authExpired)) authError = error instanceof Error ? error.message : 'Unable to sign out.'; }
+    sessionState = 'signed-out'; authExpired = true; servers = []; previewState = 'error'; navigate('overview');
+  }
+
+  async function submitUpdate(): Promise<void> {
+    if (!updateRelease.trim() || !servers.length || updateBusy) return;
+    updateBusy = true; jobError = '';
+    try {
+      const job = await apiClient.createUpdate({ release: updateRelease.trim(), selected_server_ids: servers.map((server) => server.id), idempotency_key: operationKey('update') });
+      recordJob(job);
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to queue the update.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { updateBusy = false; }
+  }
+
+  async function submitInstall(): Promise<void> {
+    if (!selectedServer || !installHost.trim() || !installUser.trim() || installBusy) return;
+    installBusy = true; jobError = '';
+    try {
+      const job = await apiClient.enqueueInstall({ server_id: selectedServer.id, host: installHost.trim(), port: Number(installPort), user: installUser.trim(), ...(installPassword ? { password: installPassword } : {}), ...(installKey ? { private_key: installKey } : {}), expected_host_key_fingerprint: installFingerprint.trim() || undefined, role: 'node', idempotency_key: operationKey('install') });
+      installPassword = ''; installKey = '';
+      recordJob(job);
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to queue the installation.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { installBusy = false; }
+  }
+
+  async function renameSelectedServer(): Promise<void> {
+    if (!selectedServer || !labelDraft.trim() || labelDraft.trim() === selectedServer.name || labelBusy) return;
+    labelBusy = true; jobError = '';
+    try {
+      const updated = await apiClient.updateServerLabel(selectedServer.id, labelDraft.trim(), selectedServer.configurationRevision, operationKey('label'));
+      const replacement = emptyApiServer(updated);
+      Object.assign(selectedServer, replacement);
+      labelDraft = updated.name;
+      showNotice('Server label updated.');
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to rename this server.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { labelBusy = false; }
+  }
+
+  async function revokeSelectedServer(): Promise<void> {
+    if (!selectedServer || labelBusy) return;
+    labelBusy = true; jobError = '';
+    try {
+      const job = await apiClient.revokeServer(selectedServer.id, operationKey('revoke'));
+      recordJob(job);
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to revoke this server.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { labelBusy = false; }
+  }
+
+  async function completeOnboarding(): Promise<void> {
     setupError = '';
     if (setupStep === 1) {
       if (setupSecret.length < 16) {
@@ -98,6 +258,21 @@
         setupError = 'Use an owner password with at least 12 characters.';
         return;
       }
+      if (!PREVIEW_MODE && !setupCompleted) {
+        try {
+          await apiClient.completeSetup({ setup_secret: setupSecret, password: ownerPassword });
+          await apiClient.login(ownerPassword);
+          setupCompleted = true;
+          sessionState = 'authenticated';
+          setupSecret = '';
+          ownerPassword = '';
+          authExpired = false;
+          await loadApiData();
+        } catch (error) {
+          setupError = error instanceof Error ? error.message : 'Unable to complete owner setup.';
+          return;
+        }
+      }
     }
     if (setupStep < 3) {
       setupStep += 1;
@@ -107,8 +282,21 @@
       setupError = 'Use a pairing token with at least 16 characters, or choose skip for now.';
       return;
     }
-    showNotice(`Preview setup saved for ${workspaceName}. No credential was sent.`);
+    if (!PREVIEW_MODE && enrollmentMode === 'connect') {
+      if (!servers.length) { setupError = 'Pairing is unavailable until a pending server identity exists; choose skip for now.'; return; }
+      try {
+        const job = await apiClient.enrollServer(selectedServerId || servers[0].id, { token: pairingToken, idempotency_key: operationKey('enroll') });
+        recordJob(job);
+        pairingToken = '';
+      } catch (error) {
+        setupError = error instanceof Error ? error.message : 'Unable to queue enrollment.';
+        if (error instanceof ApiError && error.authExpired) authExpired = true;
+        return;
+      }
+    }
+    showNotice(PREVIEW_MODE ? `Preview setup saved for ${workspaceName}. No credential was sent.` : `Owner setup saved for ${workspaceName}.`);
     navigate('overview');
+    if (!PREVIEW_MODE && sessionState === 'authenticated') void loadApiData();
   }
 
   function formatBytes(value: string): string {
@@ -168,6 +356,69 @@
     return `${tabLabel(capability)} are unavailable for this server.`;
   }
 
+  function displayState(server: ApiServer): DisplayState {
+    if (server.connection_state === 'revoked') return 'disabled';
+    if (server.connection_state === 'never-connected') return 'pending';
+    if (server.connection_state === 'disconnected') return 'unreachable';
+    if (server.freshness_state === 'stale') return 'stale';
+    return server.freshness_state === 'fresh' ? 'healthy' : 'failed';
+  }
+
+  function emptyApiServer(server: ApiServer): PreviewServer {
+    return {
+      id: server.id, name: server.name, role: server.role, architecture: server.architecture,
+      platform: server.platform, capabilities: [...server.capabilities], version: server.version ?? '—',
+      lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
+      freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
+      configurationRevision: server.configuration_revision, displayState: displayState(server),
+      metrics: { cpu: null, memory: null, disk: null }, traffic: { scope: 'monthly', from: '', to: '', timezone: 'UTC', allowanceBytes: '0', direction: 'combined', countedBytes: '0', continuity: 'uncertain' }
+    };
+  }
+
+  function rangeWindow(range: ChartRange): { from: string; to: string } {
+    const to = new Date();
+    const minutes = range === '15m' ? 15 : range === '1h' ? 60 : 24 * 60;
+    return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
+  }
+
+  function metricChart(query: MetricQuery): PreviewChartData {
+    const samples = [...query.samples].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
+    const value = (sample: MetricQuery['samples'][number], name: string) => {
+      const candidates = name === 'cpu' ? ['cpu', 'cpu.utilization'] : name === 'memory' ? ['memory', 'memory.used_percent', 'memory.utilization'] : ['disk', 'disk.used_percent', 'disk.utilization'];
+      const found = candidates.map((candidate) => sample.values[candidate] ?? sample.values[candidate.toUpperCase()]).find((entry) => typeof entry === 'number');
+      return typeof found === 'number' && Number.isFinite(found) ? found : null;
+    };
+    return {
+      timestamps: samples.map((sample) => Date.parse(sample.observed_at)),
+      cpu: samples.map((sample) => value(sample, 'cpu')),
+      memory: samples.map((sample) => value(sample, 'memory')),
+      disk: samples.map((sample) => value(sample, 'disk')),
+      coverage: samples.length === 0 ? 'unavailable' : (query.gaps?.length || Object.values(query.coverage).some((coverage) => coverage < 1) ? 'gap' : 'complete')
+    };
+  }
+
+  function applyMetric(query: MetricQuery, server: PreviewServer): void {
+    const latest = [...query.samples].sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))[0];
+    if (!latest) return;
+    const read = (names: string[]) => names.map((name) => latest.values[name]).find((value) => typeof value === 'number' && Number.isFinite(value)) ?? null;
+    server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), disk: read(['disk', 'disk.used_percent', 'disk.utilization']) };
+  }
+
+  async function enrichApiServer(server: PreviewServer, signal: AbortSignal): Promise<{ server: PreviewServer; partial: boolean }> {
+    const [detailResult, metricResults, trafficResult] = await Promise.all([
+      apiClient.getServer(server.id, { signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; }),
+      Promise.allSettled((['15m', '1h', '24h'] as ChartRange[]).map((range) => { const window = rangeWindow(range); return apiClient.queryMetrics(server.id, { ...window, resolution: range === '15m' ? 'raw' : range === '1h' ? 'minute' : 'hour', signal }); })),
+      apiClient.queryTraffic(server.id, { ...rangeWindow('24h'), limit: 200, signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
+    ]);
+    const enriched = detailResult ? emptyApiServer(detailResult) : { ...server, capabilities: [...server.capabilities] };
+    let partial = !detailResult;
+    const ranges: Record<ChartRange, PreviewChartData> = { '15m': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' }, '1h': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' }, '24h': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' } };
+    (['15m', '1h', '24h'] as ChartRange[]).forEach((range, index) => { const result = metricResults[index]; if (result.status === 'fulfilled') { ranges[range] = metricChart(result.value); if (range === '15m') applyMetric(result.value, enriched); } else { partial = partial || server.capabilities.includes('metrics'); if (result.reason instanceof ApiError && result.reason.authExpired) authExpired = true; } });
+    if (metricResults.some((result) => result.status === 'fulfilled')) enriched.metricHistory = { ranges };
+    if (trafficResult?.periods[0]) { const period = trafficResult.periods[0]; enriched.traffic = { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity }; } else partial = partial || server.capabilities.includes('traffic');
+    return { server: enriched, partial };
+  }
+
   async function loadPreviewData() {
     if (!PREVIEW_MODE) return;
     previewState = 'loading';
@@ -190,6 +441,61 @@
     }
   }
 
+  async function loadApiData() {
+    apiAbortController?.abort();
+    const controller = new AbortController();
+    apiAbortController = controller;
+    previewState = 'loading';
+    apiError = '';
+    partialWarning = '';
+    authExpired = false;
+    servers = [];
+    try {
+      const page = await apiClient.listServers({ signal: controller.signal });
+      if (controller.signal.aborted) return;
+      sessionState = 'authenticated';
+      servers = page.items.map(emptyApiServer);
+      selectedServerId = servers[0]?.id ?? '';
+      restoreState(savedUiState);
+      previewState = servers.length ? 'ready' : 'empty';
+      const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
+      if (!controller.signal.aborted) {
+        servers = enriched.map((result) => result.server);
+        if (enriched.some((result) => result.partial)) partialWarning = 'Some server data could not be loaded; unavailable values are shown explicitly.';
+        if (activePage === 'server' && detailTab === 'logs' && selectedServerId) void loadLogs(selectedServerId);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      apiError = error instanceof Error ? error.message : 'Unable to reach the Payesh API.';
+      authExpired = error instanceof ApiError && error.authExpired;
+      if (authExpired) sessionState = 'signed-out';
+      previewState = 'error';
+    }
+  }
+
+  async function loadLogs(serverId: string) {
+    if (PREVIEW_MODE) return;
+    logAbortController?.abort();
+    const controller = new AbortController();
+    logAbortController = controller;
+    logState = 'loading'; logError = ''; logEntries = [];
+    try {
+      const sources = await apiClient.listLogSources(serverId, { signal: controller.signal });
+      const source = sources.items[0];
+      if (!source) { logState = 'empty'; return; }
+      const window = rangeWindow('24h');
+      const result = await apiClient.queryLogs(serverId, { source: source.id, ...window, limit: 200, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      logEntries = result.entries.map((entry) => ({ time: entry.timestamp.slice(11, 19), level: (entry.severity ?? 'INFO').toUpperCase() as PreviewLogEntry['level'], text: entry.text, source: source.label, cursor: entry.cursor }));
+      logState = logEntries.length ? 'ready' : 'empty';
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      logError = error instanceof Error ? error.message : 'Unable to load logs.';
+      authExpired = error instanceof ApiError && error.authExpired;
+      logState = 'error';
+    }
+  }
+
   function restoreState(state: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null) {
     if (!state) return;
     if (state.activePage === 'overview' || state.activePage === 'onboarding') activePage = state.activePage;
@@ -206,11 +512,11 @@
     }
     applyTheme(false);
     if (!PREVIEW_MODE) restoreState(savedUiState);
-    void loadPreviewData();
+    if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
     window.history.replaceState({ activePage, selectedServerId, detailTab }, '', window.location.pathname);
     const onPopState = (event: PopStateEvent) => { restoreState(event.state); saveUiState(); };
     window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    return () => { window.removeEventListener('popstate', onPopState); apiAbortController?.abort(); logAbortController?.abort(); jobPollController?.abort(); };
   });
 </script>
 
@@ -260,11 +566,13 @@
           </label>
         {/if}
         <button class="icon-button" type="button" on:click={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>{theme === 'light' ? '☾' : '☀'}</button>
+        {#if !PREVIEW_MODE && sessionState === 'authenticated'}<button class="button ghost small" type="button" on:click={() => void signOut()}>Sign out</button>{/if}
         <button class="button primary small" type="button" on:click={() => navigate('onboarding')}>＋ Add server</button>
       </div>
     </header>
 
     {#if notice}<div class="notice" role="status">{notice}</div>{/if}
+    {#if partialWarning}<div class="partial-warning" role="status">{partialWarning}</div>{/if}
 
     {#if activePage === 'onboarding'}
       <section class="page onboarding-page" aria-labelledby="setup-title">
@@ -276,7 +584,7 @@
         </div>
         <div class="onboarding-card">
           {#if setupStep === 1}
-            <p class="eyebrow">Step 1 of 3</p><h2>Protect the first connection</h2><p class="muted">These values stay in this preview and are never transmitted. Production enrollment will exchange them through the authenticated setup flow.</p>
+            <p class="eyebrow">Step 1 of 3</p><h2>Protect the first connection</h2><p class="muted">{PREVIEW_MODE ? 'These values stay in this preview and are never transmitted.' : 'The one-time setup secret is exchanged once over the authenticated API. Passwords are not persisted by this browser.'}</p>
             <div class="form-grid">
               <label>Workspace name<input bind:value={workspaceName} autocomplete="organization" /></label>
               <label>Bootstrap secret<input type="password" bind:value={setupSecret} minlength="16" autocomplete="new-password" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters.</small></label>
@@ -288,11 +596,15 @@
           {:else}
             <p class="eyebrow">Step 3 of 3</p><h2>Enroll the first server</h2><p class="muted">Enrollment is optional. The next package will exchange a short-lived, single-use pairing token and hub fingerprint through the authenticated job flow.</p>
             <div class="choice-row"><label class:chosen={enrollmentMode === 'skip'}><input type="radio" bind:group={enrollmentMode} value="skip" /> Skip for now</label><label class:chosen={enrollmentMode === 'connect'}><input type="radio" bind:group={enrollmentMode} value="connect" /> Connect with a pairing token</label></div>
-            {#if enrollmentMode === 'connect'}<label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters. Preview only; not persisted or transmitted.</small></label>{/if}
+            {#if enrollmentMode === 'connect'}
+              {#if PREVIEW_MODE}<label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters. Preview only; not persisted or transmitted.</small></label>
+              {:else if servers.length > 0}<label class="pairing-field">Pending server<select bind:value={selectedServerId}>{#each servers as server}<option value={server.id}>{server.name} · {server.id}</option>{/each}</select></label><label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>Single-use token; it is sent only to the authenticated enrollment endpoint.</small></label>
+              {:else}<div class="unavailable-panel"><strong>No pending server identity</strong><span>The server must appear in the authenticated fleet before this pairing route can target it.</span></div>{/if}
+            {/if}
             <div class="review-box"><span>Workspace</span><strong>{workspaceName || 'Unnamed workspace'}</strong><span>Retention</span><strong>{retention} days · {notifications === 'none' ? 'notifications off' : notifications}</strong><span>Enrollment</span><strong>{enrollmentMode === 'skip' ? 'skipped' : 'token ready'}</strong></div>
           {/if}
           {#if setupError}<p class="form-error" role="alert">{setupError}</p>{/if}
-          <div class="setup-actions"><button class="button ghost" type="button" on:click={() => setupStep > 1 ? setupStep -= 1 : navigate('overview')}>{setupStep > 1 ? 'Back' : 'Cancel'}</button><button class="button primary" type="button" on:click={completeOnboarding}>{setupStep === 3 ? 'Save setup' : 'Continue'}</button></div>
+          <div class="setup-actions"><button class="button ghost" type="button" on:click={() => setupStep > 1 ? setupStep -= 1 : navigate('overview')}>{setupStep > 1 ? 'Back' : 'Cancel'}</button><button class="button primary" type="button" on:click={() => void completeOnboarding()}>{setupStep === 3 ? (enrollmentMode === 'connect' ? 'Queue enrollment' : 'Save setup') : 'Continue'}</button></div>
         </div>
       </section>
     {:else if activePage === 'server' && selectedServer}
@@ -300,9 +612,10 @@
         <button class="back-link" type="button" on:click={() => navigate('overview')}>← Back to overview</button>
         <div class="page-heading server-heading"><div><p class="eyebrow">Server detail · {selectedServer.role}</p><h1 id="server-title">{selectedServer.name}</h1><p class="lede">{selectedServer.platform} · {selectedServer.architecture} · {selectedServer.version}</p></div><span class={`status-pill ${selectedServer.displayState}`}><i></i>{stateLabel(selectedServer.displayState)}</span></div>
         <div class="server-meta"><span>Connection: <strong>{selectedServer.connectionState}</strong></span><span>Freshness: <strong>{selectedServer.freshnessState}</strong></span><span>Revision: <strong>{selectedServer.configurationRevision}</strong></span>{#if selectedServer.freshnessReason}<span>{selectedServer.freshnessReason}</span>{/if}</div>
+        {#if !PREVIEW_MODE}<article class="panel server-actions"><div class="panel-heading"><div><p class="eyebrow">Owner actions</p><h2>Server identity and installation</h2></div></div><div class="action-grid"><form on:submit|preventDefault={() => void renameSelectedServer()}><label>Server label<input bind:value={labelDraft} maxlength="128" required /></label><button class="button primary small" type="submit" disabled={labelBusy}>{labelBusy ? 'Saving…' : 'Save label'}</button></form><form on:submit|preventDefault={() => void submitInstall()}><label>SSH host<input bind:value={installHost} placeholder="hostname or address" required /></label><label>Port<input type="number" min="1" max="65535" bind:value={installPort} required /></label><label>SSH user<input bind:value={installUser} required /></label><label>Password (or private key)<input type="password" bind:value={installPassword} autocomplete="off" /></label><label>Private key<textarea bind:value={installKey} rows="2" autocomplete="off"></textarea></label><label>Expected host-key fingerprint<input bind:value={installFingerprint} placeholder="SHA256:…" /></label><button class="button primary small" type="submit" disabled={installBusy || (!installPassword && !installKey)}>{installBusy ? 'Queueing…' : 'Queue SSH install'}</button><small class="muted">The server must already exist in the fleet; host-key verification is required by the backend.</small></form><div class="action-note"><strong>Revoke enrollment</strong><span>Stops future authenticated transport for this server and records a durable job.</span><button class="button ghost small" type="button" on:click={() => void revokeSelectedServer()} disabled={labelBusy}>Revoke server</button></div></div>{#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}</article>{/if}
         <div class="tabs" role="tablist" aria-label="Server detail sections">
           {#each availableTabs as tab}
-            <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); }}>{tabLabel(tab)}</button>
+            <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); if (tab === 'logs') void loadLogs(selectedServer.id); }}>{tabLabel(tab)}</button>
           {/each}
           {#if availableTabs.length === 0}<span class="muted tab-empty">No supported detail views</span>{/if}
         </div>
@@ -316,7 +629,7 @@
         {:else if detailTab === 'traffic' && hasCapability(selectedServer, 'traffic')}
           <article class="panel traffic-panel"><div class="panel-heading"><div><p class="eyebrow">Traffic allowance</p><h2>{selectedServer.traffic.scope} window</h2></div><span class="status-pill {selectedServer.traffic.continuity === 'complete' ? 'healthy' : 'stale'}"><i></i>{selectedServer.traffic.continuity}</span></div><div class="traffic-number"><strong>{formatBytes(selectedServer.traffic.countedBytes)}</strong><span>of {formatBytes(selectedServer.traffic.allowanceBytes)}</span></div><div class="progress"><span style={`width:${percentage(selectedServer.traffic.countedBytes, selectedServer.traffic.allowanceBytes)}%`}></span></div><div class="traffic-details"><span>Direction<strong>{selectedServer.traffic.direction}</strong></span><span>Timezone<strong>{selectedServer.traffic.timezone}</strong></span><span>Window<strong>{selectedServer.traffic.from.slice(0, 10)} → {selectedServer.traffic.to.slice(0, 10)}</strong></span><span>Continuity<strong>{selectedServer.traffic.continuity}</strong></span></div></article>
         {:else if detailTab === 'logs' && hasCapability(selectedServer, 'logs')}
-          <article class="panel logs-panel"><div class="panel-heading"><div><p class="eyebrow">Bounded snapshot</p><h2>Recent logs</h2></div><button class="button ghost small" type="button" on:click={() => showNotice('Live tail will be connected to the bounded stream contract in package 03.')}>Enable live tail</button></div><div class="log-list">{#each previewLogEntries as entry}<div class="log-entry"><time>{entry.time}</time><span class={`log-level ${entry.level.toLowerCase()}`}>{entry.level}</span><span class="log-text">{entry.text}<small>{entry.source} · {entry.cursor}</small></span></div>{/each}</div></article>
+          <article class="panel logs-panel"><div class="panel-heading"><div><p class="eyebrow">Bounded snapshot</p><h2>Recent logs</h2></div><button class="button ghost small" type="button" on:click={() => PREVIEW_MODE ? showNotice('Live tail will be connected to the bounded stream contract in package 03.') : void loadLogs(selectedServer.id)}>Reload</button></div>{#if !PREVIEW_MODE && logState === 'loading'}<div class="state-panel"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading logs</h2></div>{:else if !PREVIEW_MODE && logState === 'error'}<div class="unavailable-panel"><strong>Could not load logs</strong><span>{logError}</span><button class="button ghost small" type="button" on:click={() => void loadLogs(selectedServer.id)}>Retry</button></div>{:else if !PREVIEW_MODE && logState === 'empty'}<div class="unavailable-panel"><strong>No log entries</strong><span>No entries were returned for the selected source.</span></div>{:else}<div class="log-list">{#each PREVIEW_MODE ? previewLogEntries : logEntries as entry}<div class="log-entry"><time>{entry.time}</time><span class={`log-level ${entry.level.toLowerCase()}`}>{entry.level}</span><span class="log-text">{entry.text}<small>{entry.source} · {entry.cursor}</small></span></div>{/each}</div>{/if}</article>
         {:else if selectedServer && detailTab !== 'metrics' && !hasCapability(selectedServer, detailTab)}
           <div class="unavailable-panel large"><strong>{tabLabel(detailTab)} unavailable</strong><span>{capabilityMessage(selectedServer, detailTab)}</span></div>
         {:else if selectedServer && !hasCapability(selectedServer, 'metrics')}
@@ -325,25 +638,29 @@
       </section>
     {:else}
       <section class="page overview-page" aria-labelledby="overview-title">
-        <div class="page-heading"><div><p class="eyebrow">{PREVIEW_MODE ? 'Live preview' : 'API connection required'}</p><h1 id="overview-title">{PREVIEW_MODE ? 'Good afternoon, Kia' : 'Fleet overview'}</h1><p class="lede">A clear view of your fleet, with freshness and uncertainty kept visible.</p></div>{#if PREVIEW_MODE}<span class="date-stamp">09 Sep 2026 · 14:42 UTC</span>{:else}<span class="date-stamp">Awaiting authenticated workspace</span>{/if}</div>
-        {#if !PREVIEW_MODE}
-          <div class="state-panel"><div class="state-icon">◎</div><h2>Preview mode is disabled</h2><p>Connect the approved API adapter to load fleet data. Fixtures are not used in production builds.</p><button class="button primary" type="button" on:click={() => navigate('onboarding')}>Open setup</button></div>
+        <div class="page-heading"><div><p class="eyebrow">{PREVIEW_MODE ? 'Live preview' : 'Authenticated workspace'}</p><h1 id="overview-title">{PREVIEW_MODE ? 'Good afternoon, Kia' : 'Fleet overview'}</h1><p class="lede">A clear view of your fleet, with freshness and uncertainty kept visible.</p></div>{#if PREVIEW_MODE}<span class="date-stamp">09 Sep 2026 · 14:42 UTC</span>{:else}<span class="date-stamp">Live API data</span>{/if}</div>
+        {#if authExpired}
+          <div class="state-panel error-state auth-panel"><div class="state-icon">⌁</div><h2>{sessionState === 'signed-out' ? 'Sign in to continue' : 'Session expired'}</h2><p>Your authenticated session is required for fleet data and owner actions. Credentials stay in memory and are sent only to the local API.</p><form class="auth-form" on:submit|preventDefault={() => void submitLogin()}><label>Password<input type="password" bind:value={authPassword} autocomplete="current-password" required /></label>{#if authError}<p class="form-error" role="alert">{authError}</p>{/if}<button class="button primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button></form><button class="text-button" type="button" on:click={() => navigate('onboarding')}>First run? Complete owner setup →</button></div>
         {:else if previewState === 'loading'}
           <div class="state-panel"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading fleet data</h2><p>Reading the bounded server summary.</p></div>
         {:else if previewState === 'empty'}
           <div class="state-panel"><div class="state-icon">＋</div><h2>No servers enrolled</h2><p>Start with one local server to see health and traffic here.</p><button class="button primary" type="button" on:click={() => navigate('onboarding')}>Add first server</button></div>
         {:else if previewState === 'error'}
-          <div class="state-panel error-state"><div class="state-icon">!</div><h2>Could not load the fleet</h2><p>The API error is explicit and retryable; no stale fixture data is substituted.</p><button class="button primary" type="button" on:click={() => void loadPreviewData()}>Retry preview</button></div>
+          <div class="state-panel error-state"><div class="state-icon">!</div><h2>Could not load the fleet</h2><p>{apiError || 'The API error is explicit and retryable; no stale fixture data is substituted.'}</p><button class="button primary" type="button" on:click={() => PREVIEW_MODE ? void loadPreviewData() : void loadApiData()}>Retry</button></div>
         {:else}
-          <div class="summary-grid"><article class="summary-card"><span>Healthy servers</span><strong>{healthyCount}<small> / {displayServers.length}</small></strong><span class="summary-note positive">↑ Fresh enough to act</span></article><article class="summary-card"><span>Needs attention</span><strong>{attentionCount}</strong><span class="summary-note warning">Includes stale and offline</span></article><article class="summary-card"><span>Month-to-date traffic</span><strong>{formatBytes(totalTrafficBytes)}</strong><span class="summary-note">of {formatBytes(totalAllowanceBytes)} allowance</span></article></div>
+          <div class="summary-grid"><article class="summary-card"><span>Healthy servers</span><strong>{healthyCount}<small> / {displayServers.length}</small></strong><span class="summary-note positive">↑ Fresh enough to act</span></article><article class="summary-card"><span>Needs attention</span><strong>{attentionCount}</strong><span class="summary-note warning">Includes stale and offline</span></article><article class="summary-card"><span>Month-to-date traffic</span><strong>{formatBytes(overviewTrafficBytes)}</strong><span class="summary-note">of {formatBytes(overviewAllowanceBytes)} allowance</span></article></div>
           <div class="section-heading"><div><p class="eyebrow">Fleet health</p><h2>Servers</h2></div><span class="muted">Sorted by attention first</span></div>
           <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`} aria-label={stateLabel(server.displayState)}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessState === 'unknown' ? server.freshnessReason : `last heartbeat ${server.lastHeartbeat?.slice(11, 16)} UTC`}</small></span><span class="server-metric"><strong>{metricValue(server.metrics.cpu)}</strong><small>CPU</small></span><span class="server-arrow" aria-hidden="true">→</span></button>{/each}</div>
-          <div class="lower-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Traffic</p><h2>Allowance overview</h2></div><button class="text-button" type="button" on:click={() => selectedServer && selectServer(selectedServer)}>View details →</button></div><div class="traffic-number"><strong>{formatBytes(totalTrafficBytes)}</strong><span>used this month</span></div><div class="progress"><span style={`width:${percentage(totalTrafficBytes, totalAllowanceBytes)}%`}></span></div><p class="muted">{formatBytes(totalAllowanceBytes)} combined allowance · UTC</p></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Recent activity</p><h2>Latest log signal</h2></div><span class="status-dot-label"><i></i> bounded</span></div><div class="activity-item"><span class="activity-icon">✓</span><div><strong>Heartbeat accepted</strong><small>Frankfurt edge · 14:42 UTC</small></div></div><div class="activity-item"><span class="activity-icon warning">!</span><div><strong>Stale sample detected</strong><small>Ashburn API · 14:34 UTC</small></div></div></article></div>
+          <div class="lower-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Traffic</p><h2>Allowance overview</h2></div><button class="text-button" type="button" on:click={() => selectedServer && selectServer(selectedServer)}>View details →</button></div><div class="traffic-number"><strong>{formatBytes(overviewTrafficBytes)}</strong><span>used this month</span></div><div class="progress"><span style={`width:${percentage(overviewTrafficBytes, overviewAllowanceBytes)}%`}></span></div><p class="muted">{formatBytes(overviewAllowanceBytes)} combined allowance · UTC</p></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Recent activity</p><h2>Latest log signal</h2></div><span class="status-dot-label"><i></i> bounded</span></div><div class="activity-item"><span class="activity-icon">✓</span><div><strong>Heartbeat accepted</strong><small>Live API activity</small></div></div><div class="activity-item"><span class="activity-icon warning">!</span><div><strong>Freshness visible</strong><small>Inspect each server for current state</small></div></div></article></div>
+          {#if !PREVIEW_MODE}
+            <article class="panel actions-panel"><div class="panel-heading"><div><p class="eyebrow">Owner actions</p><h2>Durable operations</h2></div><span class="muted">Every request is idempotent</span></div><div class="action-grid"><form on:submit|preventDefault={() => void submitUpdate()}><label>Release to deploy<input bind:value={updateRelease} placeholder="e.g. 1.2.3" required /></label><button class="button primary small" type="submit" disabled={updateBusy || !servers.length}>{updateBusy ? 'Queueing…' : `Update ${servers.length} server${servers.length === 1 ? '' : 's'}`}</button></form><div class="action-note"><strong>SSH installation</strong><span>Open a server to provide its host-key-verified connection details. Secrets are held only until the API accepts the job.</span></div></div></article>
+          {/if}
+          {#if latestJob}<article class="panel job-panel" aria-live="polite"><div class="panel-heading"><div><p class="eyebrow">Job status</p><h2>{latestJob.kind}</h2></div><span class={`status-pill ${latestJob.state}`}><i></i>{latestJob.state}</span></div><div class="job-progress"><span style={`width:${Math.max(0, Math.min(100, latestJob.progress))}%`}></span></div><p class="muted">{latestJob.progress}% · revision {latestJob.revision} · {latestJob.id}</p>{#if latestJob.error}<p class="form-error">{latestJob.error.message || 'The job failed.'}</p>{/if}{#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}<div class="job-actions">{#if ['queued', 'running'].includes(latestJob.state)}<button class="button ghost small" type="button" on:click={() => void cancelLatestJob()}>Cancel job</button>{/if}<button class="button ghost small" type="button" on:click={() => void pollJob(latestJob?.id ?? '')} disabled={jobBusy}>Reload status</button></div></article>{/if}
         {/if}
       </section>
     {/if}
 
-    <footer><span>{PREVIEW_MODE ? 'Preview adapter · values are fixtures' : 'API adapter required'}</span><span>Payesh foundation · local-first</span></footer>
+    <footer><span>{PREVIEW_MODE ? 'Preview adapter · values are fixtures' : 'Authenticated API adapter · live data'}</span><span>Payesh foundation · local-first</span></footer>
   </main>
 </div>
 
@@ -377,6 +694,7 @@
   .breadcrumbs { display: flex; gap: 10px; color: var(--muted); font-size: 13px; }.breadcrumbs strong { color: var(--ink); }
   .topbar-actions { gap: 12px; }.preview-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }.preview-control select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); }
   .icon-button { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); }
+  .partial-warning { margin: 14px 42px 0; padding: 10px 13px; border: 1px solid var(--warning); border-radius: 9px; background: var(--warning-bg); color: var(--warning); font-size: 12px; }
   .page { max-width: 1240px; margin: 0 auto; padding: 44px 42px 30px; }.page-heading { justify-content: space-between; gap: 20px; margin-bottom: 34px; }.eyebrow { margin: 0 0 8px; color: var(--teal); font-size: 11px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }h1, h2, p { margin-top: 0; }h1 { margin-bottom: 8px; font-size: clamp(29px, 4vw, 42px); letter-spacing: -.04em; }h2 { margin-bottom: 0; font-size: 18px; letter-spacing: -.02em; }.lede { margin: 0; color: var(--muted); }.date-stamp, .muted { color: var(--muted); font-size: 12px; }
   .button { border: 1px solid var(--line); border-radius: 9px; padding: 10px 15px; background: var(--surface); color: var(--ink); font-weight: 700; }.button.small { padding: 8px 12px; font-size: 12px; }.button.primary { border-color: var(--teal); background: var(--teal); color: var(--primary-contrast); }.button.ghost { background: transparent; }.text-button, .back-link { border: 0; background: transparent; color: var(--teal); font-weight: 700; }.back-link { margin-bottom: 26px; padding: 0; }.notice { position: fixed; z-index: 5; top: 88px; right: 28px; max-width: 360px; padding: 12px 15px; border: 1px solid color-mix(in srgb, var(--teal) 35%, var(--line)); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); color: var(--ink); font-size: 13px; }
   .summary-grid, .metric-grid, .lower-grid { display: grid; gap: 14px; }.summary-grid { grid-template-columns: repeat(3, 1fr); margin-bottom: 42px; }.summary-card, .metric-card, .panel, .onboarding-card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }.summary-card { padding: 20px; }.summary-card > span:first-child { color: var(--muted); font-size: 12px; }.summary-card strong { display: block; margin: 10px 0 4px; font-size: 28px; letter-spacing: -.04em; }.summary-card strong small { color: var(--muted); font-size: 13px; font-weight: 500; }.summary-note { color: var(--muted); font-size: 11px; }.summary-note.positive { color: var(--teal); }.summary-note.warning { color: var(--warning); }.section-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 12px; }.section-heading h2 { font-size: 24px; }
@@ -386,8 +704,9 @@
   .stepper { display: flex; gap: 24px; margin-bottom: 24px; }.step { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }.step span { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--line); border-radius: 50%; }.step.current { color: var(--ink); font-weight: 700; }.step.current span, .step.done span { border-color: var(--teal); background: var(--teal); color: white; }.onboarding-card { max-width: 760px; padding: 30px; }.onboarding-card h2 { margin-bottom: 10px; font-size: 24px; }.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 26px 0; }.form-grid label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; }.form-grid label:first-child { grid-column: 1 / -1; }.form-grid small { color: var(--muted); font-size: 10px; }.setup-actions { justify-content: space-between; padding-top: 20px; border-top: 1px solid var(--line); }.form-error { margin: 0 0 15px; color: var(--danger); font-size: 12px; }.review-box { display: grid; grid-template-columns: 150px 1fr; gap: 12px; margin: 26px 0; padding: 18px; border-radius: 10px; background: var(--surface-muted); color: var(--muted); font-size: 12px; }.review-box strong { color: var(--ink); }
   .choice-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0 14px; }.choice-row label { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 12px; }.choice-row label.chosen { border-color: var(--teal); background: var(--teal-bg); color: var(--ink); }.pairing-field { display: flex; flex-direction: column; gap: 7px; max-width: 470px; color: var(--muted); font-size: 12px; }.pairing-field input { padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }.pairing-field small { color: var(--muted); font-size: 10px; }
   .state-panel { display: grid; justify-items: center; gap: 10px; padding: 80px 20px; border: 1px dashed var(--line); border-radius: 14px; background: var(--surface); text-align: center; }.state-panel h2 { margin: 0; }.state-panel p { max-width: 460px; margin-bottom: 8px; color: var(--muted); font-size: 13px; }.state-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--surface-muted); color: var(--teal); font-size: 24px; }.error-state .state-icon { color: var(--danger); }.loading-spinner { width: 32px; height: 32px; border: 3px solid var(--line); border-top-color: var(--teal); border-radius: 50%; animation: spin 800ms linear infinite; }@keyframes spin { to { transform: rotate(360deg); } }
+  .auth-form { display: grid; gap: 12px; width: min(100%, 340px); text-align: left; }.auth-form label, .action-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }.auth-form input, .action-grid input, .action-grid textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }.actions-panel, .server-actions, .job-panel { margin-top: 20px; }.action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }.action-grid form { display: grid; align-content: start; gap: 11px; }.action-grid form label:nth-of-type(2), .action-grid form label:nth-of-type(3) { min-width: 0; }.action-note { display: grid; align-content: start; gap: 8px; padding: 13px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12px; }.action-note strong { color: var(--ink); }.action-note .button { justify-self: start; }.job-progress { height: 8px; overflow: hidden; border-radius: 20px; background: var(--surface-muted); }.job-progress span { display: block; height: 100%; border-radius: inherit; background: var(--teal); transition: width .2s ease; }.job-actions { display: flex; gap: 10px; justify-content: end; }
   @media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
   footer { display: flex; justify-content: space-between; gap: 15px; max-width: 1240px; margin: 20px auto 0; padding: 0 42px 25px; color: var(--muted); font-size: 11px; }
   @media (max-width: 900px) { .app-shell { grid-template-columns: 1fr; }.sidebar { position: sticky; top: 0; z-index: 4; flex-direction: row; align-items: center; gap: 20px; padding: 12px 18px; border-right: 0; border-bottom: 1px solid var(--line); }.brand-lockup { flex: 0 0 auto; }.nav-list { flex-direction: row; flex: 1; gap: 2px; overflow-x: auto; }.nav-item { flex: 0 0 auto; width: auto; padding: 9px 11px; white-space: nowrap; }.nav-item.active { box-shadow: inset 0 -3px var(--teal); }.sidebar-footer { display: none; }.topbar { padding: 0 24px; }.page { padding: 32px 24px 20px; }footer { padding: 0 24px 20px; } }
-  @media (max-width: 680px) { .topbar { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px 18px; }.topbar-actions { width: 100%; justify-content: space-between; }.preview-control { margin-right: auto; }.page { padding: 28px 16px 18px; }.page-heading { align-items: flex-start; flex-direction: column; margin-bottom: 25px; }.date-stamp { align-self: flex-start; }.summary-grid, .metric-grid, .lower-grid { grid-template-columns: 1fr; }.server-row { gap: 10px; }.server-status { min-width: 0; }.server-metric { display: none; }.server-arrow { margin-left: auto; }.traffic-details { grid-template-columns: 1fr 1fr; }.form-grid { grid-template-columns: 1fr; }.form-grid label:first-child { grid-column: auto; }.onboarding-card { padding: 22px 18px; }.stepper { justify-content: space-between; gap: 8px; }.step { font-size: 11px; }.notice { top: 130px; right: 16px; left: 16px; max-width: none; }.panel { padding: 18px; }footer { flex-direction: column; padding: 0 16px 18px; }.chart-panel .panel-heading { align-items: flex-start; flex-direction: column; }.panel-heading select { width: 100%; } }
+  @media (max-width: 680px) { .topbar { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px 18px; }.topbar-actions { width: 100%; justify-content: space-between; }.preview-control { margin-right: auto; }.page { padding: 28px 16px 18px; }.page-heading { align-items: flex-start; flex-direction: column; margin-bottom: 25px; }.date-stamp { align-self: flex-start; }.summary-grid, .metric-grid, .lower-grid, .action-grid { grid-template-columns: 1fr; }.server-row { gap: 10px; }.server-status { min-width: 0; }.server-metric { display: none; }.server-arrow { margin-left: auto; }.traffic-details { grid-template-columns: 1fr 1fr; }.form-grid { grid-template-columns: 1fr; }.form-grid label:first-child { grid-column: auto; }.onboarding-card { padding: 22px 18px; }.stepper { justify-content: space-between; gap: 8px; }.step { font-size: 11px; }.notice { top: 130px; right: 16px; left: 16px; max-width: none; }.panel { padding: 18px; }footer { flex-direction: column; padding: 0 16px 18px; }.chart-panel .panel-heading { align-items: flex-start; flex-direction: column; }.panel-heading select { width: 100%; } }
 </style>

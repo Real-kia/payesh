@@ -97,7 +97,7 @@ func (s *Service) preview(w http.ResponseWriter, r *http.Request, serverID contr
 	if !decodeCPURequest(w, r, &request) {
 		return
 	}
-	preview, err := s.Manager.Preview(Target{Kind: targetKind, Name: targetName}, request.Millicores, request.TotalCores)
+	preview, err := s.Manager.PreviewForServer(r.Context(), serverID, Target{Kind: targetKind, Name: targetName}, request.Millicores, request.TotalCores)
 	if err != nil {
 		writeCPUError(w, http.StatusBadRequest, "invalid_preview_request", err.Error(), false)
 		return
@@ -166,12 +166,17 @@ func runIdempotent(w http.ResponseWriter, r *http.Request, store *monitoring.Sto
 	sum := sha256.Sum256(encoded)
 	hash := hex.EncodeToString(sum[:])
 
-	if record, found, err := store.GetControlPolicyRequest(r.Context(), serverID, ModuleID, targetKind, targetName, key); err != nil {
+	record, claimed, err := store.ClaimControlPolicyRequest(r.Context(), serverID, ModuleID, targetKind, targetName, key, hash)
+	if err != nil {
+		if errors.Is(err, monitoring.ErrControlPolicyRequestConflict) {
+			writeCPUError(w, http.StatusConflict, "idempotency_conflict", "idempotency_key was already used for a different request", false)
+			return
+		}
 		writeCPUError(w, http.StatusInternalServerError, "storage_error", "could not read cpu policy request history", true)
 		return
-	} else if found {
-		if record.RequestHash != hash {
-			writeCPUError(w, http.StatusConflict, "idempotency_conflict", "idempotency_key was already used for a different request", false)
+	} else if !claimed {
+		if record.ResultJSON == `{}` {
+			writeCPUError(w, http.StatusConflict, "request_in_progress", "an identical request is already running", true)
 			return
 		}
 		var policy contracts.ControlPolicy
@@ -185,6 +190,7 @@ func runIdempotent(w http.ResponseWriter, r *http.Request, store *monitoring.Sto
 
 	policy, err := run()
 	if err != nil {
+		_ = store.AbandonControlPolicyRequest(r.Context(), serverID, ModuleID, targetKind, targetName, key, hash)
 		switch {
 		case errors.Is(err, monitoring.ErrControlPolicyRevisionConflict):
 			writeCPUError(w, http.StatusConflict, "control_policy_revision_conflict", "policy state changed; reload before retrying", false)
@@ -198,7 +204,7 @@ func runIdempotent(w http.ResponseWriter, r *http.Request, store *monitoring.Sto
 		writeCPUError(w, http.StatusInternalServerError, "storage_error", "could not encode cpu policy result", true)
 		return
 	}
-	if err := store.SaveControlPolicyRequest(r.Context(), serverID, ModuleID, targetKind, targetName, key, hash, resultJSON); err != nil {
+	if err := store.CompleteControlPolicyRequest(r.Context(), serverID, ModuleID, targetKind, targetName, key, hash, resultJSON); err != nil {
 		writeCPUError(w, http.StatusInternalServerError, "storage_error", "could not persist cpu policy request result", true)
 		return
 	}

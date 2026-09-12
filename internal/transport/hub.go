@@ -2,7 +2,11 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"sort"
 	"sync"
@@ -14,6 +18,8 @@ import (
 
 var ErrAlreadyConnected = errors.New("node already has an active hub connection")
 var ErrConnectionClosed = errors.New("connection_closed")
+var ErrEnrollmentJobComplete = errors.New("enrollment_job_complete")
+var ErrActionDeliveryUnsupported = errors.New("node does not advertise action delivery")
 var actionPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 
 // Hub binds verified node identities to the existing durable monitoring
@@ -49,6 +55,7 @@ type Connection struct {
 	jobs                   []contracts.ActionRequest
 	seenJobKeys            map[string]struct{}
 	seenJobOrder           []string
+	leases                 map[string]monitoring.JobLease
 }
 
 func NewHub(ca *CertificateAuthority, store *monitoring.Store) (*Hub, error) {
@@ -67,6 +74,142 @@ func (h *Hub) SetIngestionObserver(observer IngestionObserver) {
 	h.observerMu.Lock()
 	h.observer = observer
 	h.observerMu.Unlock()
+}
+
+// LeaseNextJob claims one durable action for the currently authenticated
+// connection. The connection check prevents a stale websocket from leasing
+// work after a reconnect has taken ownership of the node identity.
+func (h *Hub) LeaseNextJob(ctx context.Context, c *Connection, now time.Time) (monitoring.JobLease, bool, error) {
+	if h == nil || c == nil || c.hub != h {
+		return monitoring.JobLease{}, false, errors.New("connection does not belong to hub")
+	}
+	c.stateMu.RLock()
+	closed := c.closed
+	capabilities := append([]string(nil), c.hello.Capabilities...)
+	serverID := c.ServerID
+	configurationRevision := c.hello.ConfigurationRevision
+	c.stateMu.RUnlock()
+	if closed {
+		return monitoring.JobLease{}, false, ErrConnectionClosed
+	}
+	if !supportsActionDelivery(capabilities) {
+		return monitoring.JobLease{}, false, ErrActionDeliveryUnsupported
+	}
+	lease, ok, err := h.Store.LeaseNextActionJob(ctx, serverID, now.UTC(), 90*time.Second)
+	if err != nil || !ok {
+		return lease, ok, err
+	}
+	if lease.Action.ExpectedRevision != configurationRevision {
+		_, completeErr := h.Store.CompleteActionJob(ctx, lease.Job.ID, lease.Token, contracts.ActionResponse{
+			RequestID: lease.Action.RequestID,
+			Accepted:  false,
+			Error:     &contracts.Error{Code: "configuration_revision_conflict", Message: "node configuration changed before delivery", Retryable: false},
+		}, now.UTC())
+		if completeErr != nil {
+			return monitoring.JobLease{}, false, completeErr
+		}
+		return monitoring.JobLease{}, false, nil
+	}
+	return lease, true, nil
+}
+
+// CreateActionJob is the server-side durable producer seam. Callers persist
+// the complete typed request before a live connection is required; an active
+// connection will discover it through LeaseNextJob and reconnects reclaim an
+// expired lease safely.
+func (h *Hub) CreateActionJob(ctx context.Context, job contracts.Job, request contracts.ActionRequest, requestHash string, now time.Time) (contracts.Job, bool, error) {
+	if h == nil || h.Store == nil {
+		return contracts.Job{}, false, errors.New("hub is not configured")
+	}
+	if err := request.Validate(now); err != nil || request.TargetServerID != job.TargetServerID || request.IdempotencyKey != job.IdempotencyKey {
+		return contracts.Job{}, false, errors.New("invalid action job")
+	}
+	job.Action = &request
+	return h.Store.CreateJob(ctx, job, requestHash, now)
+}
+
+func supportsActionDelivery(capabilities []string) bool {
+	for _, capability := range capabilities {
+		if capability == "actions" || capability == contracts.HelperProtocol || capability == contracts.ModuleProtocol {
+			return true
+		}
+	}
+	return false
+}
+
+// ConsumeEnrollment is the node bootstrap seam used before a client
+// certificate exists. The short-lived pairing token is supplied by the node
+// over its protected bootstrap channel; it is never persisted by the hub.
+// The CA consumes it exactly once and the returned identity is the only place
+// the new private key is exposed to the caller.
+func (h *Hub) ConsumeEnrollment(ctx context.Context, token string, now time.Time) (NodeIdentity, error) {
+	if h == nil || h.CA == nil || h.Store == nil {
+		return NodeIdentity{}, errors.New("hub is not configured")
+	}
+	serverID, err := h.CA.EnrollmentServerID(token, now)
+	if err != nil {
+		return NodeIdentity{}, err
+	}
+	if _, found, err := h.Store.GetServer(ctx, serverID); err != nil {
+		return NodeIdentity{}, err
+	} else if !found {
+		return NodeIdentity{}, errors.New("unenrolled_server")
+	}
+	identity, err := h.CA.ConsumeEnrollmentToken(token, now)
+	if err != nil {
+		return NodeIdentity{}, err
+	}
+	return identity, nil
+}
+
+// ConsumeEnrollmentJob claims a durable enrollment job and consumes the
+// pairing token supplied by the node at claim time. The token and generated
+// private key never enter SQLite. A successful claim returns the identity to
+// the node and marks the job succeeded; invalid or expired claims become a
+// durable failed job, so retries cannot silently replay work.
+func (h *Hub) ConsumeEnrollmentJob(ctx context.Context, jobID string, token string, now time.Time) (NodeIdentity, contracts.Job, error) {
+	if h == nil || h.Store == nil || h.CA == nil || jobID == "" || token == "" {
+		return NodeIdentity{}, contracts.Job{}, errors.New("invalid enrollment job request")
+	}
+	job, found, err := h.Store.GetJob(ctx, jobID)
+	if err != nil {
+		return NodeIdentity{}, contracts.Job{}, err
+	}
+	if !found {
+		return NodeIdentity{}, contracts.Job{}, monitoring.ErrJobNotFound
+	}
+	if job.Kind != "enrollment" || job.TargetServerID == "" {
+		return NodeIdentity{}, job, monitoring.ErrEnrollmentJobInvalid
+	}
+	if job.State == contracts.JobSucceeded || job.State == contracts.JobFailed || job.State == contracts.JobCancelled || job.State == contracts.JobRecoveryRequired {
+		return NodeIdentity{}, job, ErrEnrollmentJobComplete
+	}
+	tokenServerID, err := h.CA.EnrollmentServerID(token, now)
+	if err != nil {
+		return NodeIdentity{}, job, err
+	}
+	if tokenServerID != job.TargetServerID {
+		return NodeIdentity{}, job, errors.New("enrollment token does not belong to job target")
+	}
+	claimed, err := h.Store.ClaimEnrollmentJob(ctx, job.ID, job.TargetServerID, job.Revision, now)
+	if err != nil {
+		return NodeIdentity{}, job, err
+	}
+	identity, err := h.ConsumeEnrollment(ctx, token, now)
+	if err != nil {
+		failed, transitionErr := h.Store.TransitionJob(ctx, claimed.ID, claimed.Revision, contracts.JobFailed, 100, &contracts.Error{Code: "enrollment_failed", Message: "enrollment bootstrap failed", Retryable: false}, now)
+		if transitionErr != nil {
+			return NodeIdentity{}, claimed, fmt.Errorf("enrollment failed: %v; recording failure: %w", err, transitionErr)
+		}
+		return NodeIdentity{}, failed, err
+	}
+	succeeded, transitionErr := h.Store.TransitionJob(ctx, claimed.ID, claimed.Revision, contracts.JobSucceeded, 100, nil, now)
+	if transitionErr != nil {
+		// The identity has already been issued and is returned to the node. The
+		// caller can persist it even if the job acknowledgement needs recovery.
+		return identity, claimed, fmt.Errorf("enrollment identity issued but job completion was not recorded: %w", transitionErr)
+	}
+	return identity, succeeded, nil
 }
 
 // Open verifies client identity, its protocol inventory, and that enrollment
@@ -109,7 +252,7 @@ func (h *Hub) Open(ctx context.Context, certificatePEM []byte, hello contracts.H
 		existing.closed = true
 		existing.stateMu.Unlock()
 	}
-	c := &Connection{hub: h, ServerID: id, hello: hello, certificatePEM: append([]byte(nil), certificatePEM...), certificateFingerprint: certificateFingerprint, seenJobKeys: make(map[string]struct{})}
+	c := &Connection{hub: h, ServerID: id, hello: hello, certificatePEM: append([]byte(nil), certificatePEM...), certificateFingerprint: certificateFingerprint, seenJobKeys: make(map[string]struct{}), leases: make(map[string]monitoring.JobLease)}
 	h.connections[id] = c
 	if err := h.Store.TouchServer(ctx, id, now.UTC()); err != nil {
 		delete(h.connections, id)
@@ -127,6 +270,27 @@ func (c *Connection) Close() {
 	c.closed = true
 	c.stateMu.Unlock()
 	c.detach()
+}
+
+// Renew rotates the certificate bound to this authenticated connection. The
+// CA revokes the predecessor as part of the same durable transition; the
+// websocket handler sends the returned identity before closing this socket so
+// the node can reconnect with the replacement certificate.
+func (c *Connection) Renew(ctx context.Context, now time.Time) (NodeIdentity, error) {
+	if c == nil || c.hub == nil || c.hub.CA == nil || now.IsZero() {
+		return NodeIdentity{}, errors.New("invalid renewal connection")
+	}
+	c.stateMu.RLock()
+	if c.closed {
+		c.stateMu.RUnlock()
+		return NodeIdentity{}, ErrConnectionClosed
+	}
+	identity := NodeIdentity{ServerID: c.ServerID, CertificatePEM: append([]byte(nil), c.certificatePEM...), Fingerprint: c.certificateFingerprint}
+	c.stateMu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return NodeIdentity{}, err
+	}
+	return c.hub.CA.Renew(identity, now)
 }
 
 func (c *Connection) detach() {
@@ -358,6 +522,22 @@ func (c *Connection) QueueJob(request contracts.ActionRequest, now time.Time) er
 	if request.ExpectedRevision != c.hello.ConfigurationRevision {
 		c.stateMu.Unlock()
 		return errors.New("configuration_revision_conflict")
+	}
+	// Requests with an explicit local target are durable jobs. Keep the legacy
+	// in-memory path below for the original low-level queue tests/callers that
+	// intentionally omit a target; production action producers should always
+	// provide one so reconnects cannot lose work.
+	if request.Target != "" {
+		data, err := json.Marshal(request)
+		if err != nil {
+			c.stateMu.Unlock()
+			return err
+		}
+		hash := sha256.Sum256(data)
+		jobID := "action-" + hex.EncodeToString(hash[:12])
+		c.stateMu.Unlock()
+		_, _, err = c.hub.Store.CreateJob(context.Background(), contracts.Job{ID: jobID, Kind: "action", State: contracts.JobQueued, IdempotencyKey: request.IdempotencyKey, TargetServerID: c.ServerID, ExpiresAt: request.Deadline, Action: &request}, hex.EncodeToString(hash[:]), now.UTC())
+		return err
 	}
 	if len(c.jobs) >= 64 {
 		c.stateMu.Unlock()

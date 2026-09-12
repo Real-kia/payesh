@@ -26,7 +26,7 @@ const MaxArchiveEntries = 4096
 // and cumulative extracted bytes may never exceed the manifest's declared
 // unpacked size. destDir is left absent (not partially populated) on any
 // rejection.
-func StageArchive(archiveBytes []byte, declaredCompressedBytes, declaredUnpackedBytes uint64, declaredSHA256 hex256, destDir string) error {
+func StageArchive(archiveBytes []byte, declaredCompressedBytes, declaredUnpackedBytes uint64, declaredSHA256 hex256, destDir string, allowedExecutables ...string) error {
 	if uint64(len(archiveBytes)) != declaredCompressedBytes {
 		return fmt.Errorf("modules: archive size %d does not match manifest %d", len(archiveBytes), declaredCompressedBytes)
 	}
@@ -46,7 +46,12 @@ func StageArchive(archiveBytes []byte, declaredCompressedBytes, declaredUnpacked
 	if err != nil {
 		return fmt.Errorf("modules: create staging scratch dir: %w", err)
 	}
-	if err := extractTarGz(archiveBytes, staged, declaredUnpackedBytes); err != nil {
+	allowed := make(map[string]struct{}, len(allowedExecutables))
+	for _, name := range allowedExecutables {
+		cleaned := filepath.ToSlash(filepath.Clean(name))
+		allowed[cleaned] = struct{}{}
+	}
+	if err := extractTarGz(archiveBytes, staged, declaredUnpackedBytes, allowed); err != nil {
 		os.RemoveAll(staged)
 		return err
 	}
@@ -62,7 +67,7 @@ func StageArchive(archiveBytes []byte, declaredCompressedBytes, declaredUnpacked
 // contracts.ModuleManifest.Validate already checked its length).
 type hex256 = string
 
-func extractTarGz(archiveBytes []byte, destDir string, maxUnpackedBytes uint64) error {
+func extractTarGz(archiveBytes []byte, destDir string, maxUnpackedBytes uint64, allowedExecutables map[string]struct{}) error {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archiveBytes))
 	if err != nil {
 		return fmt.Errorf("modules: archive is not valid gzip: %w", err)
@@ -93,6 +98,12 @@ func extractTarGz(archiveBytes []byte, destDir string, maxUnpackedBytes uint64) 
 				return err
 			}
 		case tar.TypeReg:
+			if header.Mode&0o111 != 0 {
+				name := filepath.ToSlash(filepath.Clean(header.Name))
+				if _, ok := allowedExecutables[name]; !ok {
+					return fmt.Errorf("modules: archive contains unexpected executable %q", header.Name)
+				}
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return err
 			}
@@ -163,7 +174,9 @@ func ActivateAtomic(stagedDir, activeDir string) (previousBackupDir string, err 
 	}
 	if _, err := os.Stat(activeDir); err == nil {
 		previousBackupDir = activeDir + ".previous"
-		os.RemoveAll(previousBackupDir)
+		if err := os.RemoveAll(previousBackupDir); err != nil {
+			return "", fmt.Errorf("modules: remove stale previous release: %w", err)
+		}
 		if err := os.Rename(activeDir, previousBackupDir); err != nil {
 			return "", fmt.Errorf("modules: preserve previous release: %w", err)
 		}
@@ -171,6 +184,12 @@ func ActivateAtomic(stagedDir, activeDir string) (previousBackupDir string, err 
 		return "", err
 	}
 	if err := os.Rename(stagedDir, activeDir); err != nil {
+		if previousBackupDir != "" {
+			if restoreErr := os.Rename(previousBackupDir, activeDir); restoreErr != nil {
+				return previousBackupDir, fmt.Errorf("modules: activate staged release: %v; restore previous release: %w", err, restoreErr)
+			}
+			previousBackupDir = ""
+		}
 		return previousBackupDir, fmt.Errorf("modules: activate staged release: %w", err)
 	}
 	return previousBackupDir, nil

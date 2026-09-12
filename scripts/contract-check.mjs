@@ -55,13 +55,13 @@ const requiredPaths = [
   '/servers/{serverId}/cpu-policies/{targetKind}/{targetName}/apply:',
   '/servers/{serverId}/cpu-policies/{targetKind}/{targetName}/revert:',
   '/updates/preflight:', '/backups:', '/backups/export:', '/backups/import:',
-  '/role-transitions:', '/servers/{serverId}/enrollment:', '/jobs/{jobId}:',
+  '/role-transitions:', '/servers/{serverId}/enrollment:', '/servers/{serverId}/enrollment-token:', '/jobs/{jobId}:',
   '/audit-events:'
 ];
 for (const path of requiredPaths) {
   if (!spec.includes(`  ${path}`)) throw new Error(`OpenAPI path missing: ${path}`);
 }
-for (const schema of ['MetricSample:', 'CoverageGap:', 'Job:', 'APIError:', 'CancelJobRequest:', 'TrafficPeriod:', 'Rollup:', 'LogEntry:', 'LiveLogEvent:', 'Module:', 'Policy:', 'Release:', 'ReleaseArtifact:', 'Backup:', 'MaintenanceWindow:', 'ServerPage:', 'LogSourcePage:', 'AlertRulePage:', 'AlertStatePage:', 'ModulePage:', 'ModuleInstallationPage:', 'PolicyPage:', 'ReleasePage:', 'BackupPage:', 'AuditEvent:', 'AuditEventPage:', 'ServerLabelUpdateRequest:']) {
+for (const schema of ['MetricSample:', 'CoverageGap:', 'Job:', 'APIError:', 'CancelJobRequest:', 'TrafficPeriod:', 'Rollup:', 'LogEntry:', 'LiveLogEvent:', 'Module:', 'Policy:', 'Release:', 'ReleaseArtifact:', 'Backup:', 'MaintenanceWindow:', 'ServerPage:', 'LogSourcePage:', 'AlertRulePage:', 'AlertStatePage:', 'ModulePage:', 'ModuleInstallationPage:', 'PolicyPage:', 'ReleasePage:', 'BackupPage:', 'AuditEvent:', 'AuditEventPage:', 'ServerLabelUpdateRequest:', 'EnrollmentTokenRequest:', 'EnrollmentToken:']) {
   if (!spec.includes(`    ${schema}`)) throw new Error(`OpenAPI schema missing: ${schema}`);
 }
 if (/sequence:\s*\{ type: integer/.test(spec) || /revision:\s*\{ type: integer/.test(spec)) {

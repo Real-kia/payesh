@@ -10,9 +10,9 @@ writing, `servers`, `metric_samples`, `rollups`, `traffic_periods`,
 `traffic_allowances`, `log_sources`, `log_entries`, `alert_rules`/`alert_states`/`alert_history`,
 `maintenance_windows`, `incidents`, `module_installations`, and
 `control_policies` are real SQLite tables (`internal/monitoring/store.go`
-and its `*_store.go` companions). `jobs` and `audit_events` are only wire
-contracts (`contracts.Job`, `contracts.AuditEvent`) with no backing table
-yet — no package has persisted either one.
+and its `*_store.go` companions). `jobs` and `audit_events` also have backing
+tables. Audit persistence is currently populated atomically by shared control
+policy transitions; other mutation families still need to adopt it.
 
 ## Entities
 

@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -96,6 +97,92 @@ func TestHubAcknowledgesOnlyAuthenticatedDurableBatch(t *testing.T) {
 	}
 	if _, err := hub.Open(ctx, identity.CertificatePEM, hello, now); err != nil {
 		t.Fatalf("connection not released: %v", err)
+	}
+}
+
+func TestHubConsumesBootstrapEnrollmentToken(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	store, err := monitoring.OpenStore(ctx, ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	id := contracts.ServerID("server-bootstrap-0123")
+	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Node", Role: "node", Architecture: "amd64", Platform: "linux", ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := NewCertificateAuthority(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := ca.IssueEnrollment(id, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := NewHub(ca, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := hub.ConsumeEnrollment(ctx, enrollment.Token, now.Add(time.Second))
+	if err != nil || identity.ServerID != id {
+		t.Fatalf("bootstrap identity=%+v err=%v", identity, err)
+	}
+	if _, err := hub.ConsumeEnrollment(ctx, enrollment.Token, now.Add(2*time.Second)); err == nil {
+		t.Fatal("hub accepted a replayed bootstrap token")
+	}
+}
+
+func TestHubConsumesDurableEnrollmentJobAfterRestartWithoutPersistingToken(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "enrollment.db")
+	store, err := monitoring.OpenStore(ctx, path, monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := contracts.ServerID("server-job-bootstrap01")
+	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Node", Role: "node", Architecture: "amd64", Platform: "linux", ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := NewPersistentCertificateAuthority(now, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := ca.IssueEnrollment(id, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, created, err := store.CreateJob(ctx, contracts.Job{ID: "enrollment-job-restart01", Kind: "enrollment", State: contracts.JobQueued, IdempotencyKey: "enroll-job-key-1", TargetServerID: id, ExpiresAt: now.Add(10 * time.Minute)}, "token-hash-only", now)
+	if err != nil || !created {
+		t.Fatalf("create job: %+v created=%v err=%v", job, created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restartedStore, err := monitoring.OpenStore(ctx, path, monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restartedStore.Close()
+	restartedCA, err := NewPersistentCertificateAuthority(now.Add(time.Second), restartedStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := NewHub(restartedCA, restartedStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, completed, err := hub.ConsumeEnrollmentJob(ctx, job.ID, enrollment.Token, now.Add(2*time.Second))
+	if err != nil || identity.ServerID != id || completed.State != contracts.JobSucceeded || completed.Revision != 2 {
+		t.Fatalf("consumed job identity=%+v job=%+v err=%v", identity, completed, err)
+	}
+	if _, _, err := hub.ConsumeEnrollmentJob(ctx, job.ID, enrollment.Token, now.Add(3*time.Second)); err != ErrEnrollmentJobComplete {
+		t.Fatalf("expected completed job replay rejection, got %v", err)
+	}
+	loaded, found, err := restartedStore.GetJob(ctx, job.ID)
+	if err != nil || !found || loaded.State != contracts.JobSucceeded {
+		t.Fatalf("job did not survive completion: %+v found=%v err=%v", loaded, found, err)
 	}
 }
 
