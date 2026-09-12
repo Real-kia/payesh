@@ -86,6 +86,11 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
   reached the supplied Telegram test chat. Same-host public-address webhook
   delivery was unavailable on this provider due to hairpin routing; the
   external delivery path passed.
+- Public HTTPS outage/recovery acceptance returned two deliberate HTTP 503
+  responses followed by success. Payesh verified the route, preserved valid
+  HMAC signatures on every attempt, applied bounded retry backoff, and accepted
+  the third delivery. The test listener shuts down gracefully so its final
+  response cannot race connection teardown.
 - The disposable Ubuntu transport gate passed two-agent bootstrap/ingestion,
   forced in-band node-certificate renewal, replacement identity persistence,
   old-certificate revocation, reconnect, and one side-effect-free typed action
