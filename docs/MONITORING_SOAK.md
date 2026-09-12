@@ -71,3 +71,16 @@ command, OS/kernel, Go version, storage device, duration, configuration, and
 JSON report when accepting a run. A short CI run proves repeatability and
 cleanup only. A 24-hour retention/soak claim requires an actually completed
 24-hour run and review of the resulting report.
+
+For a run that must survive an SSH disconnect, first build the benchmark and
+use the guarded runner. `status` validates that the PID belongs to a
+monitoring-soak process and reports pass only when teardown is clean and all
+three error counts are zero:
+
+```sh
+go build -o /tmp/payesh-monitoring-soak ./scripts/monitoring-soak
+sudo scripts/monitoring-soak-runner.sh start \
+  --binary /tmp/payesh-monitoring-soak --duration 24h --interval 1s
+sudo scripts/monitoring-soak-runner.sh status \
+  --binary /tmp/payesh-monitoring-soak
+```
