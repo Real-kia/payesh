@@ -238,6 +238,12 @@ type Job struct {
 	CancelRequested bool      `json:"cancel_requested,omitempty"`
 	Progress        uint8     `json:"progress"`
 	Error           *Error    `json:"error,omitempty"`
+	// Action is persisted for node-delivery jobs but deliberately omitted from
+	// the browser/API representation. Action arguments can contain sensitive
+	// implementation details and are only released to the authenticated node
+	// that owns the job.
+	Action *ActionRequest  `json:"-"`
+	Result *ActionResponse `json:"result,omitempty"`
 }
 
 type CoverageGap struct {
@@ -768,8 +774,8 @@ func (p ControlPolicy) Validate() error {
 	if !safeContractIdentifier(p.ModuleID) || !safeContractIdentifier(p.Kind) {
 		return errors.New("module_id and kind are invalid")
 	}
-	if p.TargetKind != "service" && p.TargetKind != "process-group" {
-		return errors.New("target_kind must be service or process-group")
+	if p.TargetKind != "service" && p.TargetKind != "process-group" && p.TargetKind != "interface" && p.TargetKind != "local-port" {
+		return errors.New("target_kind must be service, process-group, interface, or local-port")
 	}
 	if p.TargetName == "" || len(p.TargetName) > 256 {
 		return errors.New("target_name must be 1..256 characters")
@@ -852,6 +858,30 @@ type ActionResponse struct {
 	Accepted  bool   `json:"accepted"`
 	Revision  uint64 `json:"revision,string"`
 	Error     *Error `json:"error,omitempty"`
+}
+
+// Validate checks the transport-independent action envelope. The hub applies
+// the authenticated target and configuration-revision checks separately.
+func (r ActionRequest) Validate(now time.Time) error {
+	if r.Protocol != HelperProtocol && r.Protocol != ModuleProtocol {
+		return errors.New("unsupported action protocol")
+	}
+	if r.RequestID == "" || len(r.RequestID) > 128 || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 {
+		return errors.New("action identity is invalid")
+	}
+	if !safeContractIdentifier(r.Action) || r.Target == "" || len(r.Target) > 128 {
+		return errors.New("action target is invalid")
+	}
+	if !serverIDPattern.MatchString(string(r.TargetServerID)) {
+		return errors.New("action server identity is invalid")
+	}
+	if r.Deadline.IsZero() || (!now.IsZero() && !r.Deadline.After(now)) {
+		return errors.New("action deadline is invalid")
+	}
+	if len(r.Arguments) > MaxEnvelopeBytes || (len(r.Arguments) > 0 && !json.Valid(r.Arguments)) {
+		return errors.New("action arguments exceed the size limit")
+	}
+	return nil
 }
 
 var serverIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)

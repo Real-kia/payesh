@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
@@ -13,6 +14,9 @@ import (
 // ErrControlPolicyRevisionConflict mirrors ErrModuleRevisionConflict for the
 // shared control-policy CAS.
 var ErrControlPolicyRevisionConflict = errors.New("control_policy_revision_conflict")
+var ErrControlPolicyUniqueConflict = errors.New("control_policy_unique_key_conflict")
+var ErrControlPolicyRequestInProgress = errors.New("control_policy_request_in_progress")
+var ErrControlPolicyRequestConflict = errors.New("control_policy_request_conflict")
 
 func controlPolicyID(serverID contracts.ServerID, moduleID, targetKind, targetName string) string {
 	return string(serverID) + ":" + moduleID + ":" + targetKind + ":" + targetName
@@ -26,8 +30,8 @@ func (s *Store) GetControlPolicy(ctx context.Context, serverID contracts.ServerI
 	if !validStoreServerID(serverID) || !isSafeMetricName(moduleID) {
 		return contracts.ControlPolicy{}, errors.New("invalid control policy identity")
 	}
-	if targetKind != "service" && targetKind != "process-group" {
-		return contracts.ControlPolicy{}, errors.New("target_kind must be service or process-group")
+	if targetKind != "service" && targetKind != "process-group" && targetKind != "interface" && targetKind != "local-port" {
+		return contracts.ControlPolicy{}, errors.New("target_kind must be service, process-group, interface, or local-port")
 	}
 	if targetName == "" || len(targetName) > 256 {
 		return contracts.ControlPolicy{}, errors.New("target_name must be 1..256 characters")
@@ -119,6 +123,22 @@ func buildControlPolicy(serverID contracts.ServerID, moduleID, targetKind, targe
 // row" and "advance an existing row" without a separate read-then-write race
 // window.
 func (s *Store) TransitionControlPolicy(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName string, expectedRevision uint64, next contracts.ControlPolicy) (contracts.ControlPolicy, error) {
+	return s.transitionControlPolicy(ctx, serverID, moduleID, targetKind, targetName, expectedRevision, next, "", "", false)
+}
+
+// TransitionControlPolicyWithUniqueKey extends the normal policy CAS with an
+// atomic SQLite claim for a package-defined identity (Port Traffic uses its
+// protocol/interface/port/direction/tuple/path tuple). previousUniqueKey is
+// released only as part of the same transaction. A reverted transition
+// releases the new claim as well.
+func (s *Store) TransitionControlPolicyWithUniqueKey(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName string, expectedRevision uint64, next contracts.ControlPolicy, previousUniqueKey, uniqueKey string) (contracts.ControlPolicy, error) {
+	if uniqueKey == "" {
+		return contracts.ControlPolicy{}, errors.New("control policy unique key is required")
+	}
+	return s.transitionControlPolicy(ctx, serverID, moduleID, targetKind, targetName, expectedRevision, next, previousUniqueKey, uniqueKey, true)
+}
+
+func (s *Store) transitionControlPolicy(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName string, expectedRevision uint64, next contracts.ControlPolicy, previousUniqueKey, uniqueKey string, useUniqueKey bool) (contracts.ControlPolicy, error) {
 	if expectedRevision == ^uint64(0) {
 		return contracts.ControlPolicy{}, errors.New("control policy revision is exhausted")
 	}
@@ -140,7 +160,25 @@ func (s *Store) TransitionControlPolicy(ctx context.Context, serverID contracts.
 		}
 		errorJSON = string(encoded)
 	}
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return contracts.ControlPolicy{}, err
+	}
+	defer tx.Rollback()
+	if useUniqueKey && next.State != contracts.ControlPolicyReverted && next.State != contracts.ControlPolicyFailed {
+		result, err := tx.ExecContext(ctx, `INSERT INTO control_policy_unique_keys(server_id,module_id,unique_key,target_kind,target_name) VALUES(?,?,?,?,?) ON CONFLICT(server_id,module_id,unique_key) DO UPDATE SET target_kind=excluded.target_kind,target_name=excluded.target_name WHERE control_policy_unique_keys.target_kind=? AND control_policy_unique_keys.target_name=?`, string(serverID), moduleID, uniqueKey, targetKind, targetName, targetKind, targetName)
+		if err != nil {
+			return contracts.ControlPolicy{}, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return contracts.ControlPolicy{}, err
+		}
+		if changed != 1 {
+			return contracts.ControlPolicy{}, ErrControlPolicyUniqueConflict
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO control_policies(server_id,module_id,target_kind,target_name,kind,state,parameters_json,revision,updated_at,error_json) VALUES(?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(server_id,module_id,target_kind,target_name) DO UPDATE SET kind=excluded.kind,state=excluded.state,parameters_json=excluded.parameters_json,revision=excluded.revision,updated_at=excluded.updated_at,error_json=excluded.error_json
 WHERE control_policies.revision=?`,
@@ -155,6 +193,33 @@ WHERE control_policies.revision=?`,
 	if changed != 1 {
 		return contracts.ControlPolicy{}, ErrControlPolicyRevisionConflict
 	}
+	if useUniqueKey {
+		if previousUniqueKey != "" && previousUniqueKey != uniqueKey {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM control_policy_unique_keys WHERE server_id=? AND module_id=? AND unique_key=? AND target_kind=? AND target_name=?`, string(serverID), moduleID, previousUniqueKey, targetKind, targetName); err != nil {
+				return contracts.ControlPolicy{}, err
+			}
+		}
+		if next.State == contracts.ControlPolicyReverted || next.State == contracts.ControlPolicyFailed {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM control_policy_unique_keys WHERE server_id=? AND module_id=? AND unique_key=? AND target_kind=? AND target_name=?`, string(serverID), moduleID, uniqueKey, targetKind, targetName); err != nil {
+				return contracts.ControlPolicy{}, err
+			}
+		}
+	}
+	auditID := fmt.Sprintf("%s:%s:%d", next.ID, next.State, next.Revision)
+	resultName := "success"
+	if next.State == contracts.ControlPolicyFailed {
+		resultName = "failure"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(id,occurred_at,actor_type,action,target_type,target_id,result,revision,redacted) VALUES(?,?,?,?,?,?,?,?,1)`,
+		auditID, FormatPersistedTime(next.UpdatedAt), "system", "control-policy."+string(next.State), "control-policy", next.ID, resultName, int64(next.Revision)); err != nil {
+		return contracts.ControlPolicy{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE id IN (SELECT id FROM audit_events ORDER BY occurred_at DESC,id DESC LIMIT -1 OFFSET ?)`, MaxAuditEvents); err != nil {
+		return contracts.ControlPolicy{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return contracts.ControlPolicy{}, err
+	}
 	return next, nil
 }
 
@@ -163,6 +228,63 @@ WHERE control_policies.revision=?`,
 type ControlPolicyRequestRecord struct {
 	RequestHash string
 	ResultJSON  string
+}
+
+// ClaimControlPolicyRequest reserves an idempotency key in one SQLite write.
+// A placeholder result means another request owns the work; callers must not
+// execute the operation a second time. The claim is intentionally separate
+// from the policy CAS because module operations may perform kernel work before
+// their final durable result is known.
+func (s *Store) ClaimControlPolicyRequest(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName, idempotencyKey, requestHash string) (ControlPolicyRequestRecord, bool, error) {
+	if !validStoreServerID(serverID) || idempotencyKey == "" || len(idempotencyKey) > 128 || requestHash == "" {
+		return ControlPolicyRequestRecord{}, false, errors.New("invalid control policy request claim")
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO control_policy_requests(server_id,module_id,target_kind,target_name,idempotency_key,request_hash,result_json,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, string(serverID), moduleID, targetKind, targetName, idempotencyKey, requestHash, `{}`, FormatPersistedTime(time.Now()))
+	if err != nil {
+		return ControlPolicyRequestRecord{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return ControlPolicyRequestRecord{}, false, err
+	}
+	if changed == 1 {
+		return ControlPolicyRequestRecord{RequestHash: requestHash, ResultJSON: `{}`}, true, nil
+	}
+	record, found, err := s.GetControlPolicyRequest(ctx, serverID, moduleID, targetKind, targetName, idempotencyKey)
+	if err != nil || !found {
+		return record, false, err
+	}
+	if record.RequestHash != requestHash {
+		return ControlPolicyRequestRecord{}, false, ErrControlPolicyRequestConflict
+	}
+	return record, false, nil
+}
+
+// CompleteControlPolicyRequest fills a previously claimed placeholder without
+// allowing a completed result to be overwritten by a concurrent retry.
+func (s *Store) CompleteControlPolicyRequest(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName, idempotencyKey, requestHash string, resultJSON []byte) error {
+	if !validStoreServerID(serverID) || idempotencyKey == "" || len(idempotencyKey) > 128 || requestHash == "" || len(resultJSON) == 0 || len(resultJSON) > contracts.MaxEnvelopeBytes {
+		return errors.New("invalid control policy request result")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE control_policy_requests SET result_json=? WHERE server_id=? AND module_id=? AND target_kind=? AND target_name=? AND idempotency_key=? AND request_hash=? AND result_json=?`, string(resultJSON), string(serverID), moduleID, targetKind, targetName, idempotencyKey, requestHash, `{}`)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrControlPolicyRequestInProgress
+	}
+	return nil
+}
+
+// AbandonControlPolicyRequest removes a claim when the operation failed
+// before producing a durable result, allowing a caller to retry safely.
+func (s *Store) AbandonControlPolicyRequest(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName, idempotencyKey, requestHash string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM control_policy_requests WHERE server_id=? AND module_id=? AND target_kind=? AND target_name=? AND idempotency_key=? AND request_hash=? AND result_json=?`, string(serverID), moduleID, targetKind, targetName, idempotencyKey, requestHash, `{}`)
+	return err
 }
 
 func (s *Store) GetControlPolicyRequest(ctx context.Context, serverID contracts.ServerID, moduleID, targetKind, targetName, idempotencyKey string) (ControlPolicyRequestRecord, bool, error) {

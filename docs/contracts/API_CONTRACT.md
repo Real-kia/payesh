@@ -84,6 +84,11 @@ delivery failures remain retryable. Rule creation/reconciliation is bounded at
 20,000 total and 4,096 per server, counting disabled rows. An alert never
 authorizes throttling or blocking.
 
-This document defines resource names and safety constraints only. Authentication,
-authorization, persistence, and endpoint behavior are implementation work in
-later packages and must not be replaced with successful dummy responses.
+This document defines resource names and safety constraints. Browser
+authentication and its SQLite persistence are implemented, as is the
+SQLite-backed enrollment-authority repository. Durable job reads and
+revision-checked/idempotent cancellation are implemented; job producers are
+not. Several declared endpoints and production integrations remain package
+work—notably enrollment production, WebSocket transport, installers, updates,
+backups and role transitions—and
+must not be replaced with successful dummy responses.

@@ -133,6 +133,8 @@ func (s *Service) lifecycle(w http.ResponseWriter, r *http.Request, serverID con
 		switch {
 		case errors.Is(err, monitoring.ErrModuleRevisionConflict):
 			writeModulesError(w, http.StatusConflict, "module_revision_conflict", "module state changed; reload before retrying", false)
+		case errors.Is(err, ErrModuleExecutorUnavailable):
+			writeModulesError(w, http.StatusServiceUnavailable, "module_executor_unavailable", "authenticated module execution is not configured", false)
 		default:
 			writeModulesError(w, http.StatusBadRequest, "module_lifecycle_failed", err.Error(), false)
 		}

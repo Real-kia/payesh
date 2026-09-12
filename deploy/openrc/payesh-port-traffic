@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+
+name="Payesh Port Traffic module"
+command="${PAYESH_PORT_TRAFFIC_BINARY}"
+command_args="--db /var/lib/payesh/payesh.db --server-id ${PAYESH_SERVER_ID}"
+command_user="root:payesh"
+command_background="yes"
+pidfile="/run/payesh-port-traffic.pid"
+output_log="/var/log/payesh/port-traffic.log"
+error_log="/var/log/payesh/port-traffic.log"
+
+depend() {
+	need net
+	after payesh-server
+}
+
+start_pre() {
+	if [ -z "${PAYESH_PORT_TRAFFIC_BINARY}" ] || [ -z "${PAYESH_SERVER_ID}" ]; then
+		eerror "PAYESH_PORT_TRAFFIC_BINARY and PAYESH_SERVER_ID must be set in /etc/conf.d/payesh-port-traffic"
+		return 1
+	fi
+	checkpath --directory --mode 0750 --owner root:root /var/log/payesh
+}

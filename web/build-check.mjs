@@ -13,6 +13,7 @@ if (!root || !samePins(root.dependencies, pkg.dependencies) || !samePins(root.de
 const app = readFileSync(new URL('./src/App.svelte', import.meta.url), 'utf8');
 const fixtures = readFileSync(new URL('./src/preview/fixtures.ts', import.meta.url), 'utf8');
 const chart = readFileSync(new URL('./src/ChartPreview.svelte', import.meta.url), 'utf8');
+const api = readFileSync(new URL('./src/api.ts', import.meta.url), 'utf8');
 for (const marker of ['PREVIEW_MODE', 'localStorage', 'prefers-color-scheme', 'ChartPreview', 'setupSecret', 'pairingToken', 'loadPreviewData', 'hasCapability', 'metricHistory', 'aria-label']) {
   if (!app.includes(marker)) throw new Error(`preview UI contract missing ${marker}`);
 }
@@ -21,4 +22,7 @@ for (const state of ['healthy', 'stale', 'pending', 'unreachable', 'installing',
 }
 if (!app.includes('pairingToken.length < 16') || !app.includes('minlength="16"')) throw new Error('pairing-token contract is not enforced at 16 characters');
 if (chart.includes('const samples')) throw new Error('chart fixture samples must remain behind the preview adapter');
+for (const marker of ['credentials: \'include\'', 'listServers(', 'getServer(', 'queryMetrics(', 'queryTraffic(', 'queryLogs(', 'AbortSignal', 'authExpired', 'mapWithConcurrency', 'concurrency must be a positive integer']) {
+  if (!api.includes(marker) && !app.includes(marker)) throw new Error(`API adapter contract missing ${marker}`);
+}
 console.log('frontend foundation pins and preview contract valid');

@@ -1,0 +1,22 @@
+[Unit]
+Description=Payesh Bandwidth Controls rollback watchdog for %i
+After=local-fs.target
+Before=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/var/lib/payesh/modules/%i/bandwidth-controls/active/bin/bandwidth-controls --watchdog-only --state-dir /var/lib/payesh/bandwidth
+User=root
+Group=root
+Restart=always
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh/bandwidth
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

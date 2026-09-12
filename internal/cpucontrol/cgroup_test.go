@@ -8,7 +8,7 @@ import (
 
 func testFS(t *testing.T) FSCgroup {
 	t.Helper()
-	return FSCgroup{Root: t.TempDir()}
+	return FSCgroup{Root: t.TempDir(), OwnershipRoot: t.TempDir(), AllowPlainFilesystem: true}
 }
 
 func TestGroupPathMustLiveUnderPayeshSubtree(t *testing.T) {
@@ -37,9 +37,27 @@ func TestEnsureDedicatedGroupCreatesAndMarksOwnership(t *testing.T) {
 	if !owned {
 		t.Fatal("expected a freshly created group to be marked owned")
 	}
+	if _, err := os.Stat(filepath.Join(fs.Root, "payesh", "svc-nginx", "payesh.owned")); !os.IsNotExist(err) {
+		t.Fatal("ownership metadata must not be created inside cgroupfs")
+	}
 	// Idempotent: calling it again on an already-owned group must not error.
 	if err := fs.EnsureDedicatedGroup(group); err != nil {
 		t.Fatalf("expected re-ensuring an owned group to succeed, got %v", err)
+	}
+}
+
+func TestAttachAndVerifyProcessMembership(t *testing.T) {
+	fs := testFS(t)
+	group := GroupPath("payesh/process-worker")
+	if err := fs.EnsureDedicatedGroup(group); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.AttachProcess(group, 4242); err != nil {
+		t.Fatal(err)
+	}
+	contained, err := fs.ContainsProcess(group, 4242)
+	if err != nil || !contained {
+		t.Fatalf("expected process membership, contained=%v err=%v", contained, err)
 	}
 }
 
@@ -52,6 +70,41 @@ func TestEnsureDedicatedGroupRefusesToAdoptForeignDirectory(t *testing.T) {
 	}
 	if err := fs.EnsureDedicatedGroup(group); err == nil {
 		t.Fatal("expected a pre-existing, unmarked directory to be refused")
+	}
+}
+
+func TestEnsureDedicatedGroupRefusesChildBelowForeignPayeshParent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "payesh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs := FSCgroup{Root: root, OwnershipRoot: t.TempDir(), AllowPlainFilesystem: true}
+	if err := fs.EnsureDedicatedGroup(GroupPath("payesh/process-group-child")); err == nil {
+		t.Fatal("expected an unowned Payesh parent to be refused")
+	}
+	if _, err := os.Stat(filepath.Join(root, "payesh", "process-group-child")); !os.IsNotExist(err) {
+		t.Fatalf("child was created below foreign parent: %v", err)
+	}
+}
+
+func TestOwnershipRecordDoesNotAuthorizeRecreatedDirectory(t *testing.T) {
+	fs := testFS(t)
+	group := GroupPath("payesh/recreated")
+	if err := fs.EnsureDedicatedGroup(group); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := fs.dir(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.EnsureDedicatedGroup(group); err == nil {
+		t.Fatal("expected stale ownership metadata to reject a recreated directory")
 	}
 }
 

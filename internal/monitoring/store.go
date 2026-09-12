@@ -28,6 +28,7 @@ const (
 	MaxLogBytes            = 1 << 20
 	MaxPostProcessQueue    = 10000
 	MaxTrafficAllowances   = 64
+	MaxAuditEvents         = 10000
 	// MetadataAge is deliberately longer than the raw metric API look-back.
 	// Once an epoch has been inactive for this window and has no durable work
 	// left, its replay/coverage metadata can be retired transactionally.
@@ -673,6 +674,44 @@ INSERT INTO schema_meta(version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema
 UPDATE schema_meta SET version=2 WHERE version < 2;
 UPDATE schema_meta SET version=3 WHERE version < 3;
 UPDATE schema_meta SET version=4 WHERE version < 4;
+CREATE TABLE IF NOT EXISTS browser_auth_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  state_json BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fleet_identity_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  state_json BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  target_server_id TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  progress INTEGER NOT NULL DEFAULT 0,
+  error_json TEXT,
+  action_json TEXT,
+  result_json TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(kind, target_server_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS jobs_expiry ON jobs(expires_at, state, id);
+CREATE TABLE IF NOT EXISTS job_cancellation_requests (
+  job_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(job_id, idempotency_key),
+  FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -1058,9 +1097,78 @@ CREATE TABLE IF NOT EXISTS control_policy_requests (
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS control_policy_requests_created ON control_policy_requests(created_at);
+-- Port Traffic's counter identity is not the same as its user-facing scope
+-- name.  Keep the identity claim in SQLite so two server processes cannot
+-- select the same kernel counter between a read and a later policy write.
+CREATE TABLE IF NOT EXISTS control_policy_unique_keys (
+  server_id TEXT NOT NULL,
+  module_id TEXT NOT NULL,
+  unique_key TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  PRIMARY KEY (server_id, module_id, unique_key),
+  UNIQUE (server_id, module_id, target_kind, target_name),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS control_policy_unique_keys_target ON control_policy_unique_keys(server_id,module_id,target_kind,target_name);
+-- Durable observations are deliberately separate from control policy
+-- parameters: replacing a scope must not make an absolute nft counter look
+-- like desired configuration or increase its revision.
+CREATE TABLE IF NOT EXISTS port_traffic_observations (
+  server_id TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  bytes TEXT NOT NULL,
+  packets TEXT NOT NULL,
+  generation TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  continuity TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (server_id, scope_id),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+-- Redacted structured audit records. Policy transitions insert their audit
+-- row in the same SQLite transaction as the state change.
+CREATE TABLE IF NOT EXISTS audit_events (
+  id TEXT PRIMARY KEY,
+  occurred_at TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  redacted INTEGER NOT NULL DEFAULT 1,
+  correlation_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS audit_events_time ON audit_events(occurred_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS audit_events_target ON audit_events(target_id, occurred_at DESC, id DESC);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
+	}
+	// These columns were added after the initial durable-job checkpoint. Keep
+	// startup compatible with existing stores instead of requiring a destructive
+	// migration or silently dropping queued action payloads.
+	for _, column := range []struct {
+		name string
+		ddl  string
+	}{
+		{name: "action_json", ddl: "ALTER TABLE jobs ADD COLUMN action_json TEXT"},
+		{name: "result_json", ddl: "ALTER TABLE jobs ADD COLUMN result_json TEXT"},
+		{name: "lease_token", ddl: "ALTER TABLE jobs ADD COLUMN lease_token TEXT"},
+		{name: "lease_expires_at", ddl: "ALTER TABLE jobs ADD COLUMN lease_expires_at TEXT"},
+	} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name=?`, column.name).Scan(&count); err != nil {
+			return fmt.Errorf("inspect jobs schema: %w", err)
+		}
+		if count == 0 {
+			if _, err := s.db.ExecContext(ctx, column.ddl); err != nil {
+				return fmt.Errorf("migrate jobs schema: %w", err)
+			}
+		}
 	}
 	var disableReasonColumn int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('alert_rules') WHERE name='disable_reason'`).Scan(&disableReasonColumn); err != nil {

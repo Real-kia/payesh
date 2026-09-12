@@ -1,0 +1,25 @@
+[Unit]
+Description=Payesh CPU Controls module for %i
+After=network-online.target payesh-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/payesh/cpu-controls.env
+ExecStart=/var/lib/payesh/modules/%i/cpu-controls/active/bin/cpu-controls --db /var/lib/payesh/payesh.db --server-id %i --state-dir /var/lib/payesh/cpu-controls/%i --socket /run/payesh/cpu-controls-%i.sock ${PAYESH_CPU_MODULE_ARGS}
+User=root
+Group=payesh
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh /run/payesh /sys/fs/cgroup
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
+Delegate=yes
+
+[Install]
+WantedBy=multi-user.target

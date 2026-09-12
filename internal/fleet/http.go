@@ -13,10 +13,11 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
-	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
+	"github.com/Real-kia/payesh/internal/transport"
+	"github.com/Real-kia/payesh/internal/updater"
 )
 
 const maxBodyBytes = 1 << 20
@@ -26,12 +27,19 @@ type API struct {
 	monitoring http.Handler
 	// secureCookies is false only for the explicitly loopback-bound HTTP
 	// mode. Public deployments should construct the API with true behind TLS.
-	secureCookies  bool
-	trustedProxies []*net.IPNet
-	alerts         http.Handler
-	traffic        http.Handler
-	modules        http.Handler
-	cpuControl     http.Handler
+	secureCookies   bool
+	trustedProxies  []*net.IPNet
+	alerts          http.Handler
+	traffic         http.Handler
+	modules         http.Handler
+	cpuControl      http.Handler
+	bandwidth       http.Handler
+	portTraffic     http.Handler
+	jobs            http.Handler
+	updates         http.Handler
+	install         http.Handler
+	enrollment      http.Handler
+	enrollmentToken http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -66,7 +74,22 @@ type Options struct {
 	ModuleService *modules.Service
 	// CPUControlService optionally owns cpu-controls preview/apply/revert.
 	// Routes are unavailable (fall through to the monitoring 404) when nil.
-	CPUControlService *cpucontrol.Service
+	CPUControlService interface{ Handler() http.Handler }
+	// BandwidthService owns Package 09 preview/apply/revert routes.
+	BandwidthService interface{ Handler() http.Handler }
+	// PortTrafficService owns durable Package 07 scope configuration routes.
+	// The service only persists pending desired scopes; nftables activation
+	// remains a privileged module operation.
+	PortTrafficService interface{ Handler() http.Handler }
+	// EnrollmentAuthority enables the authenticated pairing-token enrollment
+	// job producer. The authority remains CA-owned and never exposes its key.
+	EnrollmentAuthority *transport.CertificateAuthority
+	// UpdateScheduler enables the authenticated, durable update producer. The
+	// scheduler's executor is intentionally owned by the worker process.
+	UpdateScheduler *updater.Scheduler
+	// InstallService enables the authenticated durable SSH-install producer.
+	// Its credential handoff remains process-memory only.
+	InstallService *InstallService
 }
 
 func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Options) (*API, error) {
@@ -74,7 +97,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := auth.New(setupSecret)
+	sessions, err := auth.NewPersistent(setupSecret, store)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +121,40 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.CPUControlService != nil {
 		cpuControlHandler = sessions.Middleware(options.CPUControlService.Handler())
 	}
-	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	var bandwidthHandler http.Handler
+	if options.BandwidthService != nil {
+		bandwidthHandler = sessions.Middleware(options.BandwidthService.Handler())
+	}
+	var portTrafficHandler http.Handler
+	if options.PortTrafficService != nil {
+		portTrafficHandler = sessions.Middleware(options.PortTrafficService.Handler())
+	}
+	var enrollmentHandler http.Handler
+	var enrollmentTokenHandler http.Handler
+	if options.EnrollmentAuthority != nil {
+		enrollmentService, enrollmentErr := NewEnrollmentService(store, options.EnrollmentAuthority)
+		if enrollmentErr != nil {
+			return nil, enrollmentErr
+		}
+		enrollmentHandler = sessions.Middleware(enrollmentService.Handler())
+		enrollmentTokenHandler = sessions.Middleware(enrollmentService.TokenHandler())
+	}
+	var updateHandler http.Handler
+	if options.UpdateScheduler != nil {
+		updateService, updateErr := NewUpdateService(store, options.UpdateScheduler)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		updateHandler = sessions.Middleware(updateService.Handler())
+	}
+	var installHandler http.Handler
+	if options.InstallService != nil {
+		if options.InstallService.Store != store {
+			return nil, errors.New("install service store does not match API store")
+		}
+		installHandler = sessions.Middleware(options.InstallService.Handler())
+	}
+	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -128,6 +184,26 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trimmedPath := strings.TrimRight(r.URL.Path, "/")
+	if a.updates != nil && trimmedPath == "/api/v1/updates" {
+		a.updates.ServeHTTP(w, r)
+		return
+	}
+	if a.install != nil && (trimmedPath == "/api/v1/installations" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/install"))) {
+		a.install.ServeHTTP(w, r)
+		return
+	}
+	if strings.HasPrefix(trimmedPath, "/api/v1/jobs/") {
+		a.jobs.ServeHTTP(w, r)
+		return
+	}
+	if a.enrollment != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/enrollment") {
+		a.enrollment.ServeHTTP(w, r)
+		return
+	}
+	if a.enrollmentToken != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/enrollment-token") {
+		a.enrollmentToken.ServeHTTP(w, r)
+		return
+	}
 	if a.traffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && (strings.HasSuffix(trimmedPath, "/traffic") || strings.HasSuffix(trimmedPath, "/traffic/forecast")) {
 		a.traffic.ServeHTTP(w, r)
 		return
@@ -138,6 +214,14 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.cpuControl != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/cpu-policies") {
 		a.cpuControl.ServeHTTP(w, r)
+		return
+	}
+	if a.bandwidth != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/bandwidth-policies") {
+		a.bandwidth.ServeHTTP(w, r)
+		return
+	}
+	if a.portTraffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/port-traffic-scopes") {
+		a.portTraffic.ServeHTTP(w, r)
 		return
 	}
 	a.monitoring.ServeHTTP(w, r)
@@ -222,7 +306,10 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusForbidden, "csrf_required", "csrf token required", false)
 		return
 	}
-	a.sessions.Logout(cookie.Value)
+	if err := a.sessions.Logout(cookie.Value); err != nil {
+		writeFleetError(w, http.StatusServiceUnavailable, "auth_storage_unavailable", "authentication storage unavailable", true)
+		return
+	}
 	a.sessions.ClearSessionCookie(w, a.secureCookies || r.TLS != nil)
 	w.WriteHeader(http.StatusNoContent)
 }

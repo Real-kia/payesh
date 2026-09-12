@@ -18,7 +18,11 @@ func buildTarGz(t *testing.T, entries []tarEntry) []byte {
 	gzWriter := gzip.NewWriter(&buf)
 	tarWriter := tar.NewWriter(gzWriter)
 	for _, entry := range entries {
-		header := &tar.Header{Name: entry.name, Typeflag: entry.typeflag, Size: int64(len(entry.body)), Mode: 0o644, Linkname: entry.linkname}
+		mode := entry.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		header := &tar.Header{Name: entry.name, Typeflag: entry.typeflag, Size: int64(len(entry.body)), Mode: mode, Linkname: entry.linkname}
 		if entry.typeflag == tar.TypeDir {
 			header.Mode = 0o755
 		}
@@ -45,6 +49,15 @@ type tarEntry struct {
 	typeflag byte
 	body     []byte
 	linkname string
+	mode     int64
+}
+
+func TestStageArchiveRejectsUnexpectedExecutable(t *testing.T) {
+	archive := buildTarGz(t, []tarEntry{{name: "bin/surprise", typeflag: tar.TypeReg, body: []byte("binary"), mode: 0o755}})
+	dest := filepath.Join(t.TempDir(), "staged")
+	if err := StageArchive(archive, uint64(len(archive)), 64, sha256Hex(archive), dest, "bin/expected"); err == nil {
+		t.Fatal("expected an undeclared executable to be rejected")
+	}
 }
 
 func sha256Hex(b []byte) string {

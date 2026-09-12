@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -34,15 +35,30 @@ func testManager(t *testing.T) (*Manager, ed25519.PrivateKey, contracts.Server) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Manager{Store: store, Trust: registry, RootDir: t.TempDir()}, priv, server
+	return &Manager{Store: store, Trust: registry, RootDir: t.TempDir(), LocalServerID: server.ID, HealthCheck: func(context.Context, string, string) error { return nil }, Executor: moduleExecutorFunc(func(context.Context, ModuleInvocation) error { return nil })}, priv, server
+}
+
+type moduleExecutorFunc func(context.Context, ModuleInvocation) error
+
+func (f moduleExecutorFunc) Invoke(ctx context.Context, invocation ModuleInvocation) error {
+	return f(ctx, invocation)
 }
 
 func signedManifest(t *testing.T, priv ed25519.PrivateKey, moduleID string, archive []byte) (contracts.ModuleManifest, string) {
 	t.Helper()
 	sum := sha256.Sum256(archive)
+	entry, curated := Lookup(moduleID)
+	version := "0.1.0"
+	var dependencies, privileges []string
+	if curated {
+		version = entry.LatestVersion
+		dependencies = append([]string(nil), entry.Dependencies...)
+		privileges = append([]string(nil), entry.RequiredPrivileges...)
+	}
 	manifest := contracts.ModuleManifest{
-		Format: contracts.ModuleManifestFormat, ModuleID: moduleID, ModuleVersion: "1.0.0",
+		Format: contracts.ModuleManifestFormat, ModuleID: moduleID, ModuleVersion: version,
 		MinCore: "0.1.0", ProtocolMin: "v1", ProtocolMax: "v1", OS: "linux", Architecture: "amd64",
+		Dependencies: dependencies, RequiredPrivileges: privileges,
 		CompressedBytes: uint64(len(archive)), UnpackedBytes: 64, SHA256: hex.EncodeToString(sum[:]),
 		SigningKeyID: "test-2026", CreatedAt: time.Now().UTC(),
 	}
@@ -51,6 +67,15 @@ func signedManifest(t *testing.T, priv ed25519.PrivateKey, moduleID string, arch
 		t.Fatal(err)
 	}
 	return manifest, sig
+}
+
+func resignManifest(t *testing.T, priv ed25519.PrivateKey, manifest contracts.ModuleManifest) string {
+	t.Helper()
+	_, signature, err := trust.Sign(priv, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signature
 }
 
 func TestManagerFullLifecycle(t *testing.T) {
@@ -195,6 +220,12 @@ func TestManagerDisableRunsDeactivateHookAndBlocksOnFailure(t *testing.T) {
 			return errFailingHealthCheck
 		},
 	}
+	if _, err := manager.Disable(context.Background(), server.ID, "cpu-controls", enabled.Revision-1); err != monitoring.ErrModuleRevisionConflict {
+		t.Fatalf("expected stale disable conflict, got %v", err)
+	}
+	if hookCalled {
+		t.Fatal("stale disable must not run destructive cleanup")
+	}
 	if _, err := manager.Disable(context.Background(), server.ID, "cpu-controls", enabled.Revision); err == nil {
 		t.Fatal("expected a failing deactivate hook to block disable")
 	}
@@ -216,5 +247,54 @@ func TestManagerDisableRunsDeactivateHookAndBlocksOnFailure(t *testing.T) {
 	}
 	if disabled.State != contracts.ModuleInstalledDisabled {
 		t.Fatalf("expected installed-disabled once cleanup succeeds, got %s", disabled.State)
+	}
+}
+
+func TestManagerRequiresConfiguredHealthCheck(t *testing.T) {
+	manager, priv, server := testManager(t)
+	manager.HealthCheck = nil
+	manager.Executor = nil
+	archive := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("binary")}})
+	manifest, signature := signedManifest(t, priv, "port-traffic", archive)
+	if _, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "port-traffic", Manifest: manifest, ManifestSignatureB64: signature, Archive: archive}); err == nil {
+		t.Fatal("expected install to fail closed without a health check")
+	}
+	if _, err := os.Stat(manager.installDir(server.ID, "port-traffic")); !os.IsNotExist(err) {
+		t.Fatal("module files must not activate without a health check")
+	}
+}
+
+func TestManagerRejectsStaleSignedManifest(t *testing.T) {
+	manager, priv, server := testManager(t)
+	archive := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("binary")}})
+	manifest, _ := signedManifest(t, priv, "port-traffic", archive)
+	manifest.CreatedAt = time.Now().Add(-maxManifestAge - time.Hour)
+	signature := resignManifest(t, priv, manifest)
+	if _, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "port-traffic", Manifest: manifest, ManifestSignatureB64: signature, Archive: archive}); err == nil {
+		t.Fatal("expected stale signed metadata to be rejected")
+	}
+}
+
+func TestManagerRejectsManifestOmittingCatalogPrivilege(t *testing.T) {
+	manager, priv, server := testManager(t)
+	archive := buildTarGz(t, []tarEntry{{name: "bin/cpu-controls", typeflag: tar.TypeReg, body: []byte("binary")}})
+	manifest, _ := signedManifest(t, priv, "cpu-controls", archive)
+	manifest.RequiredPrivileges = nil
+	signature := resignManifest(t, priv, manifest)
+	if _, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "cpu-controls", Manifest: manifest, ManifestSignatureB64: signature, Archive: archive}); err == nil {
+		t.Fatal("expected omitted catalog privilege to be rejected")
+	}
+}
+
+func TestManagerRejectsRemoteNodeWithoutExecutor(t *testing.T) {
+	manager, priv, server := testManager(t)
+	server.Role = "node"
+	if err := manager.Store.UpsertServer(context.Background(), server); err != nil {
+		t.Fatal(err)
+	}
+	archive := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("binary")}})
+	manifest, signature := signedManifest(t, priv, "port-traffic", archive)
+	if _, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "port-traffic", Manifest: manifest, ManifestSignatureB64: signature, Archive: archive}); err == nil {
+		t.Fatal("expected remote install to fail rather than modify hub-local files")
 	}
 }

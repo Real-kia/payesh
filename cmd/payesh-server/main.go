@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"flag"
 	"fmt"
@@ -15,12 +16,15 @@ import (
 
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/contracts"
-	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/fleet"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/porttraffic"
+	"github.com/Real-kia/payesh/internal/privd"
 	"github.com/Real-kia/payesh/internal/traffic"
+	"github.com/Real-kia/payesh/internal/transport"
 	"github.com/Real-kia/payesh/internal/trust"
+	"github.com/Real-kia/payesh/internal/updater"
 )
 
 func main() {
@@ -30,7 +34,15 @@ func main() {
 	bootstrapSecret := flag.String("bootstrap-secret", os.Getenv("PAYESH_BOOTSTRAP_SECRET"), "one-time owner setup secret; enables browser-session API (or PAYESH_BOOTSTRAP_SECRET)")
 	secureBrowserCookies := flag.Bool("secure-browser-cookies", false, "mark browser session cookies Secure; use when this HTTP listener is behind HTTPS")
 	trustedProxyCIDRs := flag.String("trusted-proxy-cidrs", os.Getenv("PAYESH_TRUSTED_PROXY_CIDRS"), "comma-separated trusted reverse-proxy IPs/CIDRs for client-address headers")
+	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
+	nodeTLSCert := flag.String("node-tls-cert", os.Getenv("PAYESH_NODE_TLS_CERT"), "node transport TLS server certificate PEM path")
+	nodeTLSKey := flag.String("node-tls-key", os.Getenv("PAYESH_NODE_TLS_KEY"), "node transport TLS server private key PEM path")
 	flag.Parse()
+	nodeConfig, nodeConfigErr := newNodeTransportConfig(*nodeListen, *nodeTLSCert, *nodeTLSKey)
+	if nodeConfigErr != nil {
+		fmt.Fprintln(os.Stderr, "configure node transport:", nodeConfigErr)
+		os.Exit(2)
+	}
 	if *bootstrapSecret != "" && !*secureBrowserCookies && !loopbackListenAddress(*listen) {
 		fmt.Fprintln(os.Stderr, "browser-session API requires a loopback listener for HTTP cookies; use --secure-browser-cookies behind HTTPS")
 		os.Exit(2)
@@ -107,8 +119,16 @@ func main() {
 			}
 		}
 	}()
+	var updateWorkerDone <-chan struct{}
+	var installWorkerDone <-chan struct{}
 	defer func() {
 		stop()
+		if updateWorkerDone != nil {
+			<-updateWorkerDone
+		}
+		if installWorkerDone != nil {
+			<-installWorkerDone
+		}
 		<-postProcessDone
 		<-retentionDone
 		_ = store.Close()
@@ -119,7 +139,29 @@ func main() {
 		fmt.Fprintln(os.Stderr, "create traffic service:", trafficErr)
 		os.Exit(1)
 	}
+	var enrollmentAuthority *transport.CertificateAuthority
+	var nodeHub *transport.Hub
+	var updateScheduler *updater.Scheduler
+	var installService *fleet.InstallService
+	if nodeConfig.Enabled() || *bootstrapSecret != "" {
+		enrollmentAuthority, err = transport.NewPersistentCertificateAuthority(time.Now().UTC(), store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configure enrollment authority:", err)
+			os.Exit(1)
+		}
+		nodeHub, err = transport.NewHub(enrollmentAuthority, store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configure node transport hub:", err)
+			os.Exit(1)
+		}
+	}
 	if *bootstrapSecret != "" {
+		updateScheduler = updater.NewScheduler(store, nil)
+		installService, err = fleet.NewInstallService(store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configure installation jobs:", err)
+			os.Exit(1)
+		}
 		alertService, alertErr := alerts.NewService(store)
 		if alertErr != nil {
 			fmt.Fprintln(os.Stderr, "create alert service:", alertErr)
@@ -138,17 +180,37 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configure module trust registry:", registryErr)
 			os.Exit(1)
 		}
-		cpuManager := &cpucontrol.Manager{Store: store, FS: cpucontrol.FSCgroup{Root: cgroupRootDir()}}
-		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir()}
-		// Disabling cpu-controls must first revert its active policies
-		// (PLAN.md section 11); wiring this hook here, rather than inside
-		// internal/modules, keeps that package free of a cpucontrol import.
-		moduleManager.DeactivateHooks = map[string]func(context.Context, contracts.ServerID) error{
-			cpucontrol.ModuleID: cpuManager.RevertAllForServer,
+		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir(), LocalServerID: contracts.ServerID(strings.TrimSpace(os.Getenv("PAYESH_SERVER_ID")))}
+		if socket := strings.TrimSpace(os.Getenv("PAYESH_PRIVD_SOCKET")); socket != "" {
+			moduleManager.Executor = privdModuleExecutor{client: privd.Client{SocketPath: socket}}
 		}
 		moduleService := modules.NewService(moduleManager)
-		cpuControlService := cpucontrol.NewService(cpuManager)
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService})
+		portTrafficService := porttraffic.NewService(&porttraffic.Manager{Store: store})
+		var cpuControlService interface{ Handler() http.Handler } = unavailableCPUService{}
+		if socket := strings.TrimSpace(os.Getenv("PAYESH_CPU_SOCKET")); socket != "" {
+			var proxy http.Handler
+			var proxyErr error
+			if moduleToken := strings.TrimSpace(os.Getenv("PAYESH_CPU_MODULE_TOKEN")); moduleToken != "" {
+				proxy, proxyErr = modules.NewAuthenticatedUnixModuleProxy(socket, moduleToken)
+			} else {
+				proxy, proxyErr = modules.NewUnixModuleProxy(socket)
+			}
+			if proxyErr != nil {
+				fmt.Fprintln(os.Stderr, "configure CPU Controls module:", proxyErr)
+				os.Exit(1)
+			}
+			cpuControlService = handlerService{handler: proxy}
+		}
+		var bandwidthService interface{ Handler() http.Handler }
+		if socket := strings.TrimSpace(os.Getenv("PAYESH_BANDWIDTH_SOCKET")); socket != "" {
+			proxy, proxyErr := modules.NewUnixModuleProxy(socket)
+			if proxyErr != nil {
+				fmt.Fprintln(os.Stderr, "configure bandwidth module:", proxyErr)
+				os.Exit(1)
+			}
+			bandwidthService = handlerService{handler: proxy}
+		}
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -164,6 +226,53 @@ func main() {
 		// allowance mutations remain a browser/CSRF operation.
 		api.SetTrafficForecastHandler(trafficService.Handler())
 		handler = api.Handler()
+	}
+	if updateScheduler != nil {
+		updateWorkerDone = updateScheduler.StartWorker(ctx, updater.DefaultWorkerInterval, func(workerErr error) {
+			if ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "update worker:", workerErr)
+			}
+		})
+	}
+	if installService != nil {
+		installWorkerDone = installService.StartWorker(ctx, 5*time.Second, func(workerErr error) {
+			if ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "installation worker:", workerErr)
+			}
+		})
+	}
+	var nodeServer *http.Server
+	var nodeListener net.Listener
+	if nodeConfig.Enabled() {
+		certificate, certErr := tls.LoadX509KeyPair(nodeConfig.CertFile, nodeConfig.KeyFile)
+		if certErr != nil {
+			fmt.Fprintln(os.Stderr, "load node transport TLS certificate:", certErr)
+			os.Exit(1)
+		}
+		if nodeHub == nil {
+			fmt.Fprintln(os.Stderr, "configure node transport hub: hub is unavailable")
+			os.Exit(1)
+		}
+		nodeServer = &http.Server{
+			Addr:              nodeConfig.Listen,
+			Handler:           nodeTransportHandler(nodeHub),
+			ReadHeaderTimeout: 5 * time.Second,
+			MaxHeaderBytes:    16 << 10,
+			TLSConfig:         nodeTransportTLSConfig(certificate),
+		}
+		nodeListener, err = net.Listen("tcp", nodeConfig.Listen)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "listen node transport:", err)
+			os.Exit(1)
+		}
+		tlsListener := tls.NewListener(nodeListener, nodeServer.TLSConfig)
+		nodeListener = tlsListener
+		go func() {
+			if serveErr := nodeServer.Serve(tlsListener); serveErr != nil && serveErr != http.ErrServerClosed && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "node transport:", serveErr)
+			}
+		}()
+		fmt.Fprintf(os.Stderr, "payesh node transport listening on %s\n", nodeConfig.Listen)
 	}
 	server := &http.Server{
 		Addr:              *listen,
@@ -181,12 +290,51 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if nodeServer != nil {
+			_ = nodeServer.Shutdown(shutdownCtx)
+		}
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	fmt.Fprintf(os.Stderr, "payesh-server listening on %s\n", *listen)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	defer func() {
+		if nodeListener != nil {
+			_ = nodeListener.Close()
+		}
+	}()
+	// Bind before announcing readiness. Apart from surfacing bind errors before
+	// the process enters Serve, this makes :0 useful to disposable acceptance
+	// runs: the log contains the kernel-selected, race-free endpoint.
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "listen:", err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+	fmt.Fprintf(os.Stderr, "payesh-server listening on %s\n", listener.Addr().String())
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		os.Exit(1)
+	}
+}
+
+func nodeTransportHandler(hub *transport.Hub) http.Handler {
+	mux := http.NewServeMux()
+	// The TLS handshake may omit a client certificate so a node can perform
+	// its one-time bootstrap. The ordinary node route still rejects an
+	// anonymous peer in WebSocketHandler before upgrading, and Hub.Open
+	// remains authoritative for CA ownership/revocation checks.
+	mux.Handle("/node/bootstrap/v1", transport.BootstrapWebSocketHandler(hub))
+	mux.Handle("/node/v1", transport.WebSocketHandler(hub))
+	return mux
+}
+
+func nodeTransportTLSConfig(certificate tls.Certificate) *tls.Config {
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{certificate},
+		// Bootstrap is server-authenticated before a node has a client
+		// certificate. Route-level handlers enforce certificates for the
+		// ordinary node channel.
+		ClientAuth: tls.RequestClientCert,
 	}
 }
 
@@ -199,6 +347,31 @@ func splitCommaList(value string) []string {
 		parts[index] = strings.TrimSpace(parts[index])
 	}
 	return parts
+}
+
+type nodeTransportConfig struct {
+	Listen   string
+	CertFile string
+	KeyFile  string
+}
+
+func (c nodeTransportConfig) Enabled() bool { return c.Listen != "" }
+
+func newNodeTransportConfig(listen, certFile, keyFile string) (nodeTransportConfig, error) {
+	c := nodeTransportConfig{Listen: strings.TrimSpace(listen), CertFile: strings.TrimSpace(certFile), KeyFile: strings.TrimSpace(keyFile)}
+	if c.Listen == "" {
+		if c.CertFile != "" || c.KeyFile != "" {
+			return nodeTransportConfig{}, fmt.Errorf("node TLS certificate/key require --node-listen or PAYESH_NODE_LISTEN")
+		}
+		return c, nil
+	}
+	if c.CertFile == "" || c.KeyFile == "" {
+		return nodeTransportConfig{}, fmt.Errorf("node transport requires both TLS certificate and key")
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
+		return nodeTransportConfig{}, fmt.Errorf("node listen address is invalid: %w", err)
+	}
+	return c, nil
 }
 
 func loopbackListenAddress(address string) bool {
@@ -257,16 +430,27 @@ func moduleRootDir() string {
 	return "/var/lib/payesh/modules"
 }
 
-// cgroupRootDir defaults to the conventional cgroup v2 mount point. It is
-// overridable for the same reason moduleRootDir is: this development host
-// has no real cgroupfs, so cpu-controls routes exist and can be exercised
-// (the file-format logic is real; see internal/cpucontrol), but nothing
-// here has been verified against actual kernel enforcement.
-func cgroupRootDir() string {
-	if dir := strings.TrimSpace(os.Getenv("PAYESH_CGROUP_ROOT")); dir != "" {
-		return dir
-	}
-	return "/sys/fs/cgroup"
+// unavailableCPUService keeps the documented route honest without linking
+// the optional CPU implementation into the base server. The real service is
+// supplied only by the future authenticated privileged module host.
+type unavailableCPUService struct{}
+
+type handlerService struct{ handler http.Handler }
+
+type privdModuleExecutor struct{ client privd.Client }
+
+func (e privdModuleExecutor) Invoke(ctx context.Context, invocation modules.ModuleInvocation) error {
+	return e.client.Invoke(ctx, privd.ModuleInvocation{ServerID: invocation.ServerID, ModuleID: invocation.ModuleID, ModuleVersion: invocation.ModuleVersion, Operation: invocation.Operation, InstallDir: invocation.InstallDir})
+}
+
+func (s handlerService) Handler() http.Handler { return s.handler }
+
+func (unavailableCPUService) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"module_executor_unavailable","message":"CPU Controls requires the authenticated privileged module executor","retryable":false}` + "\n"))
+	})
 }
 
 // evaluateUnreachable is the liveness side of the package-05 ingestion seam.

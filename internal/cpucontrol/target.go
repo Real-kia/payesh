@@ -1,6 +1,7 @@
 package cpucontrol
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -33,6 +34,11 @@ type Target struct {
 	Process *ProcessIdentity
 }
 
+// Validate checks the addressable target fields without requiring a live
+// process identity. Callers that apply a process-group policy should use the
+// manager's identity-aware validation path instead.
+func (t Target) Validate() error { return t.validateKindName() }
+
 // validateIdentity is the full check Apply requires: a process-group target
 // must carry a pinned process identity to verify before any quota is
 // written.
@@ -64,7 +70,11 @@ func (t Target) validateKindName() error {
 // Distinct kinds cannot collide because the kind prefixes the sanitized
 // name.
 func (t Target) GroupPath() GroupPath {
-	return GroupPath("payesh/" + t.Kind + "-" + sanitizeGroupComponent(t.Name))
+	// The readable component alone is not injective (':' and '_' both used to
+	// become '_'). Include a digest of the original name so distinct API
+	// targets can never alias the same kernel cgroup.
+	digest := sha256.Sum256([]byte(t.Kind + "\x00" + t.Name))
+	return GroupPath(fmt.Sprintf("payesh/%s-%s-%x", t.Kind, sanitizeGroupComponent(t.Name), digest[:8]))
 }
 
 func sanitizeGroupComponent(name string) string {

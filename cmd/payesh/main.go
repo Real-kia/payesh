@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/collector"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
 )
@@ -47,6 +50,10 @@ func main() {
 		err = prune(ctx, os.Args[2:])
 	case "storage-usage":
 		err = storageUsage(ctx, os.Args[2:])
+	case "cpu-services":
+		err = cpuServices(ctx, os.Args[2:])
+	case "run":
+		err = runWorkload(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -73,7 +80,115 @@ commands:
 	capture-log      read and persist a configured regular file snapshot
   logs             query persisted bounded log entries
   prune            remove expired history in bounded batches
-  storage-usage    print database/WAL usage`)
+  storage-usage    print database/WAL usage
+  cpu-services     list selectable systemd/OpenRC CPU service targets (read-only)
+  run              start a command in a Payesh-owned cgroup (Linux only)`)
+}
+
+func runWorkload(ctx context.Context, args []string) error {
+	if runtime.GOOS != "linux" {
+		return errors.New("cpu workload runner unsupported on this operating system; requires Linux cgroup v2")
+	}
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	name := flags.String("name", "workload", "stable process-group target name")
+	cgroupRoot := flags.String("cgroup-root", "/sys/fs/cgroup", "cgroup v2 mount point")
+	ownershipRoot := flags.String("ownership-root", "/var/lib/payesh/cgroup-ownership", "Payesh cgroup ownership metadata directory")
+	millicores := flags.Uint64("cpu-millicores", 0, "optional CPU quota in millicores (1..100000); zero leaves the quota unchanged")
+	unlimited := flags.Bool("unlimited", false, "write an unlimited quota before starting")
+	keepGroup := flags.Bool("keep-group", false, "keep the empty Payesh-owned group after the command exits")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	command := flags.Args()
+	if len(command) == 0 || command[0] == "" {
+		return errors.New("run requires a command after --")
+	}
+	if *millicores != 0 && *unlimited {
+		return errors.New("--cpu-millicores and --unlimited cannot be combined")
+	}
+	if *millicores != 0 {
+		if err := cpucontrol.ValidateMillicores(*millicores); err != nil {
+			return err
+		}
+	}
+	if !filepath.IsAbs(*cgroupRoot) || filepath.Clean(*cgroupRoot) != *cgroupRoot || !filepath.IsAbs(*ownershipRoot) || filepath.Clean(*ownershipRoot) != *ownershipRoot {
+		return errors.New("--cgroup-root and --ownership-root must be clean absolute paths")
+	}
+	if *cgroupRoot == "/" || *ownershipRoot == "/" {
+		return errors.New("--cgroup-root and --ownership-root cannot be filesystem root")
+	}
+	target := cpucontrol.Target{Kind: cpucontrol.TargetKindProcessGroup, Name: *name}
+	if err := target.Validate(); err != nil {
+		return err
+	}
+	group := target.GroupPath()
+	fs := cpucontrol.FSCgroup{Root: *cgroupRoot, OwnershipRoot: *ownershipRoot}
+	if err := fs.EnsureDedicatedGroup(group); err != nil {
+		return fmt.Errorf("prepare workload cgroup: %w", err)
+	}
+	cleanup := func() error {
+		if *keepGroup {
+			return nil
+		}
+		return fs.RemoveGroup(group)
+	}
+	commandProcess := exec.CommandContext(ctx, command[0], command[1:]...)
+	commandProcess.Stdin = os.Stdin
+	commandProcess.Stdout = os.Stdout
+	commandProcess.Stderr = os.Stderr
+	if err := commandProcess.Start(); err != nil {
+		_ = cleanup()
+		return fmt.Errorf("start workload: %w", err)
+	}
+	if err := fs.AttachProcess(group, commandProcess.Process.Pid); err != nil {
+		_ = commandProcess.Process.Kill()
+		_ = commandProcess.Wait()
+		_ = cleanup()
+		return fmt.Errorf("attach workload to cgroup: %w", err)
+	}
+	if *unlimited || *millicores != 0 {
+		if err := fs.WriteQuota(group, *millicores, *unlimited); err != nil {
+			_ = commandProcess.Process.Kill()
+			_ = commandProcess.Wait()
+			_ = cleanup()
+			return fmt.Errorf("apply workload CPU quota: %w", err)
+		}
+	}
+	waitErr := commandProcess.Wait()
+	cleanupErr := cleanup()
+	if waitErr != nil {
+		if cleanupErr != nil {
+			return fmt.Errorf("workload failed: %v; cgroup cleanup failed: %w", waitErr, cleanupErr)
+		}
+		return fmt.Errorf("workload failed: %w", waitErr)
+	}
+	if cleanupErr != nil {
+		return fmt.Errorf("workload completed but cgroup cleanup failed: %w", cleanupErr)
+	}
+	return nil
+}
+
+func cpuServices(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("cpu-services", flag.ContinueOnError)
+	timeout := flags.Duration("timeout", 5*time.Second, "maximum supervisor query duration")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *timeout <= 0 || *timeout > 30*time.Second {
+		return errors.New("--timeout must be greater than zero and no longer than 30s")
+	}
+	discoveryCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	services, err := (cpucontrol.ServiceDiscovery{}).List(discoveryCtx)
+	if err != nil {
+		if errors.Is(err, cpucontrol.ErrServiceDiscoveryUnsupported) {
+			return fmt.Errorf("service discovery unsupported: install/use systemd or OpenRC service tooling")
+		}
+		return err
+	}
+	return writeJSON(os.Stdout, struct {
+		Items []cpucontrol.DiscoveredService `json:"items"`
+	}{services})
 }
 
 func localStoreOptions() monitoring.StoreOptions {

@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+
+name="Payesh Bandwidth Controls rollback watchdog"
+command="${PAYESH_BANDWIDTH_BINARY}"
+command_args="--watchdog-only --state-dir /var/lib/payesh/bandwidth"
+command_background="yes"
+pidfile="/run/payesh-bandwidth-watchdog.pid"
+output_log="/var/log/payesh/bandwidth-watchdog.log"
+error_log="/var/log/payesh/bandwidth-watchdog.log"
+
+depend() {
+	need localmount
+	before net
+}
+
+start_pre() {
+	if [ -z "${PAYESH_BANDWIDTH_BINARY}" ]; then
+		eerror "PAYESH_BANDWIDTH_BINARY must be set in /etc/conf.d/payesh-bandwidth-watchdog"
+		return 1
+	fi
+	checkpath --directory --mode 0700 --owner root:root /var/lib/payesh/bandwidth
+	checkpath --directory --mode 0750 --owner root:root /var/log/payesh
+}

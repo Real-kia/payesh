@@ -89,14 +89,31 @@ func CheckEligibility(server contracts.Server, entry contracts.ModuleCatalogEntr
 		have[capability] = true
 	}
 	missing := make([]string, 0)
+	missingSet := make(map[string]struct{})
+	addMissing := func(item string) {
+		if _, exists := missingSet[item]; !exists {
+			missing = append(missing, item)
+			missingSet[item] = struct{}{}
+		}
+	}
 	for _, dependency := range entry.Dependencies {
 		if !have[dependency] {
-			missing = append(missing, dependency)
+			addMissing(dependency)
 		}
 	}
 	for _, capability := range manifest.RequiredCapabilities {
 		if !have[capability] {
-			missing = append(missing, capability)
+			addMissing(capability)
+		}
+	}
+	for _, privilege := range entry.RequiredPrivileges {
+		if !have[privilege] {
+			addMissing(privilege)
+		}
+	}
+	for _, privilege := range manifest.RequiredPrivileges {
+		if !have[privilege] {
+			addMissing(privilege)
 		}
 	}
 	if len(missing) > 0 {

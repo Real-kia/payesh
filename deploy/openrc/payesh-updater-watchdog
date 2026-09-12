@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+
+name="Payesh independent update recovery watchdog"
+command="${PAYESH_UPDATER_WATCHDOG_BINARY:-/usr/bin/payesh-updater-watchdog}"
+command_args="--journal /var/lib/payesh/update/journal.json"
+command_background="yes"
+pidfile="/run/payesh-updater-watchdog.pid"
+output_log="/var/log/payesh/updater-watchdog.log"
+error_log="/var/log/payesh/updater-watchdog.log"
+
+depend() {
+	need localmount
+	before payesh-server payesh-agent
+}
+
+start_pre() {
+	checkpath --directory --mode 0700 --owner root:root /var/lib/payesh/update
+	checkpath --directory --mode 0750 --owner root:root /var/log/payesh
+}

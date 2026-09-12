@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+name="Payesh Bandwidth Controls module"
+command="${PAYESH_BANDWIDTH_BINARY}"
+command_args="--db /var/lib/payesh/payesh.db --server-id ${PAYESH_SERVER_ID} --state-dir /var/lib/payesh/bandwidth --socket /run/payesh/bandwidth.sock --management-confirm-url ${PAYESH_MANAGEMENT_CONFIRM_URL}"
+command_user="root:payesh"
+command_background="yes"
+pidfile="/run/payesh-bandwidth-module.pid"
+output_log="/var/log/payesh/bandwidth-module.log"
+error_log="/var/log/payesh/bandwidth-module.log"
+
+depend() {
+	need net payesh-bandwidth-watchdog
+	after payesh-server
+}
+
+start_pre() {
+	if [ -z "${PAYESH_MANAGEMENT_CONFIRM_URL}" ] || [ -z "${PAYESH_BANDWIDTH_BINARY}" ] || [ -z "${PAYESH_SERVER_ID}" ]; then
+		eerror "PAYESH_MANAGEMENT_CONFIRM_URL, PAYESH_BANDWIDTH_BINARY, and PAYESH_SERVER_ID must be set in /etc/conf.d/payesh-bandwidth-module"
+		return 1
+	fi
+	checkpath --directory --mode 0700 --owner root:root /var/lib/payesh/bandwidth
+	checkpath --directory --mode 0750 --owner root:payesh /run/payesh
+	checkpath --directory --mode 0750 --owner root:root /var/log/payesh
+}
