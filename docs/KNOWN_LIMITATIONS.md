@@ -97,3 +97,6 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
   committed exactly once. Test-key signed HTTP release verification,
   unhealthy-activation rollback/retry, and watchdog recovery passed on the
   same Linux host.
+- Ubuntu Linux incident-context acceptance passed a real file-log source and
+  persisted both bounded metric evidence and timestamped log evidence in the
+  firing incident snapshot.
