@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,7 +33,12 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "local listen address")
 	token := flag.String("token", os.Getenv("PAYESH_LOCAL_TOKEN"), "Bearer token for protected local API (or PAYESH_LOCAL_TOKEN)")
 	bootstrapSecret := flag.String("bootstrap-secret", os.Getenv("PAYESH_BOOTSTRAP_SECRET"), "one-time owner setup secret; enables browser-session API (or PAYESH_BOOTSTRAP_SECRET)")
-	secureBrowserCookies := flag.Bool("secure-browser-cookies", false, "mark browser session cookies Secure; use when this HTTP listener is behind HTTPS")
+	secureCookiesDefault, secureCookiesErr := environmentBool("PAYESH_SECURE_BROWSER_COOKIES", false)
+	if secureCookiesErr != nil {
+		fmt.Fprintln(os.Stderr, "configure browser cookies:", secureCookiesErr)
+		os.Exit(2)
+	}
+	secureBrowserCookies := flag.Bool("secure-browser-cookies", secureCookiesDefault, "mark browser session cookies Secure; use when this HTTP listener is behind HTTPS (or PAYESH_SECURE_BROWSER_COOKIES)")
 	trustedProxyCIDRs := flag.String("trusted-proxy-cidrs", os.Getenv("PAYESH_TRUSTED_PROXY_CIDRS"), "comma-separated trusted reverse-proxy IPs/CIDRs for client-address headers")
 	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
 	nodeTLSCert := flag.String("node-tls-cert", os.Getenv("PAYESH_NODE_TLS_CERT"), "node transport TLS server certificate PEM path")
@@ -385,6 +391,18 @@ func loopbackListenAddress(address string) bool {
 	host = strings.Trim(host, "[]")
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func environmentBool(name string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", name)
+	}
+	return parsed, nil
 }
 
 func alertDestinationsFromEnvironment() []alerts.NotificationDestination {
