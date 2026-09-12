@@ -7,8 +7,12 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
   verifier, but no production signing key, trust-anchor registry, official
   release URL, or published artifact is stored or promised here.
 - The command-line installer can preflight and apply verified artifacts, and
-  durable SSH-install job binding is implemented; live SSH installation on a
-  disposable target remains acceptance work.
+  durable SSH-install job binding is implemented. A pinned-host-key live SSH
+  node install passed on disposable Ubuntu, including remote SHA-256
+  re-verification, systemd activation, preservation-first uninstall, explicit
+  data removal, and idempotent repeated uninstall. The transport supports an
+  optional source bind address and prefers atomic rsync transfer with guarded
+  SCP fallback for slow or broken provider SFTP implementations.
 - Update verification, staging, activation rollback, SQLite backup, the
   independent watchdog, filtered/encrypted history transfer, durable hub-first
   scheduling, and a local signed-release executor exist as composable pieces.
@@ -21,9 +25,10 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
 - Browser read and owner mutation/onboarding API wiring exists. Real two-host
   TLS enrollment and monitoring ingestion passed between Ubuntu 22 amd64 and
   Debian 12 arm64. Public browser TLS issuance, managed renewal, HTTPS webhook
-  delivery, and Telegram delivery passed on Ubuntu 22. Certificate renewal for
-  internal node identities, remote action delivery, SSH-driven installation,
-  and signed clean-host rollout remain incomplete. Keep the server on loopback
+  delivery, and Telegram delivery passed on Ubuntu 22. A live TLS WebSocket
+  acceptance also passed internal identity renewal, atomic persistence,
+  predecessor revocation, reconnect, and exactly-once durable no-op action
+  delivery. A production-signed clean-host rollout remains incomplete. Keep the server on loopback
   or use the managed HTTPS helper; its no-domain mode provides an encrypted SSH
   tunnel instead of exposing credentials over plain HTTP.
 - Optional Port Traffic, CPU Controls, and Bandwidth Controls require Linux
@@ -66,6 +71,10 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
 - A bounded 10-second retention smoke inserted 101/101 samples with no ingest,
   prune, or storage errors and clean teardown. It does not replace the 24-hour
   soak gate.
+- A higher-volume Ubuntu soak ran for 121 seconds, accepted 4,280/4,280
+  samples with no duplicate, ingest, prune, or storage errors, observed
+  retention, deleted all eligible samples, and cleaned its temporary state.
+  This remains shorter than the optional 24-hour endurance gate.
 - `91.108.151.131.realkia.com` received a valid Let's Encrypt certificate with
   the correct DNS SAN. External checks passed HTTP-to-HTTPS redirect, hostname
   verification, TLS 1.3, loopback reverse proxying, and repeat configuration.
@@ -77,3 +86,9 @@ This source tree is an implementation checkpoint, not an accepted v1 release.
   reached the supplied Telegram test chat. Same-host public-address webhook
   delivery was unavailable on this provider due to hairpin routing; the
   external delivery path passed.
+- The disposable Ubuntu transport gate passed two-agent bootstrap/ingestion,
+  forced in-band node-certificate renewal, replacement identity persistence,
+  old-certificate revocation, reconnect, and one side-effect-free typed action
+  committed exactly once. Test-key signed HTTP release verification,
+  unhealthy-activation rollback/retry, and watchdog recovery passed on the
+  same Linux host.

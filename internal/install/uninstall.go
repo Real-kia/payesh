@@ -141,6 +141,11 @@ func (m commandServiceRemover) Remove(ctx context.Context, root, init string, se
 	if init == "systemd" {
 		if stop {
 			for _, service := range services {
+				if _, err := os.Lstat(servicePath(root, init, service)); errors.Is(err, os.ErrNotExist) {
+					continue
+				} else if err != nil {
+					return fmt.Errorf("inspect service %s: %w", service, err)
+				}
 				if out, err := m.runner.Run(ctx, "systemctl", "disable", "--now", service); err != nil {
 					return commandError("systemctl disable --now "+service, out, err)
 				}
@@ -155,6 +160,11 @@ func (m commandServiceRemover) Remove(ctx context.Context, root, init string, se
 		return &UnsupportedError{Reason: "service manager " + init}
 	}
 	for _, service := range services {
+		if _, err := os.Lstat(servicePath(root, init, service)); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("inspect service %s: %w", service, err)
+		}
 		if stop {
 			if out, err := m.runner.Run(ctx, "rc-service", service, "stop"); err != nil {
 				return commandError("rc-service stop "+service, out, err)

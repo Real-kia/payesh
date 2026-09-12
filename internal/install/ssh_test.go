@@ -64,6 +64,27 @@ func TestParseSSHKeyscanFingerprintAndPort(t *testing.T) {
 	}
 }
 
+func TestOpenSSHArgumentsIncludeValidatedBindAddress(t *testing.T) {
+	endpoint := SSHEndpoint{Host: "node.example", Port: 2222, User: "root", BindAddress: "192.0.2.10"}
+	if err := validateSSHTarget(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	transport := OpenSSHTransport{}
+	if got := strings.Join(transport.sshArgs(endpoint, "/tmp/known", "true"), " "); !strings.Contains(got, "-b 192.0.2.10") {
+		t.Fatalf("SSH bind address missing: %s", got)
+	}
+	if got := strings.Join(transport.scpArgs(endpoint, "/tmp/known", "/tmp/source", "/tmp/destination", false), " "); !strings.Contains(got, "BindAddress=192.0.2.10") {
+		t.Fatalf("SCP bind address missing: %s", got)
+	}
+	if got := strings.Join(transport.rsyncArgs(endpoint, "/tmp/known", "/tmp/source", "/tmp/destination", false), " "); !strings.Contains(got, "-b 192.0.2.10") || !strings.Contains(got, "--timeout=120") {
+		t.Fatalf("rsync safety/bind arguments missing: %s", got)
+	}
+	endpoint.BindAddress = "not-an-ip"
+	if err := validateSSHTarget(endpoint); !errors.Is(err, ErrSSHInvalidTarget) {
+		t.Fatalf("invalid bind address err=%v", err)
+	}
+}
+
 type fakeSSHTransport struct {
 	keys      []SSHHostKey
 	preflight Preflight

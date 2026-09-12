@@ -234,7 +234,7 @@ func run(parent context.Context, cfg config, progress, diagnostics io.Writer) (r
 		}
 		now = time.Now()
 		for now.After(nextSample) || now.Equal(nextSample) {
-			if nextSample.After(end) {
+			if !nextSample.Before(end) {
 				break
 			}
 			batch := make([]contracts.MetricSample, 0, cfg.batchSize)
@@ -269,6 +269,14 @@ func run(parent context.Context, cfg config, progress, diagnostics io.Writer) (r
 			}
 			nextSample = nextSample.Add(cfg.interval)
 			if nextSample.After(now) {
+				break
+			}
+			// If ingestion is slower than the requested rate, stop creating
+			// historical catch-up work once wall time reaches the bounded end.
+			// The report exposes the achieved rate; duration must remain a real
+			// wall-clock bound rather than a promise to drain an arbitrary backlog.
+			if !time.Now().Before(end) {
+				nextSample = end
 				break
 			}
 		}
