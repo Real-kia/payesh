@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,9 @@ func TestLocalSignedHTTPReleaseExecutorRollsBackAndRecovers(t *testing.T) {
 	server.Listener = listener
 	server.Start()
 	defer server.Close()
+	// The manifest is encoded lazily by the handler, so bind the artifact to
+	// the actual ephemeral fixture URL after Start selects the port.
+	manifest.Artifacts[0].URL = server.URL + "/1.4.0/agent.tar.gz"
 
 	var healthFails bool = true
 	executor, err := NewReleaseExecutor(ExecutorConfig{
@@ -112,6 +116,8 @@ func TestLocalSignedHTTPReleaseExecutorRollsBackAndRecovers(t *testing.T) {
 	execution := Execution{JobID: "update-node-local-integration", Release: "1.4.0", Target: contracts.Server{ID: "server-local-integration", Role: "node", ConnectionState: "connected"}}
 	if err := executor.Execute(ctx, execution); err == nil {
 		t.Fatal("expected simulated health failure")
+	} else if !strings.Contains(err.Error(), "simulated startup failure") {
+		t.Fatalf("execution failed before the intended health/rollback boundary: %v", err)
 	}
 	if body, readErr := os.ReadFile(filepath.Join(active, "version")); readErr != nil || string(body) != "old" {
 		t.Fatalf("failed activation did not restore old release: %q (%v)", body, readErr)
