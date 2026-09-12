@@ -1,4 +1,4 @@
-.PHONY: build build-modules test lint service-check build-matrix contract-check web-check install-acceptance resource-benchmark monitoring-soak monitoring-soak-ci release-package release-sign release-validate
+.PHONY: build build-modules test lint service-check build-matrix contract-check web-check install-acceptance resource-benchmark monitoring-soak monitoring-soak-ci billing-compare release-package release-sign release-validate
 
 TARGETS := payesh-agent payesh-server payesh payesh-privd payesh-install payesh-updater-watchdog
 
@@ -78,6 +78,9 @@ monitoring-soak:
 # Short smoke for CI and pre-commit acceptance.
 monitoring-soak-ci:
 	go run ./scripts/monitoring-soak -duration=20s -interval=250ms -prune-interval=2s -retention-age=10s -quiet
+
+billing-compare:
+	go run ./scripts/billing-compare $(BILLING_COMPARE_ARGS)
 
 # Bounded PID/process-tree resource measurement. The command after -- is
 # intentionally caller supplied; reports are JSON by default.
