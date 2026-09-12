@@ -3,7 +3,6 @@
 package cpucontrol
 
 import (
-	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -17,7 +16,9 @@ func directoryBirthNanos(path string, _ os.FileInfo) (int64, error) {
 		return 0, err
 	}
 	if stat.Mask&unix.STATX_BTIME == 0 {
-		return 0, errors.New("cpucontrol: filesystem creation identity is unavailable")
+		// cgroup2 commonly omits STATX_BTIME. The cryptographically random
+		// trusted xattr remains the non-reusable identity in that case.
+		return 0, nil
 	}
 	return stat.Btime.Sec*1_000_000_000 + int64(stat.Btime.Nsec), nil
 }
