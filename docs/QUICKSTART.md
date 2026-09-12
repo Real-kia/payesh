@@ -84,6 +84,11 @@ For Telegram, set `PAYESH_ALERT_TELEGRAM_TOKEN` and
 `PAYESH_ALERT_TELEGRAM_CHAT_ID`. Rotate any test token shared through chat or
 logs after acceptance.
 
+Set `PAYESH_NOTIFICATION_RETRY=1` to exercise the production bounded retry
+policy. The one-shot listener supports `PAYESH_WEBHOOK_FAIL_FIRST=2` for an
+acceptance-only outage/recovery test; it still validates the HMAC on every
+attempt and accepts at most four simulated failures.
+
 ## Build a local release bundle
 
 After installing the pinned web dependencies, `make web-check` produces the

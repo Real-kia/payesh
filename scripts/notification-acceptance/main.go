@@ -32,8 +32,19 @@ func main() {
 		os.Exit(2)
 	}
 	for _, destination := range destinations {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		err := (alerts.Notifier{}).Send(ctx, destination, event)
+		timeout := 20 * time.Second
+		if os.Getenv("PAYESH_NOTIFICATION_RETRY") == "1" {
+			// Five notifier attempts can each consume ten seconds, with bounded
+			// 1s+2s+4s+8s backoff between them. Leave a small scheduling margin.
+			timeout = 70 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		var err error
+		if os.Getenv("PAYESH_NOTIFICATION_RETRY") == "1" {
+			err = (alerts.Notifier{}).SendWithRetry(ctx, destination, event)
+		} else {
+			err = (alerts.Notifier{}).Send(ctx, destination, event)
+		}
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s notification failed: %v\n", destination.Kind, err)
