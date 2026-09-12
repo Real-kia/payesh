@@ -76,12 +76,20 @@ func (c FSCgroup) ownershipPath(group GroupPath) (string, error) {
 	return filepath.Join(c.OwnershipRoot, fmt.Sprintf("%x.owned", sum[:])), nil
 }
 
-func directoryIdentity(info os.FileInfo) (uint64, uint64, error) {
+func directoryIdentity(path string, info os.FileInfo) (uint64, uint64, int64, error) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, 0, errors.New("cpucontrol: filesystem identity is unavailable")
+		return 0, 0, 0, errors.New("cpucontrol: filesystem identity is unavailable")
 	}
-	return uint64(stat.Dev), uint64(stat.Ino), nil
+	// Filesystems may immediately recycle an inode after rmdir. Binding the
+	// ownership record to creation time as well prevents a recreated path from
+	// inheriting authorization solely because dev+ino were reused. Unlike mtime
+	// or ctime, birth time is stable when child cgroups and control files change.
+	createdAt, err := directoryBirthNanos(path, info)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return uint64(stat.Dev), uint64(stat.Ino), createdAt, nil
 }
 
 func (c FSCgroup) period() uint64 {
@@ -147,12 +155,12 @@ func (c FSCgroup) EnsureDedicatedGroup(group GroupPath) error {
 		_ = os.Remove(dir)
 		return fmt.Errorf("cpucontrol: inspect created cgroup: %w", err)
 	}
-	device, inode, err := directoryIdentity(info)
+	device, inode, createdAt, err := directoryIdentity(dir, info)
 	if err != nil {
 		_ = os.Remove(dir)
 		return err
 	}
-	record := fmt.Sprintf("%s\n%d\n%d\n", group, device, inode)
+	record := fmt.Sprintf("%s\n%d\n%d\n%d\n", group, device, inode, createdAt)
 	if err := os.WriteFile(marker, []byte(record), 0o600); err != nil {
 		_ = os.Remove(dir)
 		return fmt.Errorf("cpucontrol: stamp cgroup ownership: %w", err)
@@ -182,14 +190,15 @@ func (c FSCgroup) IsDedicatedGroup(group GroupPath) (bool, error) {
 	if statErr == nil {
 		var recordedGroup string
 		var recordedDevice, recordedInode uint64
-		if _, err := fmt.Sscanf(string(raw), "%s\n%d\n%d", &recordedGroup, &recordedDevice, &recordedInode); err != nil {
+		var recordedCreatedAt int64
+		if _, err := fmt.Sscanf(string(raw), "%s\n%d\n%d\n%d", &recordedGroup, &recordedDevice, &recordedInode, &recordedCreatedAt); err != nil {
 			return false, nil
 		}
-		device, inode, err := directoryIdentity(info)
+		device, inode, createdAt, err := directoryIdentity(dir, info)
 		if err != nil {
 			return false, err
 		}
-		return recordedGroup == string(group) && recordedDevice == device && recordedInode == inode, nil
+		return recordedGroup == string(group) && recordedDevice == device && recordedInode == inode && recordedCreatedAt == createdAt, nil
 	} else if os.IsNotExist(statErr) {
 		return false, nil
 	} else {
