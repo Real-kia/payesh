@@ -97,7 +97,9 @@ func TestOwnershipRecordDoesNotAuthorizeRecreatedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(dir); err != nil {
+	// Simulate an external actor deleting and recreating the entire owned
+	// directory, including its attached ownership token.
+	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
