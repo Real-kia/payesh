@@ -1,7 +1,9 @@
 package cpucontrol
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -160,7 +162,17 @@ func (c FSCgroup) EnsureDedicatedGroup(group GroupPath) error {
 		_ = os.Remove(dir)
 		return err
 	}
-	record := fmt.Sprintf("%s\n%d\n%d\n%d\n", group, device, inode, createdAt)
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		_ = c.removeUnownedCreatedDir(dir)
+		return fmt.Errorf("cpucontrol: generate ownership token: %w", err)
+	}
+	token := hex.EncodeToString(nonce[:])
+	if err := attachDirectoryOwnership(dir, token, c.AllowPlainFilesystem); err != nil {
+		_ = c.removeUnownedCreatedDir(dir)
+		return fmt.Errorf("cpucontrol: attach cgroup ownership: %w", err)
+	}
+	record := fmt.Sprintf("%s\n%d\n%d\n%d\n%s\n", group, device, inode, createdAt, token)
 	if err := os.WriteFile(marker, []byte(record), 0o600); err != nil {
 		_ = os.Remove(dir)
 		return fmt.Errorf("cpucontrol: stamp cgroup ownership: %w", err)
@@ -191,19 +203,31 @@ func (c FSCgroup) IsDedicatedGroup(group GroupPath) (bool, error) {
 		var recordedGroup string
 		var recordedDevice, recordedInode uint64
 		var recordedCreatedAt int64
-		if _, err := fmt.Sscanf(string(raw), "%s\n%d\n%d\n%d", &recordedGroup, &recordedDevice, &recordedInode, &recordedCreatedAt); err != nil {
+		var recordedToken string
+		if _, err := fmt.Sscanf(string(raw), "%s\n%d\n%d\n%d\n%s", &recordedGroup, &recordedDevice, &recordedInode, &recordedCreatedAt, &recordedToken); err != nil {
 			return false, nil
 		}
 		device, inode, createdAt, err := directoryIdentity(dir, info)
 		if err != nil {
 			return false, err
 		}
-		return recordedGroup == string(group) && recordedDevice == device && recordedInode == inode && recordedCreatedAt == createdAt, nil
+		attachedToken, err := readDirectoryOwnership(dir, c.AllowPlainFilesystem)
+		if err != nil {
+			return false, nil
+		}
+		return recordedGroup == string(group) && recordedDevice == device && recordedInode == inode && recordedCreatedAt == createdAt && recordedToken == attachedToken, nil
 	} else if os.IsNotExist(statErr) {
 		return false, nil
 	} else {
 		return false, statErr
 	}
+}
+
+func (c FSCgroup) removeUnownedCreatedDir(dir string) error {
+	if c.AllowPlainFilesystem {
+		return os.RemoveAll(dir)
+	}
+	return os.Remove(dir)
 }
 
 func (c FSCgroup) AttachProcess(group GroupPath, pid int) error {
