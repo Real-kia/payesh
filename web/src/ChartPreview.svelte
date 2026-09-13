@@ -26,6 +26,7 @@
     const teal = styles.getPropertyValue('--teal').trim() || '#086b5c';
     const purple = styles.getPropertyValue('--purple').trim() || '#6e4bb2';
     const chartData: uPlot.AlignedData = [data.timestamps, data.cpu, data.memory];
+    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : raw.toFixed(2);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
@@ -35,7 +36,7 @@
         { stroke: muted, grid: { stroke: line }, values: (_u, values) => values.map((value) => `${value}%`) }
       ],
       cursor: { focus: { prox: 30 } },
-      series: [{}, { label: 'CPU', stroke: teal, width: 2 }, { label: 'Memory', stroke: purple, width: 2 }]
+      series: [{}, { label: 'CPU', stroke: teal, width: 2, value }, { label: 'Memory', stroke: purple, width: 2, value }]
     }, chartData, host);
     const resize = new ResizeObserver(([entry]) => plot?.setSize({ width: Math.max(240, entry.contentRect.width), height: 220 }));
     resize.observe(host);
@@ -46,7 +47,7 @@
 <div bind:this={host} class="chart-host" role="img" aria-label={label}></div>
 
 <style>
-  .chart-host { min-height: 220px; width: 100%; }
+  .chart-host { min-height: 250px; width: 100%; }
   :global(.uplot) { background: transparent; font-family: inherit; }
   :global(.uplot .u-axis) { color: var(--muted); }
 </style>
