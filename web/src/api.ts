@@ -50,6 +50,8 @@ export type Server = {
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
+export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
+export type ModulePage = { items: Module[]; next_cursor?: string };
 
 export type MetricSample = {
   server_id: string;
@@ -261,6 +263,14 @@ export class ApiClient {
 
   listServers(options: QueryOptions = {}): Promise<ServerPage> {
     return this.request<ServerPage>(`/servers${queryString({ limit: 200 })}`, { signal: options.signal });
+  }
+
+  createServer(body: { name: string; platform: 'linux'; architecture: 'amd64' | 'arm64' }, options: QueryOptions = {}): Promise<Server> {
+    return this.request<Server>('/servers', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  listModules(options: QueryOptions = {}): Promise<ModulePage> {
+    return this.request<ModulePage>(`/modules${queryString({ limit: 200 })}`, { signal: options.signal });
   }
 
   getServer(serverId: string, options: QueryOptions = {}): Promise<Server> {

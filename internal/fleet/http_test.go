@@ -57,6 +57,35 @@ func TestSetupLoginAndProtectedRead(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedOwnerCreatesPendingServer(t *testing.T) {
+	store, err := monitoring.OpenStore(context.Background(), ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := NewAPI(store, "0123456789abcdef-bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"setup_secret":"0123456789abcdef-bootstrap","username":"owner","password":"long-enough-password"}`))
+	setup.Header.Set("Content-Type", "application/json")
+	setupResponse := httptest.NewRecorder()
+	api.Handler().ServeHTTP(setupResponse, setup)
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/session", bytes.NewBufferString(`{"username":"owner","password":"long-enough-password"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	api.Handler().ServeHTTP(loginResponse, login)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/servers", bytes.NewBufferString(`{"name":"Edge node","platform":"linux","architecture":"arm64"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", loginResponse.Header().Get("X-CSRF-Token"))
+	request.AddCookie(loginResponse.Result().Cookies()[0])
+	response := httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create pending server=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestOwnerAndSessionSurviveStoreReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "payesh.db")
