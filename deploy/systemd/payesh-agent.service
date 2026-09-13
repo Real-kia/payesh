@@ -1,6 +1,6 @@
 [Unit]
 Description=Payesh local monitoring agent
-After=network-online.target
+After=network-online.target payesh-server.service
 Wants=network-online.target
 
 [Service]
