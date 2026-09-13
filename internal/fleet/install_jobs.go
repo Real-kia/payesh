@@ -319,7 +319,11 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 		return job, execErr
 	}
 	if execErr != nil {
-		return s.fail(ctx, job, "install_failed", "SSH installation failed", true)
+		message := "SSH installation failed"
+		if stage := install.SSHInstallFailureStage(execErr); stage != "" {
+			message += " during " + stage
+		}
+		return s.fail(ctx, job, "install_failed", message, true)
 	}
 	if server, found, lookupErr := s.Store.GetServer(ctx, job.TargetServerID); lookupErr == nil && found {
 		server.Address = opts.Endpoint.Host

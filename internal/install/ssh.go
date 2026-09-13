@@ -122,6 +122,17 @@ func sshStage(stage string, err error) error {
 	return &sshInstallError{Stage: stage, Err: err}
 }
 
+// SSHInstallFailureStage returns the non-sensitive orchestration stage for an
+// installation failure. The wrapped transport error is intentionally not
+// exposed to API callers because it may contain command output.
+func SSHInstallFailureStage(err error) string {
+	var stageErr *sshInstallError
+	if errors.As(err, &stageErr) {
+		return stageErr.Stage
+	}
+	return ""
+}
+
 // InstallOverSSH performs an idempotent remote install using the same
 // payesh-install binary as direct installation.  It fails closed when the
 // caller has not supplied enrollment and measurement verification callbacks.
