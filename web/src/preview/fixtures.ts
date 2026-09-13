@@ -7,6 +7,8 @@ export type PreviewChartData = {
   cpu: Array<number | null>;
   memory: Array<number | null>;
   disk: Array<number | null>;
+  networkRx?: Array<number | null>;
+  networkTx?: Array<number | null>;
   coverage: 'complete' | 'gap' | 'unavailable';
 };
 export type PreviewMetricHistory = { ranges: Record<PreviewChartRange, PreviewChartData> };

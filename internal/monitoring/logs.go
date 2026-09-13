@@ -333,7 +333,15 @@ func readConfiguredLogAtOffset(ctx context.Context, source LogSource, options Lo
 	}
 	now := options.Now
 	if now == nil {
-		now = func() time.Time { return time.Now().UTC() }
+		// Timestamp-less lines represent the requested snapshot. Anchor them to
+		// its upper bound when supplied; using a later wall-clock instant made a
+		// normal `to=now` browser request filter every such line back out.
+		if !options.To.IsZero() {
+			upper := options.To.UTC()
+			now = func() time.Time { return upper }
+		} else {
+			now = func() time.Time { return time.Now().UTC() }
+		}
 	}
 	reader := bufio.NewReaderSize(file, 32<<10)
 	fileID := fileIdentity(info)

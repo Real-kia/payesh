@@ -33,6 +33,21 @@ func TestReadConfiguredLogBoundsMultilineAndRedacts(t *testing.T) {
 	}
 }
 
+func TestTimestampLessLogUsesQueryUpperBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.log")
+	if err := os.WriteFile(path, []byte("service started\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	upper := time.Now().UTC().Add(-time.Second)
+	result, err := ReadConfiguredLog(context.Background(), LogSource{ServerID: "server-local-0001", ID: "service", Label: "Service", Path: path}, LogReadOptions{MaxEntries: 10, From: upper.Add(-time.Hour), To: upper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 1 || !result.Entries[0].Timestamp.Equal(upper) {
+		t.Fatalf("timestamp-less entry fell outside snapshot: %#v", result.Entries)
+	}
+}
+
 func TestReadConfiguredLogRejectsSymlinkAndCapsLines(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.log")
