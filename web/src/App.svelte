@@ -488,8 +488,32 @@
   function applyMetric(query: MetricQuery, server: PreviewServer): void {
     const latest = [...query.samples].sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))[0];
     if (!latest) return;
+    server.latestMetricAt = latest.observed_at;
     const read = (names: string[]) => names.map((name) => latest.values[name]).find((value) => typeof value === 'number' && Number.isFinite(value)) ?? null;
     server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), disk: read(['disk', 'disk.used_percent', 'disk.utilization']) };
+  }
+
+  function sampleAge(server: PreviewServer): string {
+    if (!server.latestMetricAt) return 'awaiting sample';
+    const seconds = Math.max(0, Math.round((Date.now() - Date.parse(server.latestMetricAt)) / 1000));
+    return seconds < 5 ? 'live now' : seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
+  }
+
+  function displayAddress(server: PreviewServer): string {
+    if (server.address) return server.address;
+    // Older local hubs predate the persisted address field. Their API host is
+    // the authoritative address until the next SSH installation records it.
+    if (!PREVIEW_MODE && (server.role === 'standalone' || server.role === 'hub') && typeof window !== 'undefined') return window.location.hostname;
+    return 'Address unavailable';
+  }
+
+  async function refreshSelectedServer(): Promise<void> {
+    if (PREVIEW_MODE || activePage !== 'server' || !selectedServerId || document.hidden) return;
+    const id = selectedServerId;
+    try {
+      const result = await enrichApiServer(emptyApiServer(await apiClient.getServer(id)), new AbortController().signal);
+      if (activePage === 'server' && selectedServerId === id) servers = servers.map((server) => server.id === id ? result.server : server);
+    } catch (error) { if (error instanceof ApiError && error.authExpired) authExpired = true; }
   }
 
   async function enrichApiServer(server: PreviewServer, signal: AbortSignal): Promise<{ server: PreviewServer; partial: boolean }> {
@@ -604,7 +628,8 @@
     window.history.replaceState({ activePage, selectedServerId, detailTab }, '', window.location.pathname);
     const onPopState = (event: PopStateEvent) => { restoreState(event.state); saveUiState(); };
     window.addEventListener('popstate', onPopState);
-    return () => { window.removeEventListener('popstate', onPopState); apiAbortController?.abort(); logAbortController?.abort(); jobPollController?.abort(); };
+    const liveRefresh = window.setInterval(() => void refreshSelectedServer(), 5000);
+    return () => { window.clearInterval(liveRefresh); window.removeEventListener('popstate', onPopState); apiAbortController?.abort(); logAbortController?.abort(); jobPollController?.abort(); };
   });
 </script>
 
@@ -668,7 +693,7 @@
     {#if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading"><div><p class="eyebrow">Fleet inventory</p><h1 id="servers-title">Servers</h1><p class="lede">Manage every master and node from one place.</p></div><button class="button primary" type="button" on:click={() => navigate('add-server')}>＋ Add server</button></div>
-        <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{server.address || 'Address unavailable'} · {server.role} · {server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessReason || server.connectionState}</small></span><span class="server-arrow">→</span></button>{/each}</div>
+        <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{displayAddress(server)} · {server.role} · {server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessReason || server.connectionState}</small></span><span class="server-arrow">→</span></button>{/each}</div>
       </section>
     {:else if activePage === 'add-server'}
       <section class="page" aria-labelledby="add-server-title">
@@ -733,7 +758,7 @@
       <section class="page server-page" aria-labelledby="server-title">
         <button class="back-link" type="button" on:click={() => navigate('overview')}>← Back to overview</button>
         <div class="page-heading server-heading"><div><p class="eyebrow">Server detail · {selectedServer.role}</p><h1 id="server-title">{selectedServer.name}</h1><p class="lede">{selectedServer.platform} · {selectedServer.architecture} · {selectedServer.version}</p></div><span class={`status-pill ${selectedServer.displayState}`}><i></i>{stateLabel(selectedServer.displayState)}</span></div>
-        <div class="server-meta"><span>Address: <strong>{selectedServer.address || 'Unavailable'}</strong></span><span>Connection: <strong>{selectedServer.connectionState}</strong></span><span>Freshness: <strong>{selectedServer.freshnessState}</strong></span><span>Revision: <strong>{selectedServer.configurationRevision}</strong></span>{#if selectedServer.freshnessReason}<span>{selectedServer.freshnessReason}</span>{/if}</div>
+        <div class="server-meta"><span>Address: <strong>{displayAddress(selectedServer)}</strong></span><span>Connection: <strong>{selectedServer.connectionState}</strong></span><span>Freshness: <strong>{selectedServer.freshnessState}</strong></span><span>Revision: <strong>{selectedServer.configurationRevision}</strong></span>{#if selectedServer.freshnessReason}<span>{selectedServer.freshnessReason}</span>{/if}</div>
         {#if !PREVIEW_MODE && selectedServer.connectionState === 'never-connected'}<article class="panel server-actions"><div class="panel-heading"><div><p class="eyebrow">Connect server</p><h2>Install over SSH</h2></div></div><form class="form-grid" on:submit|preventDefault={() => void submitInstall()}><label>SSH host<input bind:value={installHost} placeholder="hostname or address" required /></label><label>Port<input type="number" min="1" max="65535" bind:value={installPort} required /></label><label>SSH user<input bind:value={installUser} required /></label><label>Password (or private key)<input type="password" bind:value={installPassword} autocomplete="off" /></label><label>Private key<textarea bind:value={installKey} rows="2" autocomplete="off"></textarea></label><label>Expected host-key fingerprint<input bind:value={installFingerprint} placeholder="SHA256:…" /></label><button class="button primary small" type="submit" disabled={installBusy || (!installPassword && !installKey)}>{installBusy ? 'Queueing…' : 'Install Payesh'}</button></form>{#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}</article>{/if}
         <div class="tabs" role="tablist" aria-label="Server detail sections">
           {#each availableTabs as tab}
@@ -744,7 +769,7 @@
         {#if detailTab === 'metrics' && hasCapability(selectedServer, 'metrics')}
           <div class="metric-grid">
             {#each [['CPU', 'cpu', selectedServer.metrics.cpu, 'teal'], ['Memory', 'memory', selectedServer.metrics.memory, 'purple'], ['Disk', 'disk', selectedServer.metrics.disk, 'blue'] ] as metric}
-              <article class="metric-card"><div class="card-top"><span>{metric[0]}</span><strong>{metricValue(metric[2] as number | null)}</strong></div>{#if metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').length > 1}<div class="sparkline"><Sparkline values={metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk')} tone={metric[3] as 'teal' | 'purple' | 'blue'} /></div>{:else}<div class="sparkline-unavailable">No samples</div>{/if}<small>latest sample · {chartRange}</small></article>
+              <article class="metric-card"><div class="card-top"><span>{metric[0]}</span><strong>{metricValue(metric[2] as number | null)}</strong></div>{#if metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').length > 1}<div class="sparkline"><Sparkline values={metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk')} tone={metric[3] as 'teal' | 'purple' | 'blue'} /></div>{:else}<div class="sparkline-unavailable">No samples</div>{/if}<small>updated {sampleAge(selectedServer)} · chart {chartRange}</small></article>
             {/each}
           </div>
           <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Resource history</p><h2>CPU and memory</h2></div><select bind:value={chartRange} aria-label="Chart time range"><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option></select></div>{#if chartData && chartData.coverage !== 'unavailable'}<div class="legend"><span><i class="legend-dot teal"></i>CPU</span><span><i class="legend-dot purple"></i>Memory</span><span>Unit: percent</span><span>Range: {chartRange}</span></div>{#key `${chartRange}-${theme}-${selectedServer.id}`}<ChartPreview data={chartData} range={chartRange} label="CPU and memory history over the selected time range" />{/key}<p class="chart-summary">CPU latest {metricValue(selectedServer.metrics.cpu)}; range {seriesRange(chartData.cpu)}. Memory latest {metricValue(selectedServer.metrics.memory)}; range {seriesRange(chartData.memory)}. Coverage: {chartData.coverage === 'gap' ? 'gaps shown; exact timing is uncertain.' : 'complete for this preview.'}</p>{:else}<div class="unavailable-panel"><strong>Resource history unavailable</strong><span>No valid samples are available for this server and range.</span></div>{/if}</article>
@@ -773,7 +798,7 @@
         {:else}
           <div class="summary-grid"><article class="summary-card"><span>Healthy servers</span><strong>{healthyCount}<small> / {displayServers.length}</small></strong><span class="summary-note positive">↑ Fresh enough to act</span></article><article class="summary-card"><span>Needs attention</span><strong>{attentionCount}</strong><span class="summary-note warning">Includes stale and offline</span></article><article class="summary-card"><span>Month-to-date traffic</span><strong>{overviewAllowanceBytes === '0' ? 'Not configured' : formatBytes(overviewTrafficBytes)}</strong><span class="summary-note">{overviewAllowanceBytes === '0' ? 'Live bandwidth remains available per server' : `of ${formatBytes(overviewAllowanceBytes)} allowance`}</span></article></div>
           <div class="section-heading"><div><p class="eyebrow">Fleet health</p><h2>Servers</h2></div><span class="muted">Sorted by attention first</span></div>
-          <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`} aria-label={stateLabel(server.displayState)}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{server.address || 'Address unavailable'} · {server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessState === 'unknown' ? server.freshnessReason : `last heartbeat ${server.lastHeartbeat?.slice(11, 16)} UTC`}</small></span><span class="server-metric"><strong>{metricValue(server.metrics.cpu)}</strong><small>CPU</small></span><span class="server-arrow" aria-hidden="true">→</span></button>{/each}</div>
+          <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`} aria-label={stateLabel(server.displayState)}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{displayAddress(server)} · {server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessState === 'unknown' ? server.freshnessReason : `last heartbeat ${server.lastHeartbeat?.slice(11, 16)} UTC`}</small></span><span class="server-metric"><strong>{metricValue(server.metrics.cpu)}</strong><small>CPU</small></span><span class="server-arrow" aria-hidden="true">→</span></button>{/each}</div>
           <div class="lower-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Traffic</p><h2>Allowance overview</h2></div><button class="text-button" type="button" on:click={() => selectedServer && selectServer(selectedServer)}>View details →</button></div>{#if overviewAllowanceBytes === '0'}<div class="unavailable-panel"><strong>No allowance configured</strong><span>Open a server’s Traffic tab to view live upload and download rates.</span></div>{:else}<div class="traffic-number"><strong>{formatBytes(overviewTrafficBytes)}</strong><span>used this month</span></div><div class="progress"><span style={`width:${percentage(overviewTrafficBytes, overviewAllowanceBytes)}%`}></span></div><p class="muted">{formatBytes(overviewAllowanceBytes)} combined allowance · UTC</p>{/if}</article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Recent activity</p><h2>Latest log signal</h2></div><span class="status-dot-label"><i></i> bounded</span></div><div class="activity-item"><span class="activity-icon">✓</span><div><strong>Heartbeat accepted</strong><small>Live API activity</small></div></div><div class="activity-item"><span class="activity-icon warning">!</span><div><strong>Freshness visible</strong><small>Inspect each server for current state</small></div></div></article></div>
           {#if latestJob}<article class="panel job-panel" aria-live="polite"><div class="panel-heading"><div><p class="eyebrow">Job status</p><h2>{latestJob.kind}</h2></div><span class={`status-pill ${latestJob.state}`}><i></i>{latestJob.state}</span></div><div class="job-progress"><span style={`width:${Math.max(0, Math.min(100, latestJob.progress))}%`}></span></div><p class="muted">{latestJob.progress}% · revision {latestJob.revision} · {latestJob.id}</p>{#if latestJob.error}<p class="form-error">{latestJob.error.message || 'The job failed.'}</p>{/if}{#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}<div class="job-actions">{#if ['queued', 'running'].includes(latestJob.state)}<button class="button ghost small" type="button" on:click={() => void cancelLatestJob()}>Cancel job</button>{/if}<button class="button ghost small" type="button" on:click={() => void pollJob(latestJob?.id ?? '')} disabled={jobBusy}>Reload status</button></div></article>{/if}
         {/if}
