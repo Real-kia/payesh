@@ -90,6 +90,10 @@ type InstallOptions struct {
 	// source files/directories.  ArtifactDir is a convenience fallback.
 	Artifacts   map[string]string
 	ArtifactDir string
+	// InstallerPath, when set by the payesh-install command, keeps a copy of
+	// the installer on the target. This makes repair and uninstall available
+	// after the temporary release directory has been removed.
+	InstallerPath string
 	// Verify is mandatory and is called immediately before an artifact is
 	// staged. A release verifier should validate the signed release manifest
 	// and digest; the installer intentionally has no unsigned fallback.
@@ -235,6 +239,20 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 		result.Installed = append(result.Installed, name)
 		state.Installed = appendUnique(state.Installed, name)
+		if err := saveState(statePath, state); err != nil {
+			return result, fmt.Errorf("save install state: %w", err)
+		}
+	}
+	if strings.TrimSpace(opts.InstallerPath) != "" {
+		installerPath := strings.TrimSpace(opts.InstallerPath)
+		if err := validateArtifactPath(installerPath, false); err != nil {
+			return result, fmt.Errorf("validate installer artifact: %w", err)
+		}
+		if err := installArtifact(installerPath, artifactDestination(root, "payesh-install")); err != nil {
+			return result, fmt.Errorf("install payesh-install: %w", err)
+		}
+		result.Installed = append(result.Installed, "payesh-install")
+		state.Installed = appendUnique(state.Installed, "payesh-install")
 		if err := saveState(statePath, state); err != nil {
 			return result, fmt.Errorf("save install state: %w", err)
 		}

@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,25 @@ import (
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
 )
+
+func TestInstalledArtifactPathsAndReadiness(t *testing.T) {
+	dir := t.TempDir()
+	paths := installedArtifactPaths(dir)
+	for _, name := range []string{"payesh-install", "payesh", "payesh-agent", "payesh-privd"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !installArtifactsReady(paths) {
+		t.Fatal("complete node artifact set was not detected")
+	}
+	if err := os.Remove(filepath.Join(dir, "payesh-privd")); err != nil {
+		t.Fatal(err)
+	}
+	if installArtifactsReady(paths) {
+		t.Fatal("incomplete node artifact set was accepted")
+	}
+}
 
 func TestLoopbackListenAddress(t *testing.T) {
 	for _, address := range []string{"127.0.0.1:8787", "[::1]:8787", "localhost:8787"} {
