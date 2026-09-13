@@ -114,7 +114,7 @@ export type Job = {
   progress: number;
   error?: ApiErrorBody;
 };
-export type SetupRequest = { setup_secret: string; password: string };
+export type SetupRequest = { setup_secret: string; username: string; password: string };
 export type EnrollmentRequest = { token: string; idempotency_key: string };
 export type UpdateRequest = { release: string; selected_server_ids: string[]; idempotency_key: string; expires_at?: string };
 export type InstallRequest = {
@@ -168,7 +168,10 @@ export class ApiClient {
   private readonly fetchImpl: typeof fetch;
   private csrfToken = '';
 
-  constructor(baseUrl = import.meta.env.VITE_PAYESH_API_BASE || '/api/v1', fetchImpl: typeof fetch = fetch) {
+  // Safari requires fetch to be called with its Window/Worker receiver. Keep
+  // the injectable implementation for tests, but bind the browser default so
+  // a detached method call cannot fail at runtime.
+  constructor(baseUrl = import.meta.env.VITE_PAYESH_API_BASE || '/api/v1', fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
   }
@@ -209,8 +212,8 @@ export class ApiClient {
     return this.request<void>('/setup', { method: 'POST', body: JSON.stringify(body), signal: options.signal });
   }
 
-  login(password: string, options: QueryOptions = {}): Promise<void> {
-    return this.request<void>('/session', { method: 'POST', body: JSON.stringify({ password }), signal: options.signal });
+  login(username: string, password: string, options: QueryOptions = {}): Promise<void> {
+    return this.request<void>('/session', { method: 'POST', body: JSON.stringify({ username, password }), signal: options.signal });
   }
 
   async logout(options: QueryOptions = {}): Promise<void> {
