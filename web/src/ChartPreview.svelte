@@ -8,14 +8,9 @@
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
 
-  function formatElapsed(value: number, selectedRange: PreviewChartRange): string {
-    const seconds = Math.max(0, Math.round(value));
-    if (selectedRange === '24h') {
-      const hours = Math.floor(seconds / 3600);
-      return `${hours}h`;
-    }
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}m`;
+  function formatClock(value: number): string {
+    const date = new Date(value * 1000);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   onMount(() => {
@@ -30,9 +25,9 @@
     plot = new uPlot({
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
-      scales: { x: { time: false }, y: { range: [0, 100] } },
+      scales: { x: { time: true }, y: { range: [0, 100] } },
       axes: [
-        { stroke: muted, grid: { stroke: line }, values: (_u, values) => values.map((value) => formatElapsed(Number(value), range)) },
+        { stroke: muted, grid: { stroke: line }, values: (_u, values) => values.map((value) => formatClock(Number(value))) },
         { stroke: muted, grid: { stroke: line }, values: (_u, values) => values.map((value) => `${value}%`) }
       ],
       cursor: { focus: { prox: 30 } },
