@@ -7,7 +7,7 @@
   let { data }: { data: PreviewChartData } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
-  const rate = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB/s` : value >= 1_000 ? `${(value / 1_000).toFixed(1)} KB/s` : `${value.toFixed(0)} B/s`;
+  const rate = (value: number) => `${(value * 8 / 1_000_000).toFixed(2)} Mbit/s`;
 
   onMount(() => {
     if (!data.networkRx || !data.networkTx || data.timestamps.length < 2) return;
