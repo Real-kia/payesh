@@ -52,6 +52,11 @@ export type Server = {
 export type ServerPage = { items: Server[]; next_cursor?: string };
 export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string };
+export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
+export type ModuleInstallationPage = { items: ModuleInstallation[]; next_cursor?: string };
+export type ModuleManifest = Record<string, unknown>;
+export type AlertState = { id: string; rule_id: string; server_id?: string; state: 'pending' | 'firing' | 'recovered'; last_observation?: string; last_value?: number; incident_id?: string; precision_warning?: string };
+export type AlertStatePage = { items: AlertState[]; next_cursor?: string };
 
 export type MetricSample = {
   server_id: string;
@@ -271,6 +276,22 @@ export class ApiClient {
 
   listModules(options: QueryOptions = {}): Promise<ModulePage> {
     return this.request<ModulePage>(`/modules${queryString({ limit: 200 })}`, { signal: options.signal });
+  }
+
+  listServerModules(serverId: string, options: QueryOptions = {}): Promise<ModuleInstallationPage> {
+    return this.request<ModuleInstallationPage>(`/servers/${encodeURIComponent(serverId)}/modules`, { signal: options.signal });
+  }
+
+  installModule(serverId: string, moduleId: string, body: { manifest: ModuleManifest; manifest_signature_b64: string; archive_base64: string; expected_revision: string; idempotency_key: string }, options: QueryOptions = {}): Promise<ModuleInstallation> {
+    return this.request<ModuleInstallation>(`/servers/${encodeURIComponent(serverId)}/modules/${encodeURIComponent(moduleId)}/install`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  moduleAction(serverId: string, moduleId: string, action: 'enable' | 'disable' | 'remove', expectedRevision: string, idempotencyKey: string, options: QueryOptions = {}): Promise<ModuleInstallation> {
+    return this.request<ModuleInstallation>(`/servers/${encodeURIComponent(serverId)}/modules/${encodeURIComponent(moduleId)}/${action}`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ expected_revision: expectedRevision, idempotency_key: idempotencyKey }), signal: options.signal });
+  }
+
+  listAlerts(options: QueryOptions = {}): Promise<AlertStatePage> {
+    return this.request<AlertStatePage>(`/alerts${queryString({ limit: 200 })}`, { signal: options.signal });
   }
 
   getServer(serverId: string, options: QueryOptions = {}): Promise<Server> {
