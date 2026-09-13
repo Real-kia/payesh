@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,39 @@ func TestInstallKeepsInstallerForRepairAndUninstall(t *testing.T) {
 	installed, err := os.ReadFile(filepath.Join(root, "usr/bin/payesh-install"))
 	if err != nil || string(installed) != "installer-binary" {
 		t.Fatalf("installed repair tool=%q err=%v", installed, err)
+	}
+}
+
+func TestInstallUpgradeAllowsItsExistingListenAddress(t *testing.T) {
+	root, artifactDir := installFixture(t, "systemd")
+	for _, name := range []string{"payesh-server"} {
+		if err := os.WriteFile(filepath.Join(artifactDir, name), []byte(name+"-binary"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(artifactDir, "web-assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "web-assets/index.html"), []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+	opts := InstallOptions{Root: root, Role: "hub", Listen: address, ArtifactDir: artifactDir, Verify: acceptArtifact, AccountManager: &testAccountManager{}}
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	listener, err = net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatalf("upgrade rejected the existing Payesh listener: %v", err)
 	}
 }
 

@@ -153,6 +153,12 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	if err != nil {
 		return InstallResult{}, err
 	}
+	statePath := rooted(root, filepath.Join(dataDir, "install-state.json"))
+	state, stateErr := loadState(statePath)
+	if !p.Supported && stateErr == nil && state.Role == role && state.Init == p.Init && previousServerInstall(root, p.Init, state) {
+		p.Problems = removeProblem(p.Problems, "requested listen address is already occupied")
+		p.Supported = len(p.Problems) == 0
+	}
 	if !p.Supported {
 		return InstallResult{Preflight: p}, &UnsupportedError{Reason: strings.Join(p.Problems, "; ")}
 	}
@@ -178,8 +184,6 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	}
 
 	result := InstallResult{Preflight: p, Account: account}
-	statePath := rooted(root, filepath.Join(dataDir, "install-state.json"))
-	state, stateErr := loadState(statePath)
 	if stateErr == nil && state.Role == role && state.Init == p.Init {
 		result.Resumed = len(state.Installed) > 0
 	}
@@ -280,6 +284,35 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func previousServerInstall(root, init string, state installState) bool {
+	found := false
+	for _, name := range state.Installed {
+		if name == "payesh-server" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	servicePath := "/etc/systemd/system/payesh-server.service"
+	if init == "openrc" {
+		servicePath = "/etc/init.d/payesh-server"
+	}
+	info, err := os.Lstat(rooted(root, servicePath))
+	return err == nil && info.Mode().IsRegular()
+}
+
+func removeProblem(problems []string, target string) []string {
+	filtered := problems[:0]
+	for _, problem := range problems {
+		if problem != target {
+			filtered = append(filtered, problem)
+		}
+	}
+	return filtered
 }
 
 func ensureOwnerCredentials(envPath, credentialsPath string) error {
