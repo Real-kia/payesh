@@ -3,7 +3,7 @@
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
   import TrafficChart from './TrafficChart.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type ModuleManifest, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -81,10 +81,8 @@
   let moduleInstallations: ModuleInstallation[] = [];
   let packageBusy = '';
   let packageError = '';
-  let packageManifestFile: File | null = null;
-  let packageArchiveFile: File | null = null;
-  let packageSignatureFile: File | null = null;
-  let packageSource: 'github' | 'upload' = 'github';
+  let packageSourceMode: 'server-path' | 'external-url' = 'server-path';
+  let packageSource = '';
   let alerts: AlertState[] = [];
   let alertsState: PreviewState = 'loading';
   let alertsError = '';
@@ -153,11 +151,7 @@
       const current = moduleState(module.id);
       let result: ModuleInstallation;
       if (action === 'install') {
-        if (!packageManifestFile || !packageArchiveFile || !packageSignatureFile) throw new Error('Choose the manifest, archive, and detached signature files. The signature is read automatically.');
-        const manifest = JSON.parse(await packageManifestFile.text()) as ModuleManifest;
-        const bytes = new Uint8Array(await packageArchiveFile.arrayBuffer());
-        let binary = ''; for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-        result = await apiClient.installModule(packageServerId, module.id, { manifest, manifest_signature_b64: (await packageSignatureFile.text()).trim(), archive_base64: btoa(binary), expected_revision: current?.revision ?? '0', idempotency_key: operationKey('package-install') });
+        throw new Error('Source installation will be enabled when the hub release resolver is configured.');
       } else result = await apiClient.moduleAction(packageServerId, module.id, action, current?.revision ?? '0', operationKey(`package-${action}`));
       moduleInstallations = [...moduleInstallations.filter((item) => item.module_id !== module.id), result];
       showNotice(`${module.name} is now ${result.state}.`);
@@ -718,7 +712,7 @@
         {#if modulesState === 'loading'}<div class="state-panel"><div class="loading-spinner"></div><h2>Loading packages</h2></div>
         {:else if modulesState === 'error'}<div class="state-panel error-state"><h2>Could not load packages</h2><p>{modulesError}</p><button class="button primary" on:click={() => void loadModules()}>Retry</button></div>
         {:else if modulesState === 'empty'}<div class="state-panel"><h2>No packages available</h2><p>The approved catalog is currently empty.</p></div>
-        {:else}<div class="module-grid">{#each modules as module}<article class="panel module-card"><p class="eyebrow">{module.id}</p><h2>{module.name}</h2><p class="muted">{module.description || 'Optional Payesh capability.'}</p><div class="server-meta"><span>Release <strong>{module.latest_version}</strong></span><span>Status <strong>{moduleState(module.id)?.state || 'not installed'}</strong></span></div>{#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}<div class="package-source"><label><input type="radio" bind:group={packageSource} value="github" /> Install from GitHub release</label><label><input type="radio" bind:group={packageSource} value="upload" /> Use local signed artifact files</label></div>{#if packageSource === 'github'}<div class="unavailable-panel"><strong>GitHub releases are not configured on this hub</strong><span>Set the trusted public release source before automatic installation is enabled.</span></div>{:else}<div class="package-files"><label>Manifest JSON<input type="file" accept="application/json,.json" on:change={(event) => packageManifestFile = event.currentTarget.files?.[0] ?? null} /></label><label>Archive<input type="file" accept="application/gzip,.gz,.tgz" on:change={(event) => packageArchiveFile = event.currentTarget.files?.[0] ?? null} /></label><label>Detached signature file<input type="file" accept="text/plain,.sig" on:change={(event) => packageSignatureFile = event.currentTarget.files?.[0] ?? null} /></label><button class="button primary small" type="button" disabled={!packageServerId || !!packageBusy} on:click={() => void packageAction(module, 'install')}>{packageBusy === `${module.id}:install` ? 'Installing…' : 'Install verified release'}</button></div>{/if}{:else if moduleState(module.id)?.state === 'installed-disabled'}<div class="job-actions"><button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button><button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'remove')}>Remove</button></div>{:else if moduleState(module.id)?.state === 'enabled'}<button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'disable')}>Disable</button>{/if}</article>{/each}</div>{/if}
+        {:else}<div class="module-grid">{#each modules as module}<article class="panel module-card"><p class="eyebrow">{module.id}</p><h2>{module.name}</h2><p class="muted">{module.description || 'Optional Payesh capability.'}</p><div class="server-meta"><span>Release <strong>{module.latest_version}</strong></span><span>Status <strong>{moduleState(module.id)?.state || 'not installed'}</strong></span></div>{#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}<div class="package-source"><label><input type="radio" bind:group={packageSourceMode} value="server-path" /> Server path</label><label><input type="radio" bind:group={packageSourceMode} value="external-url" /> External URL</label><input class="source-input" bind:value={packageSource} placeholder={packageSourceMode === 'server-path' ? '/opt/payesh/releases/port-traffic-0.1.0' : 'https://github.com/Real-kia/payesh/releases/download/...'} /></div><button class="button primary small" type="button" disabled={!packageSource.trim() || !!packageBusy} on:click={() => void packageAction(module, 'install')}>{packageBusy === `${module.id}:install` ? 'Installing…' : 'Install from source'}</button>{:else if moduleState(module.id)?.state === 'installed-disabled'}<div class="job-actions"><button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button><button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'remove')}>Remove</button></div>{:else if moduleState(module.id)?.state === 'enabled'}<button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'disable')}>Disable</button>{/if}</article>{/each}</div>{/if}
         {#if packageError}<p class="form-error" role="alert">{packageError}</p>{/if}
       </section>
     {:else if activePage === 'settings'}
