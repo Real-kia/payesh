@@ -2,11 +2,11 @@
   import { onMount } from 'svelte';
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Job, type MetricQuery, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Job, type MetricQuery, type Module, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
-  type Page = 'overview' | 'server' | 'onboarding';
+  type Page = 'overview' | 'servers' | 'server' | 'extras' | 'settings' | 'add-server' | 'onboarding';
   type DetailTab = 'metrics' | 'traffic' | 'logs';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
@@ -71,6 +71,12 @@
   let installBusy = false;
   let labelDraft = '';
   let labelBusy = false;
+  let newServerName = '';
+  let newServerArchitecture: 'amd64' | 'arm64' = 'amd64';
+  let createServerBusy = false;
+  let modules: Module[] = [];
+  let modulesState: PreviewState = 'loading';
+  let modulesError = '';
 
   $: selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0];
   $: displayServers = servers;
@@ -107,6 +113,24 @@
     if (typeof window !== 'undefined') {
       window.history.pushState({ activePage, selectedServerId, detailTab }, '', window.location.pathname);
     }
+    if (page === 'extras' && !PREVIEW_MODE) void loadModules();
+  }
+
+  async function loadModules(): Promise<void> {
+    modulesState = 'loading'; modulesError = '';
+    try { const page = await apiClient.listModules(); modules = page.items; modulesState = modules.length ? 'ready' : 'empty'; }
+    catch (error) { modulesError = error instanceof Error ? error.message : 'Unable to load modules.'; modulesState = 'error'; if (error instanceof ApiError && error.authExpired) authExpired = true; }
+  }
+
+  async function createPendingServer(): Promise<void> {
+    if (!newServerName.trim() || createServerBusy) return;
+    createServerBusy = true; jobError = '';
+    try {
+      const created = await apiClient.createServer({ name: newServerName.trim(), platform: 'linux', architecture: newServerArchitecture });
+      const server = emptyApiServer(created); servers = [...servers, server]; selectedServerId = server.id; labelDraft = server.name; newServerName = ''; navigate('server', server.id);
+      showNotice('Pending server created. Enter its SSH details to install the agent.');
+    } catch (error) { jobError = error instanceof Error ? error.message : 'Unable to create server.'; if (error instanceof ApiError && error.authExpired) authExpired = true; }
+    finally { createServerBusy = false; }
   }
 
   function selectServer(server: PreviewServer) {
@@ -331,7 +355,7 @@
   }
 
   function metricValue(value: number | null): string {
-    return value === null ? '—' : `${value}%`;
+    return value === null ? '—' : `${value.toFixed(2)}%`;
   }
 
   function hasCapability(server: PreviewServer, capability: DetailTab): boolean {
@@ -500,7 +524,7 @@
 
   function restoreState(state: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null) {
     if (!state) return;
-    if (state.activePage === 'overview' || state.activePage === 'onboarding') activePage = state.activePage;
+    if (state.activePage && ['overview', 'servers', 'extras', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
     if (state.detailTab === 'metrics' || state.detailTab === 'traffic' || state.detailTab === 'logs') detailTab = state.detailTab;
@@ -538,13 +562,16 @@
       <button class:active={activePage === 'overview'} class="nav-item" type="button" on:click={() => navigate('overview')} aria-current={activePage === 'overview' ? 'page' : undefined}>
         <span aria-hidden="true">⌂</span><span>Overview</span>
       </button>
+      <button class:active={activePage === 'servers' || activePage === 'server' || activePage === 'add-server'} class="nav-item" type="button" on:click={() => navigate('servers')}>
+        <span aria-hidden="true">▦</span><span>Servers</span><span class="nav-count">{servers.length}</span>
+      </button>
       <button class="nav-item" type="button" on:click={() => showNotice('Alerts will use the shared incident API in package 03.')}>
         <span aria-hidden="true">!</span><span>Alerts</span><span class="nav-count">{attentionCount}</span>
       </button>
-      <button class="nav-item" type="button" on:click={() => showNotice('Extras are reserved for approved modules.')}>
+      <button class:active={activePage === 'extras'} class="nav-item" type="button" on:click={() => navigate('extras')}>
         <span aria-hidden="true">＋</span><span>Extras</span>
       </button>
-      <button class:active={activePage === 'onboarding'} class="nav-item" type="button" on:click={() => navigate('onboarding')} aria-current={activePage === 'onboarding' ? 'page' : undefined}>
+      <button class:active={activePage === 'settings'} class="nav-item" type="button" on:click={() => navigate('settings')} aria-current={activePage === 'settings' ? 'page' : undefined}>
         <span aria-hidden="true">⚙</span><span>Settings</span>
       </button>
     </nav>
@@ -558,7 +585,7 @@
 
   <main class="main-content">
     <header class="topbar">
-      <div class="breadcrumbs"><span>Workspace</span><span aria-hidden="true">/</span><strong>{activePage === 'server' ? selectedServer?.name : activePage === 'onboarding' ? 'Setup' : 'Overview'}</strong></div>
+      <div class="breadcrumbs"><span>Workspace</span><span aria-hidden="true">/</span><strong>{activePage === 'server' ? selectedServer?.name : activePage === 'add-server' ? 'Add server' : activePage.charAt(0).toUpperCase() + activePage.slice(1)}</strong></div>
       <div class="topbar-actions">
         {#if PREVIEW_MODE}
           <label class="preview-control">Data
@@ -569,14 +596,35 @@
         {/if}
         <button class="icon-button" type="button" on:click={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>{theme === 'light' ? '☾' : '☀'}</button>
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}<button class="button ghost small" type="button" on:click={() => void signOut()}>Sign out</button>{/if}
-        <button class="button primary small" type="button" on:click={() => navigate('onboarding')}>＋ Add server</button>
+        <button class="button primary small" type="button" on:click={() => navigate('add-server')}>＋ Add server</button>
       </div>
     </header>
 
     {#if notice}<div class="notice" role="status">{notice}</div>{/if}
     {#if partialWarning}<div class="partial-warning" role="status">{partialWarning}</div>{/if}
 
-    {#if activePage === 'onboarding'}
+    {#if activePage === 'servers'}
+      <section class="page" aria-labelledby="servers-title">
+        <div class="page-heading"><div><p class="eyebrow">Fleet inventory</p><h1 id="servers-title">Servers</h1><p class="lede">Manage every master and node from one place.</p></div><button class="button primary" type="button" on:click={() => navigate('add-server')}>＋ Add server</button></div>
+        <div class="server-list">{#each displayServers as server}<button class="server-row" type="button" on:click={() => selectServer(server)}><span class={`server-state ${server.displayState}`}><i></i></span><span class="server-identity"><strong>{server.name}</strong><small>{server.role} · {server.platform} · {server.architecture}</small></span><span class="server-status"><span class={`status-pill ${server.displayState}`}><i></i>{stateLabel(server.displayState)}</span><small>{server.freshnessReason || server.connectionState}</small></span><span class="server-arrow">→</span></button>{/each}</div>
+      </section>
+    {:else if activePage === 'add-server'}
+      <section class="page" aria-labelledby="add-server-title">
+        <button class="back-link" type="button" on:click={() => navigate('servers')}>← Back to servers</button>
+        <div class="page-heading"><div><p class="eyebrow">Fleet expansion</p><h1 id="add-server-title">Add a server</h1><p class="lede">Create a pending node, then install and enroll it over SSH.</p></div></div>
+        <article class="panel"><form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}><label>Server name<input bind:value={newServerName} maxlength="128" placeholder="Production node" required /></label><label>Operating system<select disabled><option>Linux</option></select></label><label>Architecture<select bind:value={newServerArchitecture}><option value="amd64">AMD64 / x86-64</option><option value="arm64">ARM64</option></select></label><div class="setup-actions"><button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button><button class="button primary" type="submit" disabled={createServerBusy}>{createServerBusy ? 'Creating…' : 'Create and continue'}</button></div></form>{#if jobError}<p class="form-error">{jobError}</p>{/if}</article>
+      </section>
+    {:else if activePage === 'extras'}
+      <section class="page" aria-labelledby="extras-title">
+        <div class="page-heading"><div><p class="eyebrow">Optional capabilities</p><h1 id="extras-title">Extras</h1><p class="lede">Official modules available for your Payesh fleet.</p></div><button class="button ghost" type="button" on:click={() => void loadModules()}>Reload</button></div>
+        {#if modulesState === 'loading'}<div class="state-panel"><div class="loading-spinner"></div><h2>Loading modules</h2></div>
+        {:else if modulesState === 'error'}<div class="state-panel error-state"><h2>Could not load modules</h2><p>{modulesError}</p><button class="button primary" on:click={() => void loadModules()}>Retry</button></div>
+        {:else if modulesState === 'empty'}<div class="state-panel"><h2>No modules available</h2><p>The approved catalog is currently empty.</p></div>
+        {:else}<div class="module-grid">{#each modules as module}<article class="panel module-card"><p class="eyebrow">{module.id}</p><h2>{module.name}</h2><p class="muted">{module.description || 'Optional Payesh capability.'}</p><div class="server-meta"><span>Latest <strong>{module.latest_version}</strong></span><span>Estimate <strong>{module.resource_estimate_source}</strong></span></div><p class="muted">Open a server to install or manage this module for that machine.</p></article>{/each}</div>{/if}
+      </section>
+    {:else if activePage === 'settings'}
+      <section class="page" aria-labelledby="settings-title"><div class="page-heading"><div><p class="eyebrow">Administration</p><h1 id="settings-title">Settings</h1><p class="lede">This hub is configured and protected by your owner account.</p></div></div><article class="panel"><div class="panel-heading"><div><h2>Account and access</h2><p class="muted">Owner authentication is active. Generated credentials are stored on the host and are never shown in the browser.</p></div></div><button class="button ghost" type="button" on:click={() => void signOut()}>Sign out</button></article></section>
+    {:else if activePage === 'onboarding' && (PREVIEW_MODE || sessionState !== 'authenticated')}
       <section class="page onboarding-page" aria-labelledby="setup-title">
         <div class="page-heading"><div><p class="eyebrow">Workspace setup</p><h1 id="setup-title">Prepare your local hub</h1><p class="lede">A short, validated setup path for a safe first enrollment.</p></div></div>
         <div class="stepper" aria-label="Setup progress">
@@ -642,11 +690,11 @@
       <section class="page overview-page" aria-labelledby="overview-title">
         <div class="page-heading"><div><p class="eyebrow">{PREVIEW_MODE ? 'Live preview' : 'Authenticated workspace'}</p><h1 id="overview-title">{PREVIEW_MODE ? 'Good afternoon, Kia' : 'Fleet overview'}</h1><p class="lede">A clear view of your fleet, with freshness and uncertainty kept visible.</p></div>{#if PREVIEW_MODE}<span class="date-stamp">09 Sep 2026 · 14:42 UTC</span>{:else}<span class="date-stamp">Live API data</span>{/if}</div>
         {#if authExpired}
-          <div class="login-screen"><div class="login-card"><div class="brand-mark">P</div><p class="eyebrow">PAYESH · LOCAL OPERATIONS</p><h2>Welcome back</h2><p class="muted">Sign in to manage your fleet securely.</p><form class="auth-form" on:submit|preventDefault={() => void submitLogin()}><label>Username<input bind:value={authUsername} autocomplete="username" required /></label><label>Password<input type="password" bind:value={authPassword} autocomplete="current-password" required /></label>{#if authError}<p class="form-error" role="alert">{authError}</p>{/if}<button class="button primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button></form><button class="text-button" type="button" on:click={() => navigate('onboarding')}>First run? Complete owner setup →</button></div></div>
+          <div class="login-screen"><div class="login-card"><div class="brand-mark">P</div><p class="eyebrow">PAYESH · LOCAL OPERATIONS</p><h2>Welcome back</h2><p class="muted">Sign in to manage your fleet securely.</p><form class="auth-form" on:submit|preventDefault={() => void submitLogin()}><label>Username<input bind:value={authUsername} autocomplete="username" required /></label><label>Password<input type="password" bind:value={authPassword} autocomplete="current-password" required /></label>{#if authError}<p class="form-error" role="alert">{authError}</p>{/if}<button class="button primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button></form></div></div>
         {:else if previewState === 'loading'}
           <div class="state-panel"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading fleet data</h2><p>Reading the bounded server summary.</p></div>
         {:else if previewState === 'empty'}
-          <div class="state-panel"><div class="state-icon">＋</div><h2>No servers enrolled</h2><p>Start with one local server to see health and traffic here.</p><button class="button primary" type="button" on:click={() => navigate('onboarding')}>Add first server</button></div>
+          <div class="state-panel"><div class="state-icon">＋</div><h2>No servers enrolled</h2><p>Add a Linux server to begin monitoring health and traffic.</p><button class="button primary" type="button" on:click={() => navigate('add-server')}>Add first server</button></div>
         {:else if previewState === 'error'}
           <div class="state-panel error-state"><div class="state-icon">!</div><h2>Could not load the fleet</h2><p>{apiError || 'The API error is explicit and retryable; no stale fixture data is substituted.'}</p><button class="button primary" type="button" on:click={() => PREVIEW_MODE ? void loadPreviewData() : void loadApiData()}>Retry</button></div>
         {:else}
@@ -673,6 +721,8 @@
   .login-card h2 { margin: 8px 0; font-size: 38px; }
   .login-card .auth-form { margin-top: 28px; }
   .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: var(--accent); color: #10201c; font-size: 24px; font-weight: 800; }
+  .module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+  .module-card h2 { margin: 6px 0 10px; }
   :global(html) { color-scheme: light; }
   :global(html[data-theme='dark']) { color-scheme: dark; }
   :global(body) { margin: 0; min-width: 320px; background: var(--canvas); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }

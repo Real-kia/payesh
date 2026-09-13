@@ -3,6 +3,8 @@
 package fleet
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,7 @@ const maxBodyBytes = 1 << 20
 
 type API struct {
 	sessions   *auth.Manager
+	store      *monitoring.Store
 	monitoring http.Handler
 	// secureCookies is false only for the explicitly loopback-bound HTTP
 	// mode. Public deployments should construct the API with true behind TLS.
@@ -165,7 +168,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		}
 		installHandler = sessions.Middleware(options.InstallService.Handler())
 	}
-	return &API{sessions: sessions, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -183,6 +186,11 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/session":
 		if r.Method == http.MethodPost {
 			a.login(w, r)
+			return
+		}
+	case "/api/v1/servers":
+		if r.Method == http.MethodPost {
+			a.sessions.Middleware(http.HandlerFunc(a.createPendingServer)).ServeHTTP(w, r)
 			return
 		}
 		if r.Method == http.MethodDelete {
@@ -236,6 +244,44 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.monitoring.ServeHTTP(w, r)
+}
+
+type createServerRequest struct {
+	Name         string `json:"name"`
+	Platform     string `json:"platform"`
+	Architecture string `json:"architecture"`
+}
+
+func (a *API) createPendingServer(w http.ResponseWriter, r *http.Request) {
+	var request createServerRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	if request.Name == "" || len(request.Name) > 128 {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "server name must contain 1..128 characters", false)
+		return
+	}
+	if request.Platform == "" {
+		request.Platform = "linux"
+	}
+	if request.Architecture != "amd64" && request.Architecture != "arm64" {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "architecture must be amd64 or arm64", false)
+		return
+	}
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		writeFleetError(w, http.StatusInternalServerError, "internal_error", "could not create server identity", true)
+		return
+	}
+	server := contracts.Server{ID: contracts.ServerID("server-" + hex.EncodeToString(random)), Name: request.Name, Role: "node", Platform: request.Platform, Architecture: request.Architecture, Capabilities: []string{}, ConnectionState: "never-connected", FreshnessState: "unknown", FreshnessReason: "awaiting installation and enrollment"}
+	if err := a.store.EnsureServer(r.Context(), server); err != nil {
+		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not create server", true)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(server)
 }
 
 func isFleetResourcePath(path, base string) bool {

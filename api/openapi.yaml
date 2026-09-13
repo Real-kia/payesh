@@ -59,6 +59,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ServerPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: createPendingServer
+      summary: Create a pending node identity before SSH installation
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateServerRequest' } } } }
+      responses:
+        '201': { description: Pending server identity, content: { application/json: { schema: { $ref: '#/components/schemas/Server' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /servers/{serverId}:
     parameters:
       - $ref: '#/components/parameters/ServerID'
@@ -592,6 +602,13 @@ components:
         freshness_state: { type: string, enum: [fresh, stale, unknown] }
         freshness_reason: { type: string, maxLength: 256 }
         configuration_revision: { $ref: '#/components/schemas/DecimalUint64' }
+    CreateServerRequest:
+      type: object
+      required: [name, platform, architecture]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        platform: { type: string, enum: [linux] }
+        architecture: { type: string, enum: [amd64, arm64] }
     ServerLabelUpdateRequest:
       type: object
       required: [name, expected_revision]
