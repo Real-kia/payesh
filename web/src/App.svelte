@@ -127,9 +127,23 @@
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
   }
 
-  async function loadModules(): Promise<void> {
-    modulesState = 'loading'; modulesError = '';
-    try { const page = await apiClient.listModules(); modules = page.items; modulesState = modules.length ? 'ready' : 'empty'; if (!packageServerId && servers.length) packageServerId = servers[0].id; if (packageServerId) await loadServerModules(); }
+  async function loadModules(force = false): Promise<void> {
+    modulesError = '';
+    const cacheKey = 'payesh-package-catalog-v1';
+    const cacheAge = 24 * 60 * 60 * 1000;
+    if (!force && typeof window !== 'undefined') {
+      try {
+        const cached = JSON.parse(window.localStorage.getItem(cacheKey) ?? 'null') as { savedAt?: number; items?: Module[] } | null;
+        if (cached?.savedAt && Array.isArray(cached.items) && Date.now() - cached.savedAt < cacheAge) {
+          modules = cached.items; modulesState = modules.length ? 'ready' : 'empty';
+          if (!packageServerId && servers.length) packageServerId = servers[0].id;
+          if (packageServerId) await loadServerModules();
+          return;
+        }
+      } catch { /* corrupt cache is ignored and replaced by a fresh response */ }
+    }
+    modulesState = 'loading';
+    try { const page = await apiClient.listModules(); modules = page.items; modulesState = modules.length ? 'ready' : 'empty'; if (typeof window !== 'undefined') window.localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), items: modules })); if (!packageServerId && servers.length) packageServerId = servers[0].id; if (packageServerId) await loadServerModules(); }
     catch (error) { modulesError = error instanceof Error ? error.message : 'Unable to load modules.'; modulesState = 'error'; if (error instanceof ApiError && error.authExpired) authExpired = true; }
   }
 
@@ -707,10 +721,10 @@
       </section>
     {:else if activePage === 'packages'}
       <section class="page" aria-labelledby="packages-title">
-        <div class="page-heading"><div><p class="eyebrow">Optional capabilities</p><h1 id="packages-title">Packages</h1><p class="lede">Install and manage verified Payesh packages per server.</p></div><button class="button ghost" type="button" on:click={() => void loadModules()}>Reload</button></div>
+        <div class="page-heading"><div><p class="eyebrow">Optional capabilities</p><h1 id="packages-title">Packages</h1><p class="lede">Install and manage verified Payesh packages per server.</p></div><button class="button ghost" type="button" on:click={() => void loadModules(true)}>Refresh catalog</button></div>
         <article class="panel package-target"><label>Target server<select bind:value={packageServerId} on:change={() => void loadServerModules()}>{#each servers as server}<option value={server.id}>{server.name} · {server.architecture}</option>{/each}</select></label><p class="muted">Package releases must be signed by the trust key configured on this hub.</p></article>
         {#if modulesState === 'loading'}<div class="state-panel"><div class="loading-spinner"></div><h2>Loading packages</h2></div>
-        {:else if modulesState === 'error'}<div class="state-panel error-state"><h2>Could not load packages</h2><p>{modulesError}</p><button class="button primary" on:click={() => void loadModules()}>Retry</button></div>
+        {:else if modulesState === 'error'}<div class="state-panel error-state"><h2>Could not load packages</h2><p>{modulesError}</p><button class="button primary" on:click={() => void loadModules(true)}>Retry</button></div>
         {:else if modulesState === 'empty'}<div class="state-panel"><h2>No packages available</h2><p>The approved catalog is currently empty.</p></div>
         {:else}<div class="module-grid">{#each modules as module}<article class="panel module-card"><p class="eyebrow">{module.id}</p><h2>{module.name}</h2><p class="muted">{module.description || 'Optional Payesh capability.'}</p><div class="server-meta"><span>Release <strong>{module.latest_version}</strong></span><span>Status <strong>{moduleState(module.id)?.state || 'not installed'}</strong></span></div>{#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}<div class="package-source"><label><input type="radio" bind:group={packageSourceMode} value="server-path" /> Server path</label><label><input type="radio" bind:group={packageSourceMode} value="external-url" /> External URL</label><input class="source-input" bind:value={packageSource} placeholder={packageSourceMode === 'server-path' ? '/opt/payesh/releases/port-traffic-0.1.0' : 'https://github.com/Real-kia/payesh/releases/download/...'} /></div><button class="button primary small" type="button" disabled={!packageSource.trim() || !!packageBusy} on:click={() => void packageAction(module, 'install')}>{packageBusy === `${module.id}:install` ? 'Installing…' : 'Install from source'}</button>{:else if moduleState(module.id)?.state === 'installed-disabled'}<div class="job-actions"><button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button><button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'remove')}>Remove</button></div>{:else if moduleState(module.id)?.state === 'enabled'}<button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'disable')}>Disable</button>{/if}</article>{/each}</div>{/if}
         {#if packageError}<p class="form-error" role="alert">{packageError}</p>{/if}
