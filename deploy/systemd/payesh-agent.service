@@ -16,7 +16,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/payesh
+ReadWritePaths=/var/lib/payesh /var/log/payesh
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -24,7 +24,7 @@ AmbientCapabilities=
 # either child failure visible to systemd. Keep routine acknowledgements out of
 # journald; diagnostics remain available on stderr.
 StandardOutput=null
-StandardError=journal
+StandardError=append:/var/log/payesh/agent.err
 
 [Install]
 WantedBy=multi-user.target

@@ -9,13 +9,15 @@ User=payesh
 Group=payesh
 EnvironmentFile=-/etc/payesh/payesh.env
 ExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=127.0.0.1:8787
+StandardOutput=append:/var/log/payesh/server.err
+StandardError=append:/var/log/payesh/server.err
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/payesh
+ReadWritePaths=/var/lib/payesh /var/log/payesh
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,6 +255,16 @@ func registerServer(ctx context.Context, args []string) error {
 		}
 	} else if err := store.UpsertServer(ctx, server); err != nil {
 		return err
+	}
+	if runtime.GOOS == "linux" && slices.Contains(capabilities, "logs") {
+		for _, source := range []monitoring.LogSource{
+			{ServerID: resolvedID, ID: "payesh-agent", Label: "Payesh agent", Path: "/var/log/payesh/agent.err"},
+			{ServerID: resolvedID, ID: "payesh-server", Label: "Payesh server", Path: "/var/log/payesh/server.err"},
+		} {
+			if err := store.RegisterLogSource(ctx, source); err != nil {
+				return err
+			}
+		}
 	}
 	return writeJSON(os.Stdout, server)
 }
