@@ -424,7 +424,7 @@
   function seriesRange(values: Array<number | null>): string {
     const numeric = values.filter((value): value is number => value !== null && Number.isFinite(value));
     if (numeric.length === 0) return 'unavailable';
-    return `${Math.min(...numeric)}–${Math.max(...numeric)}%`;
+    return `${Math.min(...numeric).toFixed(2)}–${Math.max(...numeric).toFixed(2)}%`;
   }
 
   function capabilityMessage(server: PreviewServer, capability: DetailTab): string {
@@ -465,7 +465,6 @@
       const found = candidates.map((candidate) => sample.values[candidate] ?? sample.values[candidate.toUpperCase()]).find((entry) => typeof entry === 'number');
       return typeof found === 'number' && Number.isFinite(found) ? found : null;
     };
-    const startedAt = samples.length ? Date.parse(samples[0].observed_at) : 0;
     const networkRate = (name: string) => samples.map((sample, index) => {
       if (index === 0) return null;
       try {
@@ -476,7 +475,9 @@
       } catch { return null; }
     });
     return {
-      timestamps: samples.map((sample) => (Date.parse(sample.observed_at) - startedAt) / 1000),
+      // uPlot time axes use Unix seconds; keeping the source timestamp makes
+      // the lower axis an actual clock instead of an elapsed-range label.
+      timestamps: samples.map((sample) => Date.parse(sample.observed_at) / 1000),
       cpu: samples.map((sample) => value(sample, 'cpu')),
       memory: samples.map((sample) => value(sample, 'memory')),
       disk: samples.map((sample) => value(sample, 'disk')),
@@ -773,7 +774,7 @@
               <article class="metric-card"><div class="card-top"><span>{metric[0]}</span><strong>{metricValue(metric[2] as number | null)}</strong></div>{#if metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').length > 1}<div class="sparkline"><Sparkline values={metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk')} tone={metric[3] as 'teal' | 'purple' | 'blue'} /></div>{:else}<div class="sparkline-unavailable">No samples</div>{/if}<small>updated {sampleAge(selectedServer)} · chart {chartRange}</small></article>
             {/each}
           </div>
-          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Resource history</p><h2>CPU and memory</h2></div><select bind:value={chartRange} aria-label="Chart time range"><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option></select></div>{#if chartData && chartData.coverage !== 'unavailable'}<div class="legend"><span><i class="legend-dot teal"></i>CPU</span><span><i class="legend-dot purple"></i>Memory</span><span>Unit: percent</span><span>Range: {chartRange}</span></div>{#key `${chartRange}-${theme}-${selectedServer.id}`}<ChartPreview data={chartData} range={chartRange} label="CPU and memory history over the selected time range" />{/key}<p class="chart-summary">CPU latest {metricValue(selectedServer.metrics.cpu)}; range {seriesRange(chartData.cpu)}. Memory latest {metricValue(selectedServer.metrics.memory)}; range {seriesRange(chartData.memory)}. Coverage: {chartData.coverage === 'gap' ? 'gaps shown; exact timing is uncertain.' : 'complete for this preview.'}</p>{:else}<div class="unavailable-panel"><strong>Resource history unavailable</strong><span>No valid samples are available for this server and range.</span></div>{/if}</article>
+          <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Resource history</p><h2>CPU and memory</h2></div><select bind:value={chartRange} aria-label="Chart time range"><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option></select></div>{#if chartData && chartData.coverage !== 'unavailable'}<div class="legend"><span><i class="legend-dot teal"></i>CPU</span><span><i class="legend-dot purple"></i>Memory</span><span>Unit: percent</span><span>Clock time</span></div>{#key `${chartRange}-${theme}-${selectedServer.id}`}<ChartPreview data={chartData} range={chartRange} label="CPU and memory history over the selected time range" />{/key}<div class="resource-highlights"><span>Highest CPU <strong>{seriesRange(chartData.cpu)}</strong></span><span>Highest memory <strong>{seriesRange(chartData.memory)}</strong></span></div>{:else}<div class="unavailable-panel"><strong>Resource history unavailable</strong><span>No valid samples are available for this server and range.</span></div>{/if}</article>
         {:else if detailTab === 'traffic' && hasCapability(selectedServer, 'traffic')}
           <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Live bandwidth</p><h2>Download and upload rate</h2></div><select bind:value={chartRange} aria-label="Traffic chart time range"><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option></select></div>{#if chartData?.networkRx?.some((v) => v !== null) || chartData?.networkTx?.some((v) => v !== null)}{#key `${chartRange}-${selectedServer.id}-traffic`}<TrafficChart data={chartData} />{/key}<div class="legend"><span><i class="legend-dot teal"></i>Download</span><span><i class="legend-dot blue"></i>Upload</span><span>Rate: Mbit/s</span></div>{:else}<div class="unavailable-panel"><strong>Waiting for traffic samples</strong><span>At least two consecutive network counter samples are needed to calculate a rate.</span></div>{/if}</article>
           {#if selectedServer.traffic.from}<article class="panel traffic-panel"><div class="panel-heading"><div><p class="eyebrow">Traffic allowance</p><h2>{selectedServer.traffic.scope} window</h2></div><span class="status-pill {selectedServer.traffic.continuity === 'complete' ? 'healthy' : 'stale'}"><i></i>{selectedServer.traffic.continuity}</span></div><div class="traffic-number"><strong>{formatBytes(selectedServer.traffic.countedBytes)}</strong><span>of {formatBytes(selectedServer.traffic.allowanceBytes)}</span></div><div class="progress"><span style={`width:${percentage(selectedServer.traffic.countedBytes, selectedServer.traffic.allowanceBytes)}%`}></span></div><div class="traffic-details"><span>Direction<strong>{selectedServer.traffic.direction}</strong></span><span>Timezone<strong>{selectedServer.traffic.timezone}</strong></span><span>Window<strong>{selectedServer.traffic.from.slice(0, 10)} → {selectedServer.traffic.to.slice(0, 10)}</strong></span><span>Continuity<strong>{selectedServer.traffic.continuity}</strong></span></div></article>{:else}<div class="unavailable-panel"><strong>Traffic allowance not configured</strong><span>Bandwidth monitoring is active. Configure a monthly allowance to enable quota usage and continuity tracking.</span></div>{/if}
