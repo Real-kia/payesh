@@ -106,6 +106,28 @@ func TestInstallNodeIsRoleSelectiveAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestInstallKeepsInstallerForRepairAndUninstall(t *testing.T) {
+	root, artifactDir := installFixture(t, "systemd")
+	installerPath := filepath.Join(t.TempDir(), "payesh-install")
+	if err := os.WriteFile(installerPath, []byte("installer-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Install(context.Background(), InstallOptions{
+		Root: root, Role: "node", ArtifactDir: artifactDir, InstallerPath: installerPath,
+		Verify: acceptArtifact, AccountManager: &testAccountManager{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Installed[len(result.Installed)-1]; got != "payesh-install" {
+		t.Fatalf("last installed artifact=%q", got)
+	}
+	installed, err := os.ReadFile(filepath.Join(root, "usr/bin/payesh-install"))
+	if err != nil || string(installed) != "installer-binary" {
+		t.Fatalf("installed repair tool=%q err=%v", installed, err)
+	}
+}
+
 func TestInstallPartialArtifactFailureCanRetry(t *testing.T) {
 	root, artifactDir := installFixture(t, "systemd")
 	if err := os.Remove(filepath.Join(artifactDir, "payesh")); err != nil {

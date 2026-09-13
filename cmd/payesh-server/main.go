@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/fleet"
+	installpkg "github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/porttraffic"
@@ -167,6 +169,19 @@ func main() {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "configure installation jobs:", err)
 			os.Exit(1)
+		}
+		// Reuse the root-owned artifacts installed on the hub. An optional
+		// artifact directory can override these paths for a staged release, but
+		// a normal installer deployment requires no manual server configuration.
+		paths := installedArtifactPaths(strings.TrimSpace(os.Getenv("PAYESH_INSTALL_ARTIFACT_DIR")))
+		if installArtifactsReady(paths) {
+			installService.InstallerPath = paths["payesh-install"]
+			installService.Artifacts = paths
+			installService.VerifyArtifact = func(name, path string) error {
+				_, digestErr := installpkg.ArtifactDigest(path, name == "web-assets")
+				return digestErr
+			}
+			installService.Executor = fleet.SSHInstallerFunc(installpkg.InstallOverSSH)
 		}
 		alertService, alertErr := alerts.NewService(store)
 		if alertErr != nil {
@@ -403,6 +418,40 @@ func environmentBool(name string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean", name)
 	}
 	return parsed, nil
+}
+
+func installedArtifactPaths(artifactDir string) map[string]string {
+	paths := map[string]string{
+		"payesh":         "/usr/bin/payesh",
+		"payesh-agent":   "/usr/bin/payesh-agent",
+		"payesh-privd":   "/usr/bin/payesh-privd",
+		"payesh-server":  "/usr/bin/payesh-server",
+		"payesh-install": "/usr/bin/payesh-install",
+		"web-assets":     "/usr/share/payesh/web-assets",
+	}
+	if artifactDir == "" {
+		return paths
+	}
+	for name := range paths {
+		paths[name] = filepath.Join(artifactDir, name)
+	}
+	return paths
+}
+
+func installArtifactsReady(paths map[string]string) bool {
+	// Adding a server installs a node. Hub/standalone artifacts remain in the
+	// map for explicit role requests, where the orchestrator reports the exact
+	// missing artifact rather than disabling SSH installation altogether.
+	for _, name := range []string{"payesh-install", "payesh", "payesh-agent", "payesh-privd"} {
+		path := strings.TrimSpace(paths[name])
+		if path == "" {
+			return false
+		}
+		if _, err := installpkg.ArtifactDigest(path, false); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func alertDestinationsFromEnvironment() []alerts.NotificationDestination {

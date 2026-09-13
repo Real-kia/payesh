@@ -67,6 +67,11 @@ func main() {
 	}
 
 	if *apply {
+		installerPath, executableErr := os.Executable()
+		if executableErr != nil {
+			fmt.Fprintln(os.Stderr, "install: locate installer executable:", executableErr)
+			os.Exit(2)
+		}
 		digests, digestErr := artifactDigests.parse()
 		if digestErr != nil {
 			fmt.Fprintln(os.Stderr, "install:", digestErr)
@@ -74,6 +79,7 @@ func main() {
 		}
 		result, err := install.Install(context.Background(), install.InstallOptions{
 			Root: *root, Role: *role, Listen: *listen, ArtifactDir: *artifactDir, Start: *start,
+			InstallerPath: installerPath,
 			Verify: func(name, path string) error {
 				expected, ok := digests[name]
 				if !ok {
