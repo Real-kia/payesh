@@ -29,6 +29,7 @@ export type PreviewServer = {
   configurationRevision: string;
   displayState: DisplayState;
   metrics: { cpu: number | null; memory: number | null; disk: number | null };
+  latestMetricAt?: string;
   metricHistory?: PreviewMetricHistory;
   traffic: { scope: string; from: string; to: string; timezone: string; allowanceBytes: string; direction: 'inbound' | 'outbound' | 'combined'; countedBytes: string; continuity: 'complete' | 'gap' | 'uncertain' };
 };
