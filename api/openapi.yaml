@@ -592,8 +592,9 @@ components:
       properties:
         id: { type: string, pattern: '^[A-Za-z0-9_-]{16,128}$' }
         name: { type: string, minLength: 1, maxLength: 128 }
+        address: { type: string, maxLength: 255 }
         role: { type: string, enum: [standalone, hub, node, cli-only] }
-        architecture: { type: string, enum: [amd64, arm64] }
+        architecture: { type: string }
         platform: { type: string }
         capabilities: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }
         version: { type: string }
@@ -604,11 +605,10 @@ components:
         configuration_revision: { $ref: '#/components/schemas/DecimalUint64' }
     CreateServerRequest:
       type: object
-      required: [name, platform, architecture]
+      required: [name, address]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
-        platform: { type: string, enum: [linux] }
-        architecture: { type: string, enum: [amd64, arm64] }
+        address: { type: string, minLength: 1, maxLength: 255 }
     ServerLabelUpdateRequest:
       type: object
       required: [name, expected_revision]

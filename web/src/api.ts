@@ -37,8 +37,9 @@ export class ApiError extends Error {
 export type Server = {
   id: string;
   name: string;
+  address?: string;
   role: 'standalone' | 'hub' | 'node' | 'cli-only';
-  architecture: 'amd64' | 'arm64';
+  architecture: string;
   platform: string;
   capabilities: string[];
   version?: string;
@@ -270,7 +271,7 @@ export class ApiClient {
     return this.request<ServerPage>(`/servers${queryString({ limit: 200 })}`, { signal: options.signal });
   }
 
-  createServer(body: { name: string; platform: 'linux'; architecture: 'amd64' | 'arm64' }, options: QueryOptions = {}): Promise<Server> {
+  createServer(body: { name: string; address: string }, options: QueryOptions = {}): Promise<Server> {
     return this.request<Server>('/servers', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
   }
 

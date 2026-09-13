@@ -42,6 +42,9 @@ func TestSetupIsOneTimeAndSessionNeedsCSRF(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("valid session status=%d", response.Code)
 	}
+	if response.Header().Get("X-CSRF-Token") != csrf {
+		t.Fatal("authenticated response did not refresh csrf token")
+	}
 }
 
 func TestUsernameIsRequiredForOwnerLogin(t *testing.T) {

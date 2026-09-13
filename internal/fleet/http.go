@@ -248,6 +248,7 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 type createServerRequest struct {
 	Name         string `json:"name"`
+	Address      string `json:"address"`
 	Platform     string `json:"platform"`
 	Architecture string `json:"architecture"`
 }
@@ -258,23 +259,27 @@ func (a *API) createPendingServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Name = strings.TrimSpace(request.Name)
+	request.Address = strings.TrimSpace(request.Address)
 	if request.Name == "" || len(request.Name) > 128 {
 		writeFleetError(w, http.StatusBadRequest, "invalid_request", "server name must contain 1..128 characters", false)
 		return
 	}
-	if request.Platform == "" {
-		request.Platform = "linux"
-	}
-	if request.Architecture != "amd64" && request.Architecture != "arm64" {
-		writeFleetError(w, http.StatusBadRequest, "invalid_request", "architecture must be amd64 or arm64", false)
+	if request.Address == "" || len(request.Address) > 255 {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "server address must contain 1..255 characters", false)
 		return
+	}
+	if request.Platform == "" {
+		request.Platform = "unknown"
+	}
+	if request.Architecture == "" {
+		request.Architecture = "unknown"
 	}
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		writeFleetError(w, http.StatusInternalServerError, "internal_error", "could not create server identity", true)
 		return
 	}
-	server := contracts.Server{ID: contracts.ServerID("server-" + hex.EncodeToString(random)), Name: request.Name, Role: "node", Platform: request.Platform, Architecture: request.Architecture, Capabilities: []string{}, ConnectionState: "never-connected", FreshnessState: "unknown", FreshnessReason: "awaiting installation and enrollment"}
+	server := contracts.Server{ID: contracts.ServerID("server-" + hex.EncodeToString(random)), Name: request.Name, Address: request.Address, Role: "node", Platform: request.Platform, Architecture: request.Architecture, Capabilities: []string{}, ConnectionState: "never-connected", FreshnessState: "unknown", FreshnessReason: "awaiting automatic platform detection"}
 	if err := a.store.EnsureServer(r.Context(), server); err != nil {
 		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not create server", true)
 		return

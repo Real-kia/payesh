@@ -16,8 +16,9 @@ export type PreviewMetricHistory = { ranges: Record<PreviewChartRange, PreviewCh
 export type PreviewServer = {
   id: string;
   name: string;
+  address?: string;
   role: 'standalone' | 'hub' | 'node' | 'cli-only';
-  architecture: 'amd64' | 'arm64';
+  architecture: string;
   platform: string;
   capabilities: string[];
   version: string;
