@@ -314,12 +314,22 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 		return s.fail(ctx, job, "credentials_unavailable", "installation credentials are no longer available; resubmit the installation", true)
 	}
 	defer clearInstallAuth(&opts.Auth)
-	_, execErr := s.Executor.Install(ctx, opts)
+	result, execErr := s.Executor.Install(ctx, opts)
 	if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
 		return job, execErr
 	}
 	if execErr != nil {
 		return s.fail(ctx, job, "install_failed", "SSH installation failed", true)
+	}
+	if server, found, lookupErr := s.Store.GetServer(ctx, job.TargetServerID); lookupErr == nil && found {
+		server.Address = opts.Endpoint.Host
+		server.Platform = "linux"
+		if result.Preflight.Architecture != "" {
+			server.Architecture = result.Preflight.Architecture
+		}
+		if updateErr := s.Store.UpsertServer(ctx, server); updateErr != nil {
+			return s.fail(ctx, job, "inventory_update_failed", "installation completed but detected server inventory could not be saved", true)
+		}
 	}
 	completed, err := s.Store.TransitionJob(ctx, id, job.Revision, contracts.JobSucceeded, 100, nil, s.now())
 	if err == nil {

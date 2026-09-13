@@ -715,6 +715,7 @@ CREATE TABLE IF NOT EXISTS job_cancellation_requests (
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  address TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL,
   architecture TEXT NOT NULL,
   platform TEXT NOT NULL,
@@ -1218,6 +1219,15 @@ CREATE INDEX IF NOT EXISTS audit_events_target ON audit_events(target_id, occurr
 			return fmt.Errorf("migrate alert state revision schema: %w", err)
 		}
 	}
+	var serverAddressColumn int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='address'`).Scan(&serverAddressColumn); err != nil {
+		return fmt.Errorf("inspect server address schema: %w", err)
+	}
+	if serverAddressColumn == 0 {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN address TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate server address schema: %w", err)
+		}
+	}
 	var schemaVersion int
 	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&schemaVersion); err != nil {
 		return fmt.Errorf("inspect schema version: %w", err)
@@ -1683,10 +1693,10 @@ func (s *Store) UpsertServer(ctx context.Context, server contracts.Server) error
 	if server.LastHeartbeat != nil {
 		heartbeat = FormatPersistedTime(*server.LastHeartbeat)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO servers(id,name,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,freshness_reason,configuration_revision)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,architecture=excluded.architecture,platform=excluded.platform,capabilities_json=excluded.capabilities_json,version=excluded.version,last_heartbeat=excluded.last_heartbeat,connection_state=excluded.connection_state,freshness_state=excluded.freshness_state,freshness_reason=excluded.freshness_reason,configuration_revision=excluded.configuration_revision`,
-		string(server.ID), server.Name, server.Role, server.Architecture, server.Platform, string(capabilities), server.Version, heartbeat, server.ConnectionState, server.FreshnessState, server.FreshnessReason, strconv.FormatUint(server.ConfigurationRevision, 10))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO servers(id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,freshness_reason,configuration_revision)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,address=CASE WHEN excluded.address='' THEN servers.address ELSE excluded.address END,role=excluded.role,architecture=excluded.architecture,platform=excluded.platform,capabilities_json=excluded.capabilities_json,version=excluded.version,last_heartbeat=excluded.last_heartbeat,connection_state=excluded.connection_state,freshness_state=excluded.freshness_state,freshness_reason=excluded.freshness_reason,configuration_revision=excluded.configuration_revision`,
+		string(server.ID), server.Name, server.Address, server.Role, server.Architecture, server.Platform, string(capabilities), server.Version, heartbeat, server.ConnectionState, server.FreshnessState, server.FreshnessReason, strconv.FormatUint(server.ConfigurationRevision, 10))
 	return err
 }
 
@@ -1706,9 +1716,9 @@ func (s *Store) EnsureServer(ctx context.Context, server contracts.Server) error
 	if server.LastHeartbeat != nil {
 		heartbeat = FormatPersistedTime(*server.LastHeartbeat)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO servers(id,name,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,freshness_reason,configuration_revision)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`,
-		string(server.ID), server.Name, server.Role, server.Architecture, server.Platform, string(capabilities), server.Version, heartbeat, server.ConnectionState, server.FreshnessState, server.FreshnessReason, strconv.FormatUint(server.ConfigurationRevision, 10))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO servers(id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,freshness_reason,configuration_revision)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`,
+		string(server.ID), server.Name, server.Address, server.Role, server.Architecture, server.Platform, string(capabilities), server.Version, heartbeat, server.ConnectionState, server.FreshnessState, server.FreshnessReason, strconv.FormatUint(server.ConfigurationRevision, 10))
 	return err
 }
 
@@ -1801,7 +1811,7 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if len(serverID) < 16 || len(serverID) > 128 || !isSafeServerID(string(serverID)) {
 		return contracts.Server{}, false, errors.New("server id must be a bounded URL-safe identifier")
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers WHERE id=?`, string(serverID))
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers WHERE id=?`, string(serverID))
 	server, err := scanServer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Server{}, false, nil
@@ -1823,7 +1833,7 @@ func (s *Store) QueryServerPage(ctx context.Context, limit int, cursor string) (
 	if err != nil {
 		return ServerPage{}, err
 	}
-	query := `SELECT id,name,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers`
+	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers`
 	args := make([]any, 0, 3)
 	if decoded.Name != "" {
 		query += ` WHERE (name > ? OR (name = ? AND id > ?))`
@@ -1882,7 +1892,7 @@ func scanServer(row scanner) (contracts.Server, error) {
 	var server contracts.Server
 	var id, capabilitiesJSON, revision string
 	var heartbeat sql.NullString
-	if err := row.Scan(&id, &server.Name, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision); err != nil {
+	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision); err != nil {
 		return contracts.Server{}, err
 	}
 	server.ID = contracts.ServerID(id)
@@ -1911,7 +1921,7 @@ func validateServer(server contracts.Server) error {
 	if len(server.ID) < 16 || len(server.ID) > 128 || !isSafeServerID(string(server.ID)) {
 		return errors.New("server id must be a bounded URL-safe identifier")
 	}
-	if len(server.Name) > 128 || len(server.Role) > 32 || len(server.Architecture) > 32 || len(server.Platform) > 32 || len(server.Version) > 64 {
+	if len(server.Name) > 128 || len(server.Address) > 255 || len(server.Role) > 32 || len(server.Architecture) > 32 || len(server.Platform) > 32 || len(server.Version) > 64 {
 		return errors.New("server identity field exceeds limit")
 	}
 	if server.ConnectionState != "connected" && server.ConnectionState != "disconnected" && server.ConnectionState != "never-connected" && server.ConnectionState != "revoked" {

@@ -316,6 +316,9 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
+		// Let a restored HttpOnly session bootstrap browser mutations after a
+		// reload without exposing the session cookie itself to JavaScript.
+		w.Header().Set("X-CSRF-Token", csrf)
 		next.ServeHTTP(w, r)
 	})
 }

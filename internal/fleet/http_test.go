@@ -3,6 +3,7 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestAuthenticatedOwnerCreatesPendingServer(t *testing.T) {
 	login.Header.Set("Content-Type", "application/json")
 	loginResponse := httptest.NewRecorder()
 	api.Handler().ServeHTTP(loginResponse, login)
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/servers", bytes.NewBufferString(`{"name":"Edge node","platform":"linux","architecture":"arm64"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/servers", bytes.NewBufferString(`{"name":"Edge node","address":"192.0.2.15"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-CSRF-Token", loginResponse.Header().Get("X-CSRF-Token"))
 	request.AddCookie(loginResponse.Result().Cookies()[0])
@@ -83,6 +84,10 @@ func TestAuthenticatedOwnerCreatesPendingServer(t *testing.T) {
 	api.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create pending server=%d body=%s", response.Code, response.Body.String())
+	}
+	var created contracts.Server
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil || created.Address != "192.0.2.15" || created.Architecture != "unknown" {
+		t.Fatalf("created server did not preserve address/detection state: %+v err=%v", created, err)
 	}
 }
 

@@ -33,6 +33,7 @@ type CollectorEpoch string
 type Server struct {
 	ID                    ServerID   `json:"id"`
 	Name                  string     `json:"name"`
+	Address               string     `json:"address,omitempty"`
 	Role                  string     `json:"role"`
 	Architecture          string     `json:"architecture"`
 	Platform              string     `json:"platform"`
