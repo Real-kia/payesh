@@ -5,9 +5,11 @@ package fleet
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/Real-kia/payesh/internal/alerts"
@@ -100,6 +102,15 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	sessions, err := auth.NewPersistent(setupSecret, store)
 	if err != nil {
 		return nil, err
+	}
+	// Installers may provide one-time generated owner credentials. Initialize
+	// them on first boot; the persisted auth record prevents reinitialization.
+	if !sessions.Configured() {
+		if username, password := strings.TrimSpace(os.Getenv("PAYESH_OWNER_USERNAME")), os.Getenv("PAYESH_OWNER_PASSWORD"); username != "" && password != "" {
+			if err := sessions.SetupWithUsername(setupSecret, username, password); err != nil {
+				return nil, fmt.Errorf("initialize generated owner: %w", err)
+			}
+		}
 	}
 	readAPI, err := monitoring.NewAPIWithAuthorizer(store, func(http.ResponseWriter, *http.Request) bool { return true })
 	if err != nil {
@@ -237,8 +248,10 @@ type setupRequest struct {
 	// new clients must use setup_secret.
 	Secret   string `json:"secret,omitempty"`
 	Password string `json:"password"`
+	Username string `json:"username"`
 }
 type loginRequest struct {
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -266,7 +279,11 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 	if secret == "" {
 		secret = request.Secret
 	}
-	if err := a.sessions.Setup(secret, request.Password); err != nil {
+	username := request.Username
+	if username == "" {
+		username = "admin"
+	}
+	if err := a.sessions.SetupWithUsername(secret, username, request.Password); err != nil {
 		if err.Error() == "setup_already_complete" {
 			writeFleetError(w, http.StatusConflict, "setup_already_complete", "setup already complete", false)
 		} else {
@@ -281,7 +298,11 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
-	session, csrf, err := a.sessions.Login(a.loginKey(r), request.Password)
+	username := request.Username
+	if username == "" {
+		username = "admin"
+	}
+	session, csrf, err := a.sessions.LoginWithUsername(a.loginKey(r), username, request.Password)
 	if err != nil {
 		if err.Error() == "auth.rate_limited" {
 			w.Header().Set("Retry-After", "900")

@@ -41,6 +41,7 @@
   let retention = '30';
   let setupSecret = '';
   let ownerPassword = '';
+  let ownerUsername = '';
   let notifications = 'none';
   let enrollmentMode: 'skip' | 'connect' = 'skip';
   let pairingToken = '';
@@ -51,6 +52,7 @@
   type SessionState = 'unknown' | 'authenticated' | 'signed-out';
   let sessionState: SessionState = PREVIEW_MODE ? 'authenticated' : 'unknown';
   let authPassword = '';
+  let authUsername = '';
   let authBusy = false;
   let authError = '';
   let setupCompleted = false;
@@ -179,7 +181,7 @@
     if (authPassword.length < 1 || authBusy) return;
     authBusy = true; authError = '';
     try {
-      await apiClient.login(authPassword);
+      await apiClient.login(authUsername, authPassword);
       authPassword = '';
       authExpired = false;
       sessionState = 'authenticated';
@@ -260,8 +262,8 @@
       }
       if (!PREVIEW_MODE && !setupCompleted) {
         try {
-          await apiClient.completeSetup({ setup_secret: setupSecret, password: ownerPassword });
-          await apiClient.login(ownerPassword);
+          await apiClient.completeSetup({ setup_secret: setupSecret, username: ownerUsername, password: ownerPassword });
+          await apiClient.login(ownerUsername, ownerPassword);
           setupCompleted = true;
           sessionState = 'authenticated';
           setupSecret = '';
@@ -588,7 +590,7 @@
             <div class="form-grid">
               <label>Workspace name<input bind:value={workspaceName} autocomplete="organization" /></label>
               <label>Bootstrap secret<input type="password" bind:value={setupSecret} minlength="16" autocomplete="new-password" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters.</small></label>
-              <label>Owner password<input type="password" bind:value={ownerPassword} minlength="12" autocomplete="new-password" aria-invalid={setupError ? 'true' : undefined} /><small>At least 12 characters.</small></label>
+              <label>Owner username<input bind:value={ownerUsername} minlength="3" autocomplete="username" required aria-invalid={setupError ? 'true' : undefined} /><small>Use the generated username from installation.</small></label><label>Owner password<input type="password" bind:value={ownerPassword} minlength="12" autocomplete="new-password" aria-invalid={setupError ? 'true' : undefined} /><small>At least 12 characters.</small></label>
             </div>
           {:else if setupStep === 2}
             <p class="eyebrow">Step 2 of 3</p><h2>Choose safe defaults</h2><p class="muted">Retention and notifications can be changed later without changing the enrollment secret.</p>
@@ -640,7 +642,7 @@
       <section class="page overview-page" aria-labelledby="overview-title">
         <div class="page-heading"><div><p class="eyebrow">{PREVIEW_MODE ? 'Live preview' : 'Authenticated workspace'}</p><h1 id="overview-title">{PREVIEW_MODE ? 'Good afternoon, Kia' : 'Fleet overview'}</h1><p class="lede">A clear view of your fleet, with freshness and uncertainty kept visible.</p></div>{#if PREVIEW_MODE}<span class="date-stamp">09 Sep 2026 · 14:42 UTC</span>{:else}<span class="date-stamp">Live API data</span>{/if}</div>
         {#if authExpired}
-          <div class="state-panel error-state auth-panel"><div class="state-icon">⌁</div><h2>{sessionState === 'signed-out' ? 'Sign in to continue' : 'Session expired'}</h2><p>Your authenticated session is required for fleet data and owner actions. Credentials stay in memory and are sent only to the local API.</p><form class="auth-form" on:submit|preventDefault={() => void submitLogin()}><label>Password<input type="password" bind:value={authPassword} autocomplete="current-password" required /></label>{#if authError}<p class="form-error" role="alert">{authError}</p>{/if}<button class="button primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button></form><button class="text-button" type="button" on:click={() => navigate('onboarding')}>First run? Complete owner setup →</button></div>
+          <div class="login-screen"><div class="login-card"><div class="brand-mark">P</div><p class="eyebrow">PAYESH · LOCAL OPERATIONS</p><h2>Welcome back</h2><p class="muted">Sign in to manage your fleet securely.</p><form class="auth-form" on:submit|preventDefault={() => void submitLogin()}><label>Username<input bind:value={authUsername} autocomplete="username" required /></label><label>Password<input type="password" bind:value={authPassword} autocomplete="current-password" required /></label>{#if authError}<p class="form-error" role="alert">{authError}</p>{/if}<button class="button primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button></form><button class="text-button" type="button" on:click={() => navigate('onboarding')}>First run? Complete owner setup →</button></div></div>
         {:else if previewState === 'loading'}
           <div class="state-panel"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading fleet data</h2><p>Reading the bounded server summary.</p></div>
         {:else if previewState === 'empty'}
@@ -666,6 +668,11 @@
 
 <style>
   :global(*) { box-sizing: border-box; }
+  .login-screen { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: rgba(10, 18, 16, .96); }
+  .login-card { width: min(440px, 100%); padding: 42px; border: 1px solid var(--line); border-radius: 24px; background: var(--surface); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+  .login-card h2 { margin: 8px 0; font-size: 38px; }
+  .login-card .auth-form { margin-top: 28px; }
+  .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: var(--accent); color: #10201c; font-size: 24px; font-weight: 800; }
   :global(html) { color-scheme: light; }
   :global(html[data-theme='dark']) { color-scheme: dark; }
   :global(body) { margin: 0; min-width: 320px; background: var(--canvas); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }

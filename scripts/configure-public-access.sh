@@ -134,7 +134,19 @@ tmp=$(mktemp)
   [ -z "$email" ] || printf '{\n\temail %s\n}\n\n' "$email"
   printf '%s {\n' "$domain"
   printf '\tencode zstd gzip\n'
-  printf '\treverse_proxy %s\n' "$upstream"
+  # Keep the API private behind the proxy while serving the installed SPA.
+  # The server intentionally protects non-health API routes with auth; sending
+  # the root document through reverse_proxy therefore produced a JSON 401 and
+  # made the browser UI unreachable.
+  printf '\troot * /usr/share/payesh/web-assets\n'
+  printf '\t@backend path /api/* /healthz\n'
+  printf '\thandle @backend {\n'
+  printf '\t\treverse_proxy %s\n' "$upstream"
+  printf '\t}\n'
+  printf '\thandle {\n'
+  printf '\t\ttry_files {path} /index.html\n'
+  printf '\t\tfile_server\n'
+  printf '\t}\n'
   printf '}\n'
 } >"$tmp"
 caddy validate --config "$tmp" --adapter caddyfile

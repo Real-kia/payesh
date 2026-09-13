@@ -44,6 +44,22 @@ func TestSetupIsOneTimeAndSessionNeedsCSRF(t *testing.T) {
 	}
 }
 
+func TestUsernameIsRequiredForOwnerLogin(t *testing.T) {
+	m, err := New("0123456789abcdef-bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetupWithUsername("0123456789abcdef-bootstrap", "generated-owner", "long-enough-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.LoginWithUsername("client", "other-user", "long-enough-password"); err == nil {
+		t.Fatal("wrong username accepted")
+	}
+	if _, _, err := m.LoginWithUsername("client", "generated-owner", "long-enough-password"); err != nil {
+		t.Fatalf("correct username rejected: %v", err)
+	}
+}
+
 func TestLoginThrottlesFailures(t *testing.T) {
 	m, _ := New("0123456789abcdef-bootstrap")
 	_ = m.Setup("0123456789abcdef-bootstrap", "long-enough-password")

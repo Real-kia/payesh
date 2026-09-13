@@ -565,14 +565,17 @@ components:
   schemas:
     SetupRequest:
       type: object
-      required: [setup_secret, password]
+      required: [setup_secret, username, password]
       properties:
         setup_secret: { type: string, minLength: 16, writeOnly: true }
+        username: { type: string, minLength: 3, maxLength: 128 }
         password: { type: string, minLength: 12, writeOnly: true }
     LoginRequest:
       type: object
-      required: [password]
-      properties: { password: { type: string, writeOnly: true } }
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 128 }
+        password: { type: string, writeOnly: true }
     Server:
       type: object
       required: [id, name, role, architecture, platform, capabilities, connection_state, freshness_state, configuration_revision]

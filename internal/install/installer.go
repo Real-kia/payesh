@@ -9,6 +9,8 @@ package install
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,6 +195,21 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 			return result, fmt.Errorf("create %s: %w", dir.path, err)
 		}
 	}
+	if role == "standalone" || role == "hub" {
+		envPath := rooted(root, filepath.Join(configDir, "payesh.env"))
+		credentialsPath := rooted(root, filepath.Join(configDir, "owner-credentials"))
+		if err := ensureOwnerCredentials(envPath, credentialsPath); err != nil {
+			return result, fmt.Errorf("generate owner credentials: %w", err)
+		}
+		if root == "/" && account.UID >= 0 && account.GID >= 0 {
+			if err := os.Chown(envPath, account.UID, account.GID); err != nil {
+				return result, fmt.Errorf("own owner environment: %w", err)
+			}
+			if err := os.Chown(credentialsPath, account.UID, account.GID); err != nil {
+				return result, fmt.Errorf("own owner credentials: %w", err)
+			}
+		}
+	}
 	// A fixture root must remain entirely unprivileged from the perspective of
 	// the host.  On the live root, however, the service must be able to write
 	// its database, identity, spool, and logs.
@@ -245,6 +262,44 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func ensureOwnerCredentials(envPath, credentialsPath string) error {
+	if _, err := os.Stat(credentialsPath); err == nil {
+		return nil
+	}
+	// An existing environment file belongs to the operator (or to an older
+	// installation). Never replace it implicitly during an upgrade; generated
+	// credentials are only for a fresh configuration.
+	if _, err := os.Stat(envPath); err == nil {
+		return nil
+	}
+	randomValue := func(n int) (string, error) {
+		b := make([]byte, n)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		return base64.RawURLEncoding.EncodeToString(b), nil
+	}
+	u, err := randomValue(9)
+	if err != nil {
+		return err
+	}
+	p, err := randomValue(24)
+	if err != nil {
+		return err
+	}
+	s, err := randomValue(24)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(envPath, []byte("PAYESH_OWNER_USERNAME=owner_"+u+"\nPAYESH_OWNER_PASSWORD="+p+"\nPAYESH_BOOTSTRAP_SECRET="+s+"\nPAYESH_SECURE_BROWSER_COOKIES=true\n"), 0o640); err != nil {
+		return err
+	}
+	if err := os.WriteFile(credentialsPath, []byte("username: "+"owner_"+u+"\npassword: "+p+"\n"), 0o600); err != nil {
+		return err
+	}
+	return nil
 }
 
 func chooseRunner(r CommandRunner) CommandRunner {

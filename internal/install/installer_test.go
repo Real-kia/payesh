@@ -134,6 +134,9 @@ func TestInstallReplacesExistingWebAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	web := filepath.Join(artifactDir, "web-assets")
+	if err := os.WriteFile(filepath.Join(artifactDir, "payesh-server"), []byte("server-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(web, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +160,71 @@ func TestInstallReplacesExistingWebAssets(t *testing.T) {
 	}
 	if string(installed) != "second" {
 		t.Fatalf("installed web asset = %q", installed)
+	}
+}
+
+func TestStandaloneInstallGeneratesOwnerCredentials(t *testing.T) {
+	root, artifactDir := installFixture(t, "systemd")
+	if err := os.WriteFile(filepath.Join(artifactDir, "payesh-server"), []byte("server-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := filepath.Join(artifactDir, "web-assets")
+	if err := os.MkdirAll(web, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(context.Background(), InstallOptions{Root: root, Role: "standalone", Listen: "127.0.0.1:0", ArtifactDir: artifactDir, Verify: acceptArtifact}); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := os.ReadFile(filepath.Join(root, "etc/payesh/owner-credentials"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(credentials), "username: owner_") || !strings.Contains(string(credentials), "password: ") {
+		t.Fatalf("invalid generated credentials: %q", credentials)
+	}
+	env, err := os.ReadFile(filepath.Join(root, "etc/payesh/payesh.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "PAYESH_OWNER_USERNAME=") || !strings.Contains(string(env), "PAYESH_OWNER_PASSWORD=") || !strings.Contains(string(env), "PAYESH_BOOTSTRAP_SECRET=") {
+		t.Fatalf("missing generated owner environment: %q", env)
+	}
+}
+
+func TestStandaloneInstallPreservesExistingOwnerEnvironment(t *testing.T) {
+	root, artifactDir := installFixture(t, "systemd")
+	if err := os.WriteFile(filepath.Join(artifactDir, "payesh-server"), []byte("server-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := filepath.Join(artifactDir, "web-assets")
+	if err := os.MkdirAll(web, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(root, "etc/payesh")
+	if err := os.MkdirAll(config, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "payesh.env"), []byte("PAYESH_LOCAL_TOKEN=operator-managed\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(context.Background(), InstallOptions{Root: root, Role: "standalone", Listen: "127.0.0.1:0", ArtifactDir: artifactDir, Verify: acceptArtifact}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(config, "payesh.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(env) != "PAYESH_LOCAL_TOKEN=operator-managed\n" {
+		t.Fatalf("operator environment was changed: %q", env)
+	}
+	if _, err := os.Stat(filepath.Join(config, "owner-credentials")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected generated credentials: %v", err)
 	}
 }
 

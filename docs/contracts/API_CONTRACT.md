@@ -6,6 +6,11 @@ log, alert/incident, module, policy, release/update, settings/backup,
 enrollment, and job operation requires the secure `payesh_session` cookie and
 returns the shared `APIError` shape on failure.
 
+Standalone and hub installers generate a unique owner username and password,
+store the one-time operator-readable record under `/etc/payesh`, and initialize
+the persisted browser account on first service start. Login requests must send
+both credentials; legacy `admin` records remain readable for upgrades.
+
 Browser mutations require both the secure session cookie and the
 `X-CSRF-Token` header. API clients must not infer CSRF exemption from a JSON
 content type; the server validates the token and origin policy.

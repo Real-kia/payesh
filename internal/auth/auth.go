@@ -55,6 +55,7 @@ type throttleRecord struct {
 type Manager struct {
 	mu          sync.Mutex
 	owner       passwordRecord
+	username    string
 	configured  bool
 	setupDigest []byte
 	sessions    map[string]sessionRecord // keyed by a SHA-256 session digest
@@ -92,6 +93,14 @@ func NewPersistent(setupSecret string, repository Repository) (*Manager, error) 
 
 // Setup consumes the one-time bootstrap secret and creates the sole owner.
 func (m *Manager) Setup(secret, password string) error {
+	return m.SetupWithUsername(secret, "admin", password)
+}
+
+// SetupWithUsername creates the owner account with an explicit username.
+func (m *Manager) SetupWithUsername(secret, username, password string) error {
+	if len(username) < 3 || len(username) > 128 {
+		return errors.New("username must contain 3..128 characters")
+	}
 	if len(password) < 12 || len(password) > 256 {
 		return errors.New("password must contain 12..256 characters")
 	}
@@ -109,12 +118,12 @@ func (m *Manager) Setup(secret, password string) error {
 		return err
 	}
 	previousDigest := append([]byte(nil), m.setupDigest...)
-	m.owner, m.configured = r, true
+	m.owner, m.username, m.configured = r, username, true
 	for i := range m.setupDigest {
 		m.setupDigest[i] = 0
 	}
 	if err := m.persistLocked(); err != nil {
-		m.owner, m.configured, m.setupDigest = passwordRecord{}, false, previousDigest
+		m.owner, m.username, m.configured, m.setupDigest = passwordRecord{}, "", false, previousDigest
 		return fmt.Errorf("persist owner setup: %w", err)
 	}
 	return nil
@@ -136,6 +145,10 @@ func verifyPassword(r passwordRecord, password string) bool {
 // Login authenticates the owner and returns an opaque session and CSRF token.
 // Failed attempts are throttled by caller-supplied key (normally remote IP).
 func (m *Manager) Login(key, password string) (session, csrf string, err error) {
+	return m.LoginWithUsername(key, "admin", password)
+}
+
+func (m *Manager) LoginWithUsername(key, username, password string) (session, csrf string, err error) {
 	if len(key) == 0 || len(key) > 128 {
 		return "", "", errors.New("invalid_login_key")
 	}
@@ -147,7 +160,7 @@ func (m *Manager) Login(key, password string) (session, csrf string, err error) 
 	if !t.blockedUntil.IsZero() && now.Before(t.blockedUntil) {
 		return "", "", fmt.Errorf("auth.rate_limited")
 	}
-	ok := m.configured && verifyPassword(m.owner, password)
+	ok := m.configured && subtle.ConstantTimeCompare([]byte(username), []byte(m.username)) == 1 && verifyPassword(m.owner, password)
 	if !ok {
 		if t.since.IsZero() || now.Sub(t.since) >= loginWindow {
 			t = throttleRecord{since: now}
@@ -375,6 +388,7 @@ type persistedState struct {
 	Configured bool                         `json:"configured"`
 	OwnerSalt  []byte                       `json:"owner_salt,omitempty"`
 	OwnerHash  []byte                       `json:"owner_hash,omitempty"`
+	Username   string                       `json:"username,omitempty"`
 	Sessions   map[string]persistedSession  `json:"sessions,omitempty"`
 	Throttle   map[string]persistedThrottle `json:"throttle,omitempty"`
 }
@@ -395,7 +409,7 @@ func (m *Manager) persistLocked() error {
 	if m.repository == nil {
 		return nil
 	}
-	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
+	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Username: m.username, Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
 	for key, record := range m.sessions {
 		state.Sessions[key] = persistedSession{Digest: record.digest, Expires: record.expires, CSRF: record.csrf}
 	}
@@ -421,6 +435,10 @@ func (m *Manager) restore(data []byte) error {
 		return errors.New("persisted authentication state exceeds bounds")
 	}
 	m.configured = true
+	m.username = state.Username
+	if m.username == "" {
+		m.username = "admin"
+	}
 	m.owner = passwordRecord{salt: append([]byte(nil), state.OwnerSalt...), digest: append([]byte(nil), state.OwnerHash...)}
 	for i := range m.setupDigest {
 		m.setupDigest[i] = 0
