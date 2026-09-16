@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,6 +22,7 @@ import (
 	"github.com/Real-kia/payesh/internal/cpucontrol"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
+	"github.com/Real-kia/payesh/internal/updater"
 )
 
 func main() {
@@ -55,6 +57,10 @@ func main() {
 		err = cpuServices(ctx, os.Args[2:])
 	case "run":
 		err = runWorkload(ctx, os.Args[2:])
+	case "backup":
+		err = backupDatabase(ctx, os.Args[2:])
+	case "verify-backup":
+		err = verifyBackup(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -83,7 +89,9 @@ commands:
   prune            remove expired history in bounded batches
   storage-usage    print database/WAL usage
   cpu-services     list selectable systemd/OpenRC CPU service targets (read-only)
-  run              start a command in a Payesh-owned cgroup (Linux only)`)
+  run              start a command in a Payesh-owned cgroup (Linux only)
+  backup           create a consistent online SQLite backup using VACUUM INTO
+  verify-backup    run PRAGMA integrity_check against a SQLite backup file`)
 }
 
 func runWorkload(ctx context.Context, args []string) error {
@@ -764,4 +772,62 @@ func alertDestinationsFromEnvironment() []alerts.NotificationDestination {
 		destinations = append(destinations, alerts.NotificationDestination{Kind: "telegram", URL: apiURL, Secret: token, ChatID: os.Getenv("PAYESH_ALERT_TELEGRAM_CHAT_ID"), Enabled: true})
 	}
 	return destinations
+}
+
+func backupDatabase(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("backup", flag.ContinueOnError)
+	dbPath := flags.String("db", "/var/lib/payesh/payesh.db", "source SQLite database path")
+	output := flags.String("output", "", "backup destination path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *output == "" {
+		return errors.New("--output is required")
+	}
+	absSource, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return err
+	}
+	absOutput, err := filepath.Abs(*output)
+	if err != nil {
+		return err
+	}
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate", absSource)
+	sourceDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open source database: %w", err)
+	}
+	defer sourceDB.Close()
+
+	if err := updater.BackupSQLite(ctx, sourceDB, absOutput); err != nil {
+		return fmt.Errorf("backup database: %w", err)
+	}
+	return writeJSON(os.Stdout, map[string]any{
+		"source":   absSource,
+		"backup":   absOutput,
+		"verified": true,
+	})
+}
+
+func verifyBackup(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("verify-backup", flag.ContinueOnError)
+	file := flags.String("file", "", "backup file to verify")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" {
+		return errors.New("--file is required")
+	}
+	absFile, err := filepath.Abs(*file)
+	if err != nil {
+		return err
+	}
+	if err := updater.VerifySQLiteBackup(ctx, absFile); err != nil {
+		return err
+	}
+	return writeJSON(os.Stdout, map[string]any{
+		"file":     absFile,
+		"status":   "ok",
+		"verified": true,
+	})
 }
