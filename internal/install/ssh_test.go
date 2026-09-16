@@ -253,3 +253,114 @@ func TestInstallOverSSHRejectsSymlinkRoleArtifact(t *testing.T) {
 		t.Fatalf("symlink role artifact err=%v", err)
 	}
 }
+
+func TestSSHInstallFailureDetail(t *testing.T) {
+	err := sshStage("scan host key", errors.New("host key scan failed for 89.58.29.206:22 (connection refused)\nextra line"))
+	if stage := SSHInstallFailureStage(err); stage != "scan host key" {
+		t.Fatalf("unexpected stage: %s", stage)
+	}
+	detail := SSHInstallFailureDetail(err)
+	if !strings.Contains(detail, "connection refused") || !strings.Contains(detail, "target port is closed") {
+		t.Fatalf("unexpected detail: got %q", detail)
+	}
+}
+
+type githubCapableTransport struct {
+	fakeSSHTransport
+	githubSuccess bool
+}
+
+func (g *githubCapableTransport) Run(ctx context.Context, ep SSHEndpoint, kh string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
+	g.commands = append(g.commands, command)
+	if strings.Contains(command, "status.txt") {
+		if g.githubSuccess {
+			return []byte("SUCCESS:0\n"), nil
+		}
+		return []byte("FALLBACK:master_upload_required\n"), nil
+	}
+	if strings.Contains(command, "preflight.json") {
+		return json.Marshal(g.preflight)
+	}
+	if strings.Contains(command, " --json ") {
+		return json.Marshal(g.preflight)
+	}
+	return nil, nil
+}
+
+func TestInstallOverSSHGithubFirstSucceedsWithoutUpload(t *testing.T) {
+	root := t.TempDir()
+	installer := filepath.Join(root, "payesh-install")
+	_ = os.WriteFile(installer, []byte("installer"), 0o700)
+	artifacts := map[string]string{}
+	for _, name := range requiredArtifacts("node") {
+		path := filepath.Join(root, name)
+		_ = os.WriteFile(path, []byte(name), 0o700)
+		artifacts[name] = path
+	}
+	key := testHostKey("node.example", 22, 12)
+	transport := &githubCapableTransport{
+		fakeSSHTransport: fakeSSHTransport{
+			keys:      []SSHHostKey{key},
+			preflight: Preflight{Role: "node", Supported: true, Artifacts: requiredArtifacts("node")},
+		},
+		githubSuccess: true,
+	}
+	result, err := InstallOverSSH(context.Background(), SSHInstallOptions{
+		Endpoint:                   SSHEndpoint{Host: "node.example", Port: 22, User: "root"},
+		ExpectedHostKeyFingerprint: key.Fingerprint,
+		Auth:                       SSHAuth{PrivateKey: []byte("key")},
+		InstallerPath:              installer,
+		Artifacts:                  artifacts,
+		Role:                       "node",
+		Transport:                  transport,
+		VerifyArtifact:             acceptArtifact,
+		Enroll:                     func(context.Context) error { return nil },
+		VerifyMeasurements:         func(context.Context) error { return nil },
+	})
+	if err != nil || result.Stage != "complete" || !result.Enrolled {
+		t.Fatalf("unexpected result: result=%+v err=%v", result, err)
+	}
+	if len(transport.uploads) != 0 {
+		t.Fatalf("expected 0 uploads when GitHub succeeds, got %d: %v", len(transport.uploads), transport.uploads)
+	}
+}
+
+func TestInstallOverSSHGithubFallbackUploadsFromMaster(t *testing.T) {
+	root := t.TempDir()
+	installer := filepath.Join(root, "payesh-install")
+	_ = os.WriteFile(installer, []byte("installer"), 0o700)
+	artifacts := map[string]string{}
+	for _, name := range requiredArtifacts("node") {
+		path := filepath.Join(root, name)
+		_ = os.WriteFile(path, []byte(name), 0o700)
+		artifacts[name] = path
+	}
+	key := testHostKey("node.example", 22, 13)
+	transport := &githubCapableTransport{
+		fakeSSHTransport: fakeSSHTransport{
+			keys:      []SSHHostKey{key},
+			preflight: Preflight{Role: "node", Supported: true, Artifacts: requiredArtifacts("node")},
+		},
+		githubSuccess: false,
+	}
+	result, err := InstallOverSSH(context.Background(), SSHInstallOptions{
+		Endpoint:                   SSHEndpoint{Host: "node.example", Port: 22, User: "root"},
+		ExpectedHostKeyFingerprint: key.Fingerprint,
+		Auth:                       SSHAuth{PrivateKey: []byte("key")},
+		InstallerPath:              installer,
+		Artifacts:                  artifacts,
+		Role:                       "node",
+		Transport:                  transport,
+		VerifyArtifact:             acceptArtifact,
+		Enroll:                     func(context.Context) error { return nil },
+		VerifyMeasurements:         func(context.Context) error { return nil },
+	})
+	if err != nil || result.Stage != "complete" || !result.Enrolled {
+		t.Fatalf("unexpected result: result=%+v err=%v", result, err)
+	}
+	if len(transport.uploads) == 0 {
+		t.Fatalf("expected uploads when GitHub fails and fallback engages")
+	}
+}
+
+

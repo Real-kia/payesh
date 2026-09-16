@@ -635,3 +635,37 @@ func (ca *CertificateAuthority) restoreLocked(data []byte) error {
 	}
 	return nil
 }
+
+// RevokeServer revokes the currently active certificate for a server if one exists.
+func (ca *CertificateAuthority) RevokeServer(serverID contracts.ServerID) error {
+	ca.mu.Lock()
+	fp, ok := ca.certificates[serverID]
+	ca.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return ca.Revoke(NodeIdentity{ServerID: serverID, Fingerprint: fp})
+}
+
+// IssueNodeIdentity directly provisions a valid NodeIdentity for a server,
+// revoking any prior certificate and clearing stale enrollments.
+func (ca *CertificateAuthority) IssueNodeIdentity(serverID contracts.ServerID, now time.Time) (NodeIdentity, error) {
+	if len(serverID) < 16 || len(serverID) > 128 {
+		return NodeIdentity{}, errors.New("invalid server id")
+	}
+	_ = ca.RevokeServer(serverID)
+	ca.mu.Lock()
+	if prevDigest, exists := ca.serverEnrollments[serverID]; exists {
+		delete(ca.enrollments, prevDigest)
+		delete(ca.serverEnrollments, serverID)
+	}
+	delete(ca.pending, serverID)
+	ca.mu.Unlock()
+
+	enrollment, err := ca.IssueEnrollment(serverID, now)
+	if err != nil {
+		return NodeIdentity{}, err
+	}
+	return ca.ConsumeEnrollmentToken(enrollment.Token, now)
+}
+

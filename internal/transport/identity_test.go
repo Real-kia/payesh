@@ -210,3 +210,38 @@ func TestConsumeEnrollmentTokenIsSingleUseWithoutCallerEnrollmentState(t *testin
 		t.Fatal("pairing token was consumed twice")
 	}
 }
+
+func TestIssueNodeIdentity(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	ca, err := NewCertificateAuthority(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverID := contracts.ServerID("server-direct-012345")
+	identity, err := ca.IssueNodeIdentity(serverID, now)
+	if err != nil {
+		t.Fatalf("issue node identity: %v", err)
+	}
+	if identity.ServerID != serverID || len(identity.CertificatePEM) == 0 || len(identity.PrivateKeyPEM) == 0 {
+		t.Fatalf("invalid issued identity: %+v", identity)
+	}
+	if got, err := ca.Verify(identity.CertificatePEM, now.Add(time.Hour)); err != nil || got != serverID {
+		t.Fatalf("verify issued certificate failed: got=%v err=%v", got, err)
+	}
+
+	// Re-issuing for the same server should revoke previous and issue fresh
+	reissued, err := ca.IssueNodeIdentity(serverID, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("reissue node identity: %v", err)
+	}
+	if reissued.Fingerprint == identity.Fingerprint {
+		t.Fatal("reissue should generate fresh certificate")
+	}
+	if _, err := ca.Verify(identity.CertificatePEM, now.Add(time.Hour)); err == nil {
+		t.Fatal("old certificate should be revoked after reissue")
+	}
+	if got, err := ca.Verify(reissued.CertificatePEM, now.Add(time.Hour)); err != nil || got != serverID {
+		t.Fatalf("verify reissued certificate failed: got=%v err=%v", got, err)
+	}
+}
+

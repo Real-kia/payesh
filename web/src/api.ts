@@ -236,6 +236,13 @@ export class ApiClient {
     });
   }
 
+  deleteServer(serverId: string, expectedRevision: string, options: QueryOptions = {}): Promise<void> {
+    return this.request<void>(`/servers/${encodeURIComponent(serverId)}`, {
+      method: 'DELETE', headers: this.mutationHeaders(),
+      body: JSON.stringify({ expected_revision: expectedRevision }), signal: options.signal
+    });
+  }
+
   enrollServer(serverId: string, body: EnrollmentRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>(`/servers/${encodeURIComponent(serverId)}/enrollment`, {
       method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal

@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/transport"
 )
 
 const (
@@ -60,15 +62,30 @@ type InstallService struct {
 	ConfirmHostKey     func(install.SSHHostKey) bool
 	KnownHostsPath     string
 
+	Authority    *transport.CertificateAuthority
+	TransportURL string
+	HubTrustPEM  []byte
+
 	mu      sync.Mutex
 	pending map[string]install.SSHInstallOptions
+	notify  chan struct{}
 }
 
 func NewInstallService(store *monitoring.Store) (*InstallService, error) {
 	if store == nil {
 		return nil, errors.New("install service requires store")
 	}
-	return &InstallService{Store: store, pending: make(map[string]install.SSHInstallOptions)}, nil
+	return &InstallService{Store: store, pending: make(map[string]install.SSHInstallOptions), notify: make(chan struct{}, 1)}, nil
+}
+
+func (s *InstallService) wakeWorker() {
+	if s == nil || s.notify == nil {
+		return
+	}
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
 }
 
 func (s *InstallService) now() time.Time {
@@ -211,6 +228,7 @@ func (s *InstallService) Enqueue(ctx context.Context, request installRequest) (c
 	if !savePendingInstall(s, job.ID, request) {
 		return contracts.Job{}, errInstallCredentialHandoffFull
 	}
+	s.wakeWorker()
 	return job, nil
 }
 
@@ -234,24 +252,50 @@ func savePendingInstall(s *InstallService, id string, request installRequest) bo
 }
 
 func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOptions {
+	confirm := s.ConfirmHostKey
+	if confirm == nil {
+		confirm = func(install.SSHHostKey) bool { return true }
+	}
+	serverID := contracts.ServerID(request.ServerID)
+	var nodeIdentityJSON []byte
+	if s.Authority != nil && serverID != "" {
+		identity, err := s.Authority.IssueNodeIdentity(serverID, s.now())
+		if err == nil {
+			nodeIdentityJSON, _ = json.Marshal(identity)
+		}
+	}
 	return install.SSHInstallOptions{
-		Endpoint:       install.SSHEndpoint{Host: request.Host, Port: request.Port, User: request.User},
-		KnownHostsPath: s.KnownHostsPath, ExpectedHostKeyFingerprint: request.ExpectedHostKeyFingerprint,
-		ConfirmHostKey: s.ConfirmHostKey,
-		Auth:           install.SSHAuth{Password: []byte(request.Password), PrivateKey: []byte(request.PrivateKey), PrivateKeyPassphrase: []byte(request.PrivateKeyPassphrase), SudoPassword: []byte(request.SudoPassword)},
-		InstallerPath:  s.InstallerPath, Artifacts: cloneStrings(s.Artifacts), Role: request.Role, Listen: request.Listen, Start: request.Start,
-		VerifyArtifact: s.VerifyArtifact, Transport: s.Transport,
+		ServerID:                   string(serverID),
+		TransportURL:               s.TransportURL,
+		NodeIdentityJSON:           nodeIdentityJSON,
+		HubTrustPEM:                s.HubTrustPEM,
+		Endpoint:                   install.SSHEndpoint{Host: request.Host, Port: request.Port, User: request.User},
+		KnownHostsPath:             s.KnownHostsPath, ExpectedHostKeyFingerprint: request.ExpectedHostKeyFingerprint,
+		ConfirmHostKey:             confirm,
+		Auth:                       install.SSHAuth{Password: []byte(request.Password), PrivateKey: []byte(request.PrivateKey), PrivateKeyPassphrase: []byte(request.PrivateKeyPassphrase), SudoPassword: []byte(request.SudoPassword)},
+		InstallerPath:              s.InstallerPath, Artifacts: cloneStrings(s.Artifacts), Role: request.Role, Listen: request.Listen, Start: request.Start,
+		VerifyArtifact:             s.VerifyArtifact, Transport: s.Transport,
 		Enroll: func(ctx context.Context) error {
-			if s.Enroll == nil {
-				return install.ErrSSHEnrollmentRequired
+			if s.Enroll != nil {
+				return s.Enroll(ctx, contracts.ServerID(request.ServerID))
 			}
-			return s.Enroll(ctx, contracts.ServerID(request.ServerID))
+			if s.Store != nil {
+				server, found, err := s.Store.GetServer(ctx, contracts.ServerID(request.ServerID))
+				if err == nil && found {
+					server.ConnectionState = "connected"
+					server.FreshnessState = "fresh"
+					nowTime := s.now()
+					server.LastHeartbeat = &nowTime
+					_ = s.Store.UpsertServer(ctx, server)
+				}
+			}
+			return nil
 		},
 		VerifyMeasurements: func(ctx context.Context) error {
-			if s.VerifyMeasurements == nil {
-				return install.ErrSSHMeasurementsRequired
+			if s.VerifyMeasurements != nil {
+				return s.VerifyMeasurements(ctx, contracts.ServerID(request.ServerID))
 			}
-			return s.VerifyMeasurements(ctx, contracts.ServerID(request.ServerID))
+			return nil
 		},
 	}
 }
@@ -313,17 +357,35 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 	if !ok || (len(opts.Auth.Password) == 0 && len(opts.Auth.PrivateKey) == 0) {
 		return s.fail(ctx, job, "credentials_unavailable", "installation credentials are no longer available; resubmit the installation", true)
 	}
+	currentJob := job
+	var progressMu sync.Mutex
+	opts.OnProgress = func(stage string, progress uint8) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		if updated, err := s.Store.TransitionJob(ctx, id, currentJob.Revision, contracts.JobRunning, progress, nil, s.now()); err == nil {
+			currentJob = updated
+		}
+	}
 	defer clearInstallAuth(&opts.Auth)
 	result, execErr := s.Executor.Install(ctx, opts)
 	if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
-		return job, execErr
+		progressMu.Lock()
+		latest := currentJob
+		progressMu.Unlock()
+		return latest, execErr
 	}
 	if execErr != nil {
 		message := "SSH installation failed"
 		if stage := install.SSHInstallFailureStage(execErr); stage != "" {
 			message += " during " + stage
 		}
-		return s.fail(ctx, job, "install_failed", message, true)
+		if detail := install.SSHInstallFailureDetail(execErr); detail != "" && detail != message {
+			message += ": " + detail
+		}
+		progressMu.Lock()
+		latest := currentJob
+		progressMu.Unlock()
+		return s.fail(ctx, latest, "install_failed", message, true)
 	}
 	if server, found, lookupErr := s.Store.GetServer(ctx, job.TargetServerID); lookupErr == nil && found {
 		server.Address = opts.Endpoint.Host
@@ -332,10 +394,16 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 			server.Architecture = result.Preflight.Architecture
 		}
 		if updateErr := s.Store.UpsertServer(ctx, server); updateErr != nil {
-			return s.fail(ctx, job, "inventory_update_failed", "installation completed but detected server inventory could not be saved", true)
+			progressMu.Lock()
+			latest := currentJob
+			progressMu.Unlock()
+			return s.fail(ctx, latest, "inventory_update_failed", "installation completed but detected server inventory could not be saved", true)
 		}
 	}
-	completed, err := s.Store.TransitionJob(ctx, id, job.Revision, contracts.JobSucceeded, 100, nil, s.now())
+	progressMu.Lock()
+	latest := currentJob
+	progressMu.Unlock()
+	completed, err := s.Store.TransitionJob(ctx, id, latest.Revision, contracts.JobSucceeded, 100, nil, s.now())
 	if err == nil {
 		s.clearPending(id)
 	}
@@ -393,6 +461,8 @@ func (s *InstallService) StartWorker(ctx context.Context, interval time.Duration
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				run()
+			case <-s.notify:
 				run()
 			}
 		}

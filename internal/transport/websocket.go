@@ -774,6 +774,7 @@ func BootstrapAgent(ctx context.Context, endpoint, jobID, token string, trustPEM
 		}
 		config.RootCAs = pool
 	}
+	configureTLSValidation(config, u)
 	conn, err := (&tls.Dialer{Config: config}).DialContext(ctx, "tcp", u.Host)
 	if err != nil {
 		return NodeIdentity{}, err
@@ -923,6 +924,7 @@ func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {
 		}
 		config.RootCAs = pool
 	}
+	configureTLSValidation(config, u)
 	if len(a.Identity.CertificatePEM) == 0 || len(a.Identity.PrivateKeyPEM) == 0 {
 		return nil, errors.New("node identity is missing certificate or key")
 	}
@@ -942,6 +944,36 @@ func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {
 		return nil, err
 	}
 	return ws, nil
+}
+
+func configureTLSValidation(config *tls.Config, u *url.URL) {
+	if config == nil || u == nil {
+		return
+	}
+	if net.ParseIP(u.Hostname()) != nil {
+		config.InsecureSkipVerify = true
+		config.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("no server certificate presented")
+			}
+			cert, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("invalid server certificate: %w", err)
+			}
+			opts := x509.VerifyOptions{
+				Roots:         config.RootCAs,
+				CurrentTime:   time.Now(),
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, raw := range rawCerts[1:] {
+				if ic, err := x509.ParseCertificate(raw); err == nil {
+					opts.Intermediates.AddCert(ic)
+				}
+			}
+			_, err = cert.Verify(opts)
+			return err
+		}
+	}
 }
 
 func mustJSON(v any) json.RawMessage {

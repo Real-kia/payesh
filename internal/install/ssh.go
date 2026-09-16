@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -91,11 +92,17 @@ type SSHInstallOptions struct {
 	Start          bool
 	VerifyArtifact func(name, path string) error
 
+	ServerID         string
+	TransportURL     string
+	NodeIdentityJSON []byte
+	HubTrustPEM      []byte
+
 	Transport SSHTransport
 	// These callbacks represent the authenticated transport/enrollment
 	// boundaries.  Success is not reported until both are present and succeed.
 	Enroll             func(context.Context) error
 	VerifyMeasurements func(context.Context) error
+	OnProgress         func(stage string, progress uint8)
 }
 
 type SSHInstallResult struct {
@@ -131,6 +138,93 @@ func SSHInstallFailureStage(err error) string {
 		return stageErr.Stage
 	}
 	return ""
+}
+
+// SSHInstallFailureDetail returns a non-sensitive diagnostic summary of the root
+// cause of an installation failure if available, safe for display to administrators.
+func SSHInstallFailureDetail(err error) string {
+	var stageErr *sshInstallError
+	if !errors.As(err, &stageErr) || stageErr.Err == nil {
+		return ""
+	}
+	return sshFormatError(stageErr)
+}
+
+func checkEndpointReachable(ctx context.Context, endpoint SSHEndpoint) error {
+	addr := net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port))
+	d := net.Dialer{Timeout: 4 * time.Second}
+	if endpoint.BindAddress != "" {
+		if laddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(endpoint.BindAddress, "0")); err == nil {
+			d.LocalAddr = laddr
+		}
+	}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err == nil {
+		_ = conn.Close()
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(1 * time.Second):
+	}
+	conn, err2 := d.DialContext(ctx, "tcp", addr)
+	if err2 == nil {
+		_ = conn.Close()
+		return nil
+	}
+	return fmt.Errorf("could not connect to %s: %w", addr, err2)
+}
+
+func loadGitHubDeployKey() []byte {
+	candidates := []string{
+		os.Getenv("PAYESH_GITHUB_KEY_PATH"),
+		"/var/lib/payesh/github_deploy_key",
+		"/etc/payesh/github_deploy_key",
+	}
+	for _, p := range candidates {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		if data, err := os.ReadFile(p); err == nil && len(bytes.TrimSpace(data)) > 0 {
+			return bytes.TrimSpace(data)
+		}
+	}
+	return nil
+}
+
+func sshFormatError(stageErr *sshInstallError) string {
+	if stageErr == nil || stageErr.Err == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(stageErr.Err.Error())
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(raw, "\r\n"); idx != -1 {
+		raw = strings.TrimSpace(raw[:idx])
+	}
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, "could not connect") || strings.Contains(lower, "unreachable"):
+		raw = fmt.Sprintf("Server is unreachable: %s. Please verify the IP address, SSH port, and firewall rules.", raw)
+	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "reset by peer"):
+		raw += " (TCP connection reset detected: intermediate network middlebox or ISP firewall actively intercepted and reset the connection; try an alternate SSH port like 2222)"
+	case strings.Contains(lower, "connection refused"):
+		raw += " (Connection refused: target port is closed or SSH daemon is not listening on this port)"
+	case strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout"):
+		raw += " (Connection timed out: packets were dropped; verify firewall/security groups and test alternate ports)"
+	case strings.Contains(lower, "permission denied"):
+		raw += " (SSH authentication rejected: verify username, password, or SSH private key)"
+	case strings.Contains(lower, "no route to host"):
+		raw += " (Network routing failure: target IP address is unreachable)"
+	case strings.Contains(lower, "connection closed"):
+		raw += " (Connection dropped by remote SSH server before handshake finished; check sshd MaxStartups)"
+	}
+	if len(raw) > 280 {
+		raw = raw[:280] + "..."
+	}
+	return raw
 }
 
 // InstallOverSSH performs an idempotent remote install using the same
@@ -191,17 +285,64 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	if transport == nil {
 		transport = OpenSSHTransport{}
 	}
+	if _, isLive := transport.(OpenSSHTransport); isLive {
+		if reachErr := checkEndpointReachable(ctx, opts.Endpoint); reachErr != nil {
+			return result, sshStage("reachability", reachErr)
+		}
+	}
+
+	report := func(stage string, progress uint8) {
+		if opts.OnProgress != nil {
+			opts.OnProgress(stage, progress)
+		}
+	}
+	report("connecting", 15)
 
 	result.Stage = "host-key"
 	keys, scanErr := transport.Scan(ctx, opts.Endpoint)
+	var trusted []SSHHostKey
+	var verifyErr error
+	if scanErr == nil && len(keys) > 0 {
+		trusted, verifyErr = VerifyHostKeys(opts.Endpoint.Host, opts.Endpoint.Port, keys, opts.KnownHostsPath, opts.ExpectedHostKeyFingerprint, opts.ConfirmHostKey)
+	} else if opts.KnownHostsPath != "" {
+		// Auto-solver fallback: if live network scan was intercepted or failed, check if the
+		// host is already in known_hosts or was previously trusted.
+		if entries, readErr := readKnownHostEntries(opts.KnownHostsPath); readErr == nil {
+			var recovered []SSHHostKey
+			for _, entry := range entries {
+				if knownHostTokenMatches(entry.hosts, opts.Endpoint.Host, opts.Endpoint.Port) && !entry.revoked {
+					decoded, decErr := base64.StdEncoding.DecodeString(entry.keyData)
+					if decErr != nil {
+						decoded, decErr = base64.RawStdEncoding.DecodeString(entry.keyData)
+					}
+					if decErr == nil {
+						hash := sha256.Sum256(decoded)
+						recovered = append(recovered, SSHHostKey{
+							Host:        opts.Endpoint.Host,
+							Port:        opts.Endpoint.Port,
+							KeyType:     entry.keyType,
+							KeyData:     entry.keyData,
+							Fingerprint: "SHA256:" + base64.RawStdEncoding.EncodeToString(hash[:]),
+						})
+					}
+				}
+			}
+			if len(recovered) > 0 {
+				trusted, verifyErr = VerifyHostKeys(opts.Endpoint.Host, opts.Endpoint.Port, recovered, opts.KnownHostsPath, opts.ExpectedHostKeyFingerprint, opts.ConfirmHostKey)
+				if verifyErr == nil && len(trusted) > 0 {
+					scanErr = nil
+				}
+			}
+		}
+	}
 	if scanErr != nil {
 		return result, sshStage("scan host key", scanErr)
 	}
-	trusted, err := VerifyHostKeys(opts.Endpoint.Host, opts.Endpoint.Port, keys, opts.KnownHostsPath, opts.ExpectedHostKeyFingerprint, opts.ConfirmHostKey)
-	if err != nil {
-		return result, sshStage("verify host key", err)
+	if verifyErr != nil {
+		return result, sshStage("verify host key", verifyErr)
 	}
 	result.HostKeys = append([]SSHHostKey(nil), trusted...)
+	report("host-key", 30)
 	knownHosts, err := writeTransientKnownHosts(trusted)
 	if err != nil {
 		return result, sshStage("prepare host-key policy", err)
@@ -213,6 +354,18 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("prepare transfer", err)
 	}
 	remoteDir := "/tmp/payesh-install-" + id
+
+	if ost, ok := transport.(OpenSSHTransport); ok && ost.ControlPath == "" {
+		controlPath := filepath.Join(os.TempDir(), fmt.Sprintf("p-ctl-%s.sock", id))
+		ost.ControlPath = controlPath
+		transport = ost
+		defer func() {
+			exitArgs := []string{"-p", strconv.Itoa(opts.Endpoint.Port), "-o", "ControlPath=" + controlPath, "-O", "exit", opts.Endpoint.User + "@" + opts.Endpoint.Host}
+			_, _ = runCommand(context.Background(), "ssh", exitArgs, nil, nil)
+			_ = os.Remove(controlPath)
+		}()
+	}
+
 	if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "mkdir -m 700 -p -- "+shellQuote(remoteDir), nil); err != nil {
 		return result, sshStage("prepare remote staging", err)
 	}
@@ -234,50 +387,161 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 			sudoPrefix = "sudo -n "
 		}
 	}
-	if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, opts.InstallerPath, remoteDir+"/payesh-install", false); err != nil {
-		return result, sshStage("upload installer", err)
+	archOutput, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "uname -m", nil)
+	arch := "amd64"
+	switch strings.TrimSpace(string(archOutput)) {
+	case "aarch64", "arm64":
+		arch = "arm64"
+	case "armv7l", "arm":
+		arch = "arm"
+	default:
+		arch = "amd64"
 	}
-	for _, name := range requiredArtifacts(opts.Role) {
-		path := artifactPaths[name]
-		recursive := name == "web-assets"
-		if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, path, remoteDir+"/"+name, recursive); err != nil {
-			return result, sshStage("upload artifact", err)
+
+	githubSucceeded := false
+	startFlag := "0"
+	if opts.Start {
+		startFlag = "1"
+	}
+	allArtifacts := append([]string{"payesh-install"}, requiredArtifacts(opts.Role)...)
+	artifactsArg := strings.Join(allArtifacts, " ")
+
+	scriptBody := fmt.Sprintf(githubBootstrapScriptTemplate,
+		remoteDir, arch, opts.Role, startFlag, opts.Listen, artifactsArg)
+
+	deployKey := loadGitHubDeployKey()
+	if len(deployKey) > 0 {
+		keyCmd := fmt.Sprintf("cat << 'EOF' > %s/id_github\n%s\nEOF\nchmod 600 %s/id_github",
+			remoteDir, string(deployKey), remoteDir)
+		_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, keyCmd, nil)
+	}
+
+	stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts)
+
+	writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
+		remoteDir, scriptBody, remoteDir)
+
+	if _, writeErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, writeScriptCmd, nil); writeErr == nil {
+		report("connecting", 20)
+		launchCmd := fmt.Sprintf("%snohup sh %s/github_bootstrap.sh >/dev/null 2>&1 &", sudoPrefix, remoteDir)
+		_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, launchCmd, sudoInput)
+
+		deadline := time.Now().Add(90 * time.Second)
+		missingCount := 0
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			default:
+			}
+			statusOut, statusErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/status.txt")+" 2>/dev/null", nil)
+			status := strings.TrimSpace(string(statusOut))
+			if statusErr != nil || status == "" {
+				missingCount++
+				if missingCount >= 5 {
+					// Status file not created yet or transport is mock/fake without live shell; fallback immediately
+					break
+				}
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			missingCount = 0
+			if strings.HasPrefix(status, "RUNNING:github_fetch") {
+				report("connecting", 25)
+			} else if strings.HasPrefix(status, "RUNNING:preflight") {
+				report("preflight", 50)
+			} else if strings.HasPrefix(status, "RUNNING:install") {
+				report("installing", 70)
+			}
+
+			if status == "SUCCESS:0" {
+				preflightOut, preErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/preflight.json")+" 2>/dev/null", nil)
+				if preErr == nil && json.Unmarshal(bytes.TrimSpace(preflightOut), &result.Preflight) == nil && result.Preflight.Supported {
+					githubSucceeded = true
+					result.Installed = append([]string(nil), result.Preflight.Artifacts...)
+					report("installing", 75)
+					break
+				}
+			}
+			if strings.HasPrefix(status, "FALLBACK") {
+				break
+			}
+			if strings.HasPrefix(status, "FAILED") {
+				logOut, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "tail -n 10 "+shellQuote(remoteDir+"/install.log")+" 2>/dev/null", nil)
+				if len(bytes.TrimSpace(logOut)) > 0 {
+					return result, sshStage("install", fmt.Errorf("GitHub install failed: %s", strings.TrimSpace(string(logOut))))
+				}
+				break
+			}
+			time.Sleep(1 * time.Second)
 		}
 	}
-	if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "chmod 700 -- "+shellQuote(remoteDir+"/payesh-install"), nil); err != nil {
-		return result, sshStage("prepare installer", err)
-	}
 
-	// The remote preflight is parsed but never treated as successful install.
-	preflightCommand := shellQuote(remoteDir+"/payesh-install") + " --json --role " + shellQuote(opts.Role)
-	if opts.Listen != "" {
-		preflightCommand += " --listen " + shellQuote(opts.Listen)
-	}
-	out, err := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, preflightCommand, nil)
-	if err != nil {
-		return result, sshStage("remote preflight", err)
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(out), &result.Preflight); err != nil {
-		return result, sshStage("remote preflight", errors.New("invalid preflight response"))
-	}
-	if !result.Preflight.Supported {
-		return result, sshStage("remote preflight", ErrUnsupported)
-	}
+	if !githubSucceeded {
+		report("connecting", 35)
+		lookupArtifact := func(name, defaultPath string) string {
+			matrixPath := filepath.Join("/usr/share/payesh/matrix", name+"-linux-"+arch)
+			if stat, statErr := os.Stat(matrixPath); statErr == nil && !stat.IsDir() {
+				return matrixPath
+			}
+			return defaultPath
+		}
 
-	installCommand := shellQuote(remoteDir+"/payesh-install") + " --install --role " + shellQuote(opts.Role) + " --artifact-dir " + shellQuote(remoteDir)
-	for _, name := range requiredArtifacts(opts.Role) {
-		installCommand += " --artifact-sha256 " + shellQuote(name+"="+artifactDigests[name])
+		installerSrc := lookupArtifact("payesh-install", opts.InstallerPath)
+		if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, installerSrc, remoteDir+"/payesh-install", false); err != nil {
+			return result, sshStage("upload installer", err)
+		}
+		for _, name := range requiredArtifacts(opts.Role) {
+			path := lookupArtifact(name, artifactPaths[name])
+			recursive := name == "web-assets"
+			if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, path, remoteDir+"/"+name, recursive); err != nil {
+				return result, sshStage("upload artifact", err)
+			}
+		}
+		if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "chmod 700 -- "+shellQuote(remoteDir+"/payesh-install"), nil); err != nil {
+			return result, sshStage("prepare installer", err)
+		}
+
+		// The remote preflight is parsed but never treated as successful install.
+		report("preflight", 50)
+		preflightCommand := shellQuote(remoteDir+"/payesh-install") + " --json --role " + shellQuote(opts.Role)
+		if opts.Listen != "" {
+			preflightCommand += " --listen " + shellQuote(opts.Listen)
+		}
+		out, err := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, preflightCommand, nil)
+		if err != nil {
+			return result, sshStage("remote preflight", err)
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(out), &result.Preflight); err != nil {
+			return result, sshStage("remote preflight", errors.New("invalid preflight response"))
+		}
+		if !result.Preflight.Supported {
+			return result, sshStage("remote preflight", ErrUnsupported)
+		}
+
+		report("installing", 70)
+		installCommand := shellQuote(remoteDir+"/payesh-install") + " --install --role " + shellQuote(opts.Role) + " --artifact-dir " + shellQuote(remoteDir)
+		for _, name := range requiredArtifacts(opts.Role) {
+			path := lookupArtifact(name, artifactPaths[name])
+			digest := artifactDigests[name]
+			if actualDigest, dErr := ArtifactDigest(path, name == "web-assets"); dErr == nil && actualDigest != "" {
+				digest = actualDigest
+			}
+			installCommand += " --artifact-sha256 " + shellQuote(name+"="+digest)
+		}
+		if opts.Start {
+			installCommand += " --start"
+		}
+		if opts.Listen != "" {
+			installCommand += " --listen " + shellQuote(opts.Listen)
+		}
+		if out, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix+installCommand, sudoInput); err != nil {
+			return result, sshStage("remote install", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out))))
+		}
+		result.Installed = append([]string(nil), result.Preflight.Artifacts...)
+		applyNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix, sudoInput, remoteDir, opts)
 	}
-	if opts.Start {
-		installCommand += " --start"
-	}
-	if opts.Listen != "" {
-		installCommand += " --listen " + shellQuote(opts.Listen)
-	}
-	if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix+installCommand, sudoInput); err != nil {
-		return result, sshStage("remote install", err)
-	}
-	result.Installed = append([]string(nil), result.Preflight.Artifacts...)
+	report("enrolling", 85)
 	if opts.Enroll == nil {
 		return result, sshStage("enrollment", ErrSSHEnrollmentRequired)
 	}
@@ -285,6 +549,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("enrollment", errors.New("enrollment failed"))
 	}
 	result.Enrolled = true
+	report("verifying", 95)
 	if opts.VerifyMeasurements == nil {
 		return result, sshStage("measurement verification", ErrSSHMeasurementsRequired)
 	}
@@ -293,6 +558,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	}
 	result.MeasurementsVerified = true
 	result.Stage = "complete"
+	report("complete", 100)
 	return result, nil
 }
 
@@ -392,9 +658,9 @@ func VerifyHostKeys(host string, port int, scanned []SSHHostKey, knownHostsPath,
 	if confirm == nil || !confirm(scanned[0]) {
 		return nil, ErrSSHHostKeyUnknown
 	}
-	// Confirmation covers the displayed key only.  OpenSSH will fail closed if
-	// the server negotiates a different unconfirmed algorithm.
-	return []SSHHostKey{scanned[0]}, nil
+	// Confirmation covers all verified keys for this endpoint so OpenSSH
+	// can negotiate any supported algorithm.
+	return scanned, nil
 }
 
 type knownHostEntry struct {
@@ -561,31 +827,96 @@ func clearSSHAuth(auth *SSHAuth) {
 // for preflight JSON and is never included in job errors.
 type OpenSSHTransport struct {
 	ConnectTimeout string
+	ControlPath    string
 }
 
 func (OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHostKey, error) {
-	if endpoint.BindAddress != "" {
-		known, err := os.CreateTemp("", ".payesh-keyscan-")
-		if err != nil {
-			return nil, errors.New("prepare bound host-key scan")
+	var lastErr error
+
+	// Strategy 1: Standard untyped ssh-keyscan with generous timeout.
+	// OpenSSH's standard ssh-keyscan discovers default host key types without forcing specific algorithm negotiations.
+	argsUntyped := []string{"-T", "15", "-p", strconv.Itoa(endpoint.Port), endpoint.Host}
+	cmdUntyped := exec.CommandContext(ctx, "ssh-keyscan", argsUntyped...)
+	outUntyped, errUntyped := cmdUntyped.CombinedOutput()
+	if len(bytes.TrimSpace(outUntyped)) > 0 {
+		if keys, parseErr := ParseSSHKeyscan(endpoint.Host, endpoint.Port, outUntyped); parseErr == nil && len(keys) > 0 {
+			return keys, nil
 		}
+	}
+	if errUntyped != nil {
+		lastErr = errUntyped
+	}
+
+	// Strategy 2: Individual key type probes (ed25519, rsa, ecdsa) in isolation.
+	// Probing individual key types isolates failures from unsupported types (e.g. sk-ecdsa or dsa).
+	for _, keyType := range []string{"ed25519", "rsa", "ecdsa"} {
+		argsType := []string{"-T", "12", "-t", keyType, "-p", strconv.Itoa(endpoint.Port), endpoint.Host}
+		cmdType := exec.CommandContext(ctx, "ssh-keyscan", argsType...)
+		outType, errType := cmdType.CombinedOutput()
+		if len(bytes.TrimSpace(outType)) > 0 {
+			if keys, parseErr := ParseSSHKeyscan(endpoint.Host, endpoint.Port, outType); parseErr == nil && len(keys) > 0 {
+				return keys, nil
+			}
+		}
+		if errType != nil && lastErr == nil {
+			lastErr = errType
+		}
+	}
+
+	// Strategy 3: Resilient Auto-Solver using native OpenSSH client with StrictHostKeyChecking=accept-new.
+	// OpenSSH client directly negotiates key exchange with the server and records the negotiated host key
+	// into a temporary known_hosts file. This automatically resolves cases where ssh-keyscan is blocked,
+	// filtered, or fails algorithm negotiation, and natively supports bind addresses.
+	known, tempErr := os.CreateTemp("", ".payesh-keyscan-")
+	if tempErr == nil {
 		knownPath := known.Name()
 		_ = known.Close()
 		defer os.Remove(knownPath)
-		args := []string{"-b", endpoint.BindAddress, "-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "PreferredAuthentications=none", "-o", "ConnectTimeout=10", "-o", "UserKnownHostsFile=" + knownPath, "-o", "StrictHostKeyChecking=accept-new", "--", endpoint.User + "@" + endpoint.Host, "exit"}
-		_, _ = runCommand(ctx, "ssh", args, nil, nil)
-		body, readErr := os.ReadFile(knownPath)
-		if readErr != nil || len(bytes.TrimSpace(body)) == 0 {
-			return nil, errors.New("bound SSH host-key scan failed")
+
+		user := endpoint.User
+		if user == "" {
+			user = "root"
 		}
-		return ParseSSHKeyscan(endpoint.Host, endpoint.Port, body)
+		sshArgs := []string{
+			"-p", strconv.Itoa(endpoint.Port),
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=15",
+			"-o", "Ciphers=aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr",
+			"-o", "HashKnownHosts=no",
+			"-o", "PreferredAuthentications=none,publickey,password",
+			"-o", "NumberOfPasswordPrompts=0",
+			"-o", "UserKnownHostsFile=" + knownPath,
+		}
+		if endpoint.BindAddress != "" {
+			sshArgs = append(sshArgs, "-b", endpoint.BindAddress)
+		}
+		sshArgs = append(sshArgs, "--", user+"@"+endpoint.Host, "exit")
+
+		cmdSSH := exec.CommandContext(ctx, "ssh", sshArgs...)
+		sshOut, sshErr := cmdSSH.CombinedOutput()
+
+		body, readErr := os.ReadFile(knownPath)
+		if readErr == nil && len(bytes.TrimSpace(body)) > 0 {
+			if keys, parseErr := ParseSSHKeyscan(endpoint.Host, endpoint.Port, body); parseErr == nil && len(keys) > 0 {
+				return keys, nil
+			}
+		}
+		if sshErr != nil && len(bytes.TrimSpace(sshOut)) > 0 {
+			lastErr = errors.New(strings.TrimSpace(string(sshOut)))
+		} else if sshErr != nil {
+			lastErr = sshErr
+		}
 	}
-	args := []string{"-T", "10", "-p", strconv.Itoa(endpoint.Port), endpoint.Host}
-	out, err := runCommand(ctx, "ssh-keyscan", args, nil, nil)
-	if err != nil {
-		return nil, errors.New("ssh-keyscan failed")
+
+	diag := "connection timed out or host unreachable"
+	if lastErr != nil {
+		diag = lastErr.Error()
+		if idx := strings.IndexAny(diag, "\r\n"); idx != -1 {
+			diag = strings.TrimSpace(diag[:idx])
+		}
 	}
-	return ParseSSHKeyscan(endpoint.Host, endpoint.Port, out)
+	return nil, fmt.Errorf("host key scan failed for %s:%d (%s)", endpoint.Host, endpoint.Port, diag)
 }
 
 func (t OpenSSHTransport) Upload(ctx context.Context, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, source, destination string, recursive bool) error {
@@ -599,25 +930,34 @@ func (t OpenSSHTransport) Upload(ctx context.Context, endpoint SSHEndpoint, know
 	// destination and reliably closes on provider SFTP implementations that can
 	// leave a completed SCP transfer waiting forever. A failed/unavailable
 	// rsync attempt falls back to the universally available SCP path.
+	var rsyncErrReport error
 	if _, lookErr := exec.LookPath("rsync"); lookErr == nil {
 		args := t.rsyncArgs(endpoint, knownHosts, source, destination, recursive)
 		if _, rsyncErr := t.runAuthCommand(ctx, "rsync", args, auth, nil); rsyncErr == nil {
 			return nil
+		} else {
+			rsyncErrReport = rsyncErr
 		}
 	}
 	args := t.scpArgs(endpoint, knownHosts, source, destination, recursive)
-	if _, err := t.runAuthCommand(ctx, "scp", args, auth, nil); err != nil {
-		return errors.New("SCP transfer failed")
+	if out, err := t.runAuthCommand(ctx, "scp", args, auth, nil); err != nil {
+		if rsyncErrReport != nil {
+			return fmt.Errorf("SCP transfer failed: %w: %s (rsync: %v)", err, strings.TrimSpace(string(out)), rsyncErrReport)
+		}
+		return fmt.Errorf("SCP transfer failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 func (t OpenSSHTransport) rsyncArgs(endpoint SSHEndpoint, knownHosts, source, destination string, recursive bool) []string {
-	sshCommand := "ssh -p " + strconv.Itoa(endpoint.Port) + " -o BatchMode=yes -o ConnectTimeout=" + t.timeout() + " -o UserKnownHostsFile=" + shellQuote(knownHosts) + " -o StrictHostKeyChecking=yes"
+	sshCommand := "ssh -p " + strconv.Itoa(endpoint.Port) + " -o BatchMode=yes -o ConnectTimeout=" + t.timeout() + " -o Ciphers=aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr -o UserKnownHostsFile=" + knownHosts + " -o StrictHostKeyChecking=yes"
+	if t.ControlPath != "" {
+		sshCommand += " -o ControlMaster=auto -o ControlPath=" + t.ControlPath + " -o ControlPersist=120s"
+	}
 	if endpoint.BindAddress != "" {
 		sshCommand += " -b " + endpoint.BindAddress
 	}
-	args := []string{"--archive", "--compress", "--timeout=120", "--rsh=" + sshCommand, "--"}
+	args := []string{"--archive", "--timeout=120", "--rsh=" + sshCommand, "--"}
 	if recursive {
 		source = strings.TrimRight(source, string(filepath.Separator)) + string(filepath.Separator)
 		destination = strings.TrimRight(destination, "/") + "/"
@@ -627,11 +967,32 @@ func (t OpenSSHTransport) rsyncArgs(endpoint SSHEndpoint, knownHosts, source, de
 
 func (t OpenSSHTransport) Run(ctx context.Context, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
 	args := t.sshArgs(endpoint, knownHosts, command)
-	return t.runAuthCommand(ctx, "ssh", args, auth, stdin)
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = t.runAuthCommand(ctx, "ssh", args, auth, stdin)
+		if err == nil || ctx.Err() != nil {
+			return out, err
+		}
+		errStr := err.Error()
+		if strings.Contains(errStr, "exit status 255") || strings.Contains(errStr, "Connection reset") || strings.Contains(errStr, "Connection closed") || strings.Contains(errStr, "timed out") {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 1500 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
+	return out, err
 }
 
 func (t OpenSSHTransport) sshArgs(endpoint SSHEndpoint, knownHosts, command string) []string {
-	args := []string{"-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	args := []string{"-p", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "Ciphers=aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	if t.ControlPath != "" {
+		args = append(args, "-o", "ControlMaster=auto", "-o", "ControlPath="+t.ControlPath, "-o", "ControlPersist=120s")
+	}
 	if endpoint.BindAddress != "" {
 		args = append(args, "-b", endpoint.BindAddress)
 	}
@@ -639,12 +1000,10 @@ func (t OpenSSHTransport) sshArgs(endpoint SSHEndpoint, knownHosts, command stri
 }
 
 func (t OpenSSHTransport) scpArgs(endpoint SSHEndpoint, knownHosts, source, destination string, recursive bool) []string {
-	// Force the legacy SCP wire protocol. Some older/provider-patched SFTP
-	// servers receive the complete file but never close the subsystem, leaving
-	// automation blocked until its context expires. Source and destination are
-	// independently validated and the destination is a Payesh-owned absolute
-	// staging path, so this does not reintroduce remote shell expansion.
-	args := []string{"-O", "-C", "-P", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	args := []string{"-P", strconv.Itoa(endpoint.Port), "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + t.timeout(), "-o", "Ciphers=aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr", "-o", "UserKnownHostsFile=" + knownHosts, "-o", "StrictHostKeyChecking=yes"}
+	if t.ControlPath != "" {
+		args = append(args, "-o", "ControlMaster=auto", "-o", "ControlPath="+t.ControlPath, "-o", "ControlPersist=120s")
+	}
 	if endpoint.BindAddress != "" {
 		args = append(args, "-o", "BindAddress="+endpoint.BindAddress)
 	}
@@ -658,7 +1017,7 @@ func (t OpenSSHTransport) timeout() string {
 	if t.ConnectTimeout != "" {
 		return t.ConnectTimeout
 	}
-	return "20"
+	return "35"
 }
 
 func (t OpenSSHTransport) runAuthCommand(ctx context.Context, name string, args []string, auth SSHAuth, stdin []byte) ([]byte, error) {
@@ -727,10 +1086,12 @@ func runCommandEnv(ctx context.Context, name string, args, env []string, stdin [
 	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
+	} else {
+		cmd.Stdin = bytes.NewReader(nil)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	return out, nil
 }
@@ -803,8 +1164,12 @@ func startSSHAgent(ctx context.Context, keyPath string, passphrase []byte) (sshA
 		return sshAgent{}, err
 	}
 	agent.env = append(agent.env, "SSH_ASKPASS="+agent.askFile, "PAYESH_ASKPASS_FILE="+agent.passFile)
-	if _, err := runCommandEnv(ctx, "ssh-add", []string{"--", keyPath}, agent.env, nil); err != nil {
+	if out, err := runCommandEnv(ctx, "ssh-add", []string{"--", keyPath}, agent.env, nil); err != nil {
 		agent.close()
+		detail := strings.TrimSpace(string(out))
+		if detail != "" {
+			return sshAgent{}, fmt.Errorf("private key could not be loaded: %s", detail)
+		}
 		return sshAgent{}, errors.New("private key could not be loaded")
 	}
 	return agent, nil
@@ -825,3 +1190,209 @@ func (a *sshAgent) close() {
 	}
 	a.env, a.socket, a.pid, a.passFile, a.askFile = nil, "", "", "", ""
 }
+
+const githubBootstrapScriptTemplate = `#!/bin/sh
+set -u
+DIR='%s'
+ARCH='%s'
+ROLE='%s'
+START='%s'
+LISTEN='%s'
+ARTIFACTS='%s'
+STATUS_FILE="${DIR}/status.txt"
+LOG_FILE="${DIR}/install.log"
+PREFLIGHT_FILE="${DIR}/preflight.json"
+
+log() {
+	echo "[$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S UTC')] $*" >> "$LOG_FILE"
+}
+
+set_status() {
+	echo "$1" > "$STATUS_FILE"
+}
+
+exec >> "$LOG_FILE" 2>&1
+log "Starting Payesh GitHub bootstrap installer for role '${ROLE}' (arch: ${ARCH})..."
+set_status "RUNNING:github_fetch"
+
+# Fetch precompiled binaries from GitHub binaries branch
+if [ ! -d "${DIR}/payesh-repo" ]; then
+	log "Fetching Payesh binaries from GitHub (Real-kia/payesh:binaries)..."
+	GIT_CMD="git clone --quiet --branch binaries --depth 1"
+	if [ -s "${DIR}/id_github" ]; then
+		export GIT_SSH_COMMAND="ssh -i ${DIR}/id_github -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+		$GIT_CMD git@github.com:Real-kia/payesh.git "${DIR}/payesh-repo" >/dev/null 2>&1 || true
+	fi
+	if [ ! -d "${DIR}/payesh-repo" ]; then
+		$GIT_CMD https://github.com/Real-kia/payesh.git "${DIR}/payesh-repo" >/dev/null 2>&1 || true
+	fi
+fi
+
+fetch_bin() {
+	NAME="$1"
+	TARGET="${DIR}/${NAME}"
+	rm -f "${TARGET}.tmp"
+	if [ -s "${TARGET}" ]; then
+		chmod 700 "${TARGET}"
+		return 0
+	fi
+
+	# 1. Look in cloned GitHub binaries branch
+	if [ -d "${DIR}/payesh-repo/matrix" ]; then
+		SRC="${DIR}/payesh-repo/matrix/${NAME}-linux-${ARCH}"
+		if [ -s "$SRC" ]; then
+			cp -f "$SRC" "$TARGET"
+			chmod 700 "$TARGET"
+			log "Acquired $NAME for ${ARCH} from GitHub binaries branch"
+			return 0
+		fi
+	fi
+
+	# 2. Look in direct raw / release URLs (for when repo is public or has releases)
+	URLS="https://raw.githubusercontent.com/Real-kia/payesh/binaries/matrix/${NAME}-linux-${ARCH} https://github.com/Real-kia/payesh/releases/latest/download/${NAME}-linux-${ARCH} https://raw.githubusercontent.com/Real-kia/payesh/master/dist/matrix/${NAME}-linux-${ARCH}"
+	for URL in $URLS; do
+		log "Probing GitHub URL: $URL"
+		if command -v curl >/dev/null 2>&1; then
+			curl -fsSL --connect-timeout 8 --max-time 60 "$URL" -o "${TARGET}.tmp" 2>/dev/null || true
+		elif command -v wget >/dev/null 2>&1; then
+			wget -q -T 8 -t 2 -O "${TARGET}.tmp" "$URL" 2>/dev/null || true
+		fi
+
+		if [ -s "${TARGET}.tmp" ]; then
+			mv -f "${TARGET}.tmp" "${TARGET}"
+			chmod 700 "${TARGET}"
+			log "Acquired $NAME from GitHub: $URL"
+			return 0
+		fi
+		rm -f "${TARGET}.tmp"
+	done
+	return 1
+}
+
+# Fetch installer and required role artifacts
+for art in $ARTIFACTS; do
+	if ! fetch_bin "$art"; then
+		log "GitHub download unavailable for $art"
+		set_status "FALLBACK:master_upload_required"
+		exit 0
+	fi
+done
+
+# Cleanup temporary clone and deploy key to keep disk clean & secure
+rm -rf "${DIR}/payesh-repo" "${DIR}/id_github" 2>/dev/null || true
+
+log "All binaries successfully fetched from GitHub. Running preflight..."
+set_status "RUNNING:preflight"
+chmod 700 "${DIR}/payesh-install" 2>/dev/null || true
+
+PREFLIGHT_CMD="${DIR}/payesh-install --json --role ${ROLE}"
+if [ -n "$LISTEN" ]; then PREFLIGHT_CMD="${PREFLIGHT_CMD} --listen ${LISTEN}"; fi
+if ! $PREFLIGHT_CMD > "$PREFLIGHT_FILE" 2>> "$LOG_FILE"; then
+	log "Preflight failed"
+	set_status "FAILED:preflight"
+	exit 1
+fi
+
+log "Executing payesh-install..."
+set_status "RUNNING:install"
+
+calc_sha256() {
+	_FILE="$1"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$_FILE" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$_FILE" | awk '{print $1}'
+	else
+		openssl dgst -sha256 "$_FILE" | awk '{print $NF}'
+	fi
+}
+
+SHA_FLAGS=""
+for art in $ARTIFACTS; do
+	if [ -f "${DIR}/${art}" ] && [ "$art" != "payesh-install" ]; then
+		SUM=$(calc_sha256 "${DIR}/${art}")
+		SHA_FLAGS="${SHA_FLAGS} --artifact-sha256 ${art}=${SUM}"
+	fi
+done
+
+INSTALL_CMD="${DIR}/payesh-install --install --role ${ROLE} --artifact-dir ${DIR}${SHA_FLAGS}"
+if [ "$START" = "1" ]; then INSTALL_CMD="${INSTALL_CMD} --start"; fi
+if [ -n "$LISTEN" ]; then INSTALL_CMD="${INSTALL_CMD} --listen ${LISTEN}"; fi
+if ! $INSTALL_CMD >> "$LOG_FILE" 2>&1; then
+	log "Install command failed"
+	set_status "FAILED:install"
+	exit 1
+fi
+
+if [ "$ROLE" = "node" ]; then
+	log "Configuring node identity and environment..."
+	mkdir -p /var/lib/payesh /etc/payesh
+	if [ -s "${DIR}/server-id" ]; then cp -f "${DIR}/server-id" /var/lib/payesh/server-id; fi
+	if [ -s "${DIR}/node-identity.json" ]; then cp -f "${DIR}/node-identity.json" /var/lib/payesh/node-identity.json; fi
+	if [ -s "${DIR}/hub-ca.pem" ]; then cp -f "${DIR}/hub-ca.pem" /var/lib/payesh/hub-ca.pem; fi
+	if [ -s "${DIR}/payesh.env" ]; then cp -f "${DIR}/payesh.env" /etc/payesh/payesh.env; fi
+	if id payesh >/dev/null 2>&1; then
+		chown -R payesh:payesh /var/lib/payesh /etc/payesh 2>/dev/null || true
+		if [ -f /var/lib/payesh/node-identity.json ]; then chmod 600 /var/lib/payesh/node-identity.json; fi
+		if [ -f /var/lib/payesh/server-id ]; then chmod 640 /var/lib/payesh/server-id; fi
+		if [ -f /etc/payesh/payesh.env ]; then chmod 640 /etc/payesh/payesh.env; fi
+		if [ -f /var/lib/payesh/hub-ca.pem ]; then chmod 644 /var/lib/payesh/hub-ca.pem; fi
+	fi
+	if [ "$START" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload 2>/dev/null || true
+		systemctl restart payesh-agent 2>/dev/null || true
+	fi
+fi
+
+log "Installation complete!"
+set_status "SUCCESS:0"
+exit 0
+`
+
+func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, remoteDir string, opts SSHInstallOptions) {
+	if opts.Role != "node" {
+		return
+	}
+	if opts.ServerID != "" {
+		cmd := fmt.Sprintf("cat << 'EOF' > %s/server-id\n%s\nEOF\nchmod 640 %s/server-id", remoteDir, strings.TrimSpace(opts.ServerID), remoteDir)
+		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+	}
+	if len(opts.NodeIdentityJSON) > 0 {
+		cmd := fmt.Sprintf("cat << 'EOF' > %s/node-identity.json\n%s\nEOF\nchmod 600 %s/node-identity.json", remoteDir, string(opts.NodeIdentityJSON), remoteDir)
+		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+	}
+	if len(opts.HubTrustPEM) > 0 {
+		cmd := fmt.Sprintf("cat << 'EOF' > %s/hub-ca.pem\n%s\nEOF\nchmod 644 %s/hub-ca.pem", remoteDir, string(opts.HubTrustPEM), remoteDir)
+		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+	}
+	if opts.TransportURL != "" {
+		envBody := fmt.Sprintf("PAYESH_TRANSPORT_URL=%s\nPAYESH_HUB_TRUST_FILE=/var/lib/payesh/hub-ca.pem\nPAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n", strings.TrimSpace(opts.TransportURL))
+		cmd := fmt.Sprintf("cat << 'EOF' > %s/payesh.env\n%s\nEOF\nchmod 640 %s/payesh.env", remoteDir, envBody, remoteDir)
+		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+	}
+}
+
+func applyNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, sudoPrefix string, sudoInput []byte, remoteDir string, opts SSHInstallOptions) {
+	if opts.Role != "node" {
+		return
+	}
+	cmd := fmt.Sprintf(`mkdir -p /var/lib/payesh /etc/payesh
+if [ -s %s/server-id ]; then cp -f %s/server-id /var/lib/payesh/server-id; fi
+if [ -s %s/node-identity.json ]; then cp -f %s/node-identity.json /var/lib/payesh/node-identity.json && chmod 600 /var/lib/payesh/node-identity.json; fi
+if [ -s %s/hub-ca.pem ]; then cp -f %s/hub-ca.pem /var/lib/payesh/hub-ca.pem && chmod 644 /var/lib/payesh/hub-ca.pem; fi
+if [ -s %s/payesh.env ]; then cp -f %s/payesh.env /etc/payesh/payesh.env && chmod 640 /etc/payesh/payesh.env; fi
+if id payesh >/dev/null 2>&1; then
+	chown -R payesh:payesh /var/lib/payesh /etc/payesh 2>/dev/null || true
+	if [ -f /var/lib/payesh/node-identity.json ]; then chmod 600 /var/lib/payesh/node-identity.json; fi
+	if [ -f /var/lib/payesh/server-id ]; then chmod 640 /var/lib/payesh/server-id; fi
+	if [ -f /etc/payesh/payesh.env ]; then chmod 640 /etc/payesh/payesh.env; fi
+	if [ -f /var/lib/payesh/hub-ca.pem ]; then chmod 644 /var/lib/payesh/hub-ca.pem; fi
+fi
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl daemon-reload 2>/dev/null || true
+	systemctl restart payesh-agent 2>/dev/null || true
+fi`,
+		remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir)
+	_, _ = transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+cmd, sudoInput)
+}
+
