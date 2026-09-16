@@ -1395,4 +1395,3 @@ fi`,
 		remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir)
 	_, _ = transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+cmd, sudoInput)
 }
-

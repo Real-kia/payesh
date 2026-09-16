@@ -1,7 +1,4 @@
-<script lang="ts">
-  import Icon from './Icon.svelte';
-  import { onMount, onDestroy } from 'svelte';
-
+<script context="module" lang="ts">
   export type InstallStage = 'connecting' | 'connected' | 'preflight' | 'installing' | 'enrolling' | 'verifying' | 'succeeded' | 'failed' | 'cancelled';
   export type InstallLog = { time: string; text: string; level: 'info' | 'success' | 'warn' | 'error' };
 
@@ -17,6 +14,11 @@
     simulatedProgress: number;
     logs: InstallLog[];
   };
+</script>
+
+<script lang="ts">
+  import Icon from './Icon.svelte';
+  import { onMount, onDestroy } from 'svelte';
 
   export let install: InstallProgressData;
   export let compact: boolean = false;

@@ -265,16 +265,16 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 		}
 	}
 	return install.SSHInstallOptions{
-		ServerID:                   string(serverID),
-		TransportURL:               s.TransportURL,
-		NodeIdentityJSON:           nodeIdentityJSON,
-		HubTrustPEM:                s.HubTrustPEM,
-		Endpoint:                   install.SSHEndpoint{Host: request.Host, Port: request.Port, User: request.User},
-		KnownHostsPath:             s.KnownHostsPath, ExpectedHostKeyFingerprint: request.ExpectedHostKeyFingerprint,
-		ConfirmHostKey:             confirm,
-		Auth:                       install.SSHAuth{Password: []byte(request.Password), PrivateKey: []byte(request.PrivateKey), PrivateKeyPassphrase: []byte(request.PrivateKeyPassphrase), SudoPassword: []byte(request.SudoPassword)},
-		InstallerPath:              s.InstallerPath, Artifacts: cloneStrings(s.Artifacts), Role: request.Role, Listen: request.Listen, Start: request.Start,
-		VerifyArtifact:             s.VerifyArtifact, Transport: s.Transport,
+		ServerID:         string(serverID),
+		TransportURL:     s.TransportURL,
+		NodeIdentityJSON: nodeIdentityJSON,
+		HubTrustPEM:      s.HubTrustPEM,
+		Endpoint:         install.SSHEndpoint{Host: request.Host, Port: request.Port, User: request.User},
+		KnownHostsPath:   s.KnownHostsPath, ExpectedHostKeyFingerprint: request.ExpectedHostKeyFingerprint,
+		ConfirmHostKey: confirm,
+		Auth:           install.SSHAuth{Password: []byte(request.Password), PrivateKey: []byte(request.PrivateKey), PrivateKeyPassphrase: []byte(request.PrivateKeyPassphrase), SudoPassword: []byte(request.SudoPassword)},
+		InstallerPath:  s.InstallerPath, Artifacts: cloneStrings(s.Artifacts), Role: request.Role, Listen: request.Listen, Start: request.Start,
+		VerifyArtifact: s.VerifyArtifact, Transport: s.Transport,
 		Enroll: func(ctx context.Context) error {
 			if s.Enroll != nil {
 				return s.Enroll(ctx, contracts.ServerID(request.ServerID))

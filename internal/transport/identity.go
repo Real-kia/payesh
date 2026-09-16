@@ -668,4 +668,3 @@ func (ca *CertificateAuthority) IssueNodeIdentity(serverID contracts.ServerID, n
 	}
 	return ca.ConsumeEnrollmentToken(enrollment.Token, now)
 }
-
