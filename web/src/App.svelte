@@ -291,7 +291,7 @@
   function openAddServer() {
     newServerName = '';
     installHost = '';
-    installPort = 22;
+    installPort = '22';
     installUser = 'root';
     installPassword = '';
     installKey = '';
@@ -853,9 +853,9 @@
   }
 
   function displayState(server: ApiServer): DisplayState {
-    if (server.active_installation) {
-      if (server.active_installation.state === 'failed') return 'failed';
-      return 'installing';
+    if (activeInstall && activeInstall.serverId === server.id) {
+      if (activeInstall.currentStage === 'failed') return 'failed';
+      if (activeInstall.currentStage !== 'succeeded') return 'installing';
     }
     if (server.connection_state === 'revoked') return 'disabled';
     if (server.connection_state === 'never-connected') return 'pending';
@@ -1339,7 +1339,7 @@
               if (activeInstall) {
                 newServerName = activeInstall.serverName;
                 installHost = activeInstall.host;
-                installPort = activeInstall.port;
+                installPort = String(activeInstall.port);
                 installUser = activeInstall.user;
               }
               navigate('add-server');

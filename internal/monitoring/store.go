@@ -621,7 +621,15 @@ func OpenStore(ctx context.Context, path string, options StoreOptions) (*Store, 
 	}
 	dsn := path
 	if path == ":memory:" {
-		dsn = fmt.Sprintf("file:payesh-memory-%d?mode=memory&cache=shared", atomic.AddUint64(&memoryStoreID, 1))
+		dsn = fmt.Sprintf("file:payesh-memory-%d?mode=memory&cache=shared&_pragma=busy_timeout(10000)&_txlock=immediate", atomic.AddUint64(&memoryStoreID, 1))
+	} else if strings.HasPrefix(path, "file:") {
+		if strings.Contains(path, "?") {
+			dsn = path + "&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+		} else {
+			dsn = path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+		}
+	} else {
+		dsn = fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate", path)
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

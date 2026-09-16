@@ -362,5 +362,3 @@ func TestInstallOverSSHGithubFallbackUploadsFromMaster(t *testing.T) {
 		t.Fatalf("expected uploads when GitHub fails and fallback engages")
 	}
 }
-
-

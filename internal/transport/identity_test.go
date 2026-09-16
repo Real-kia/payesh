@@ -244,4 +244,3 @@ func TestIssueNodeIdentity(t *testing.T) {
 		t.Fatalf("verify reissued certificate failed: got=%v err=%v", got, err)
 	}
 }
-
