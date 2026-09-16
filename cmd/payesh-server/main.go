@@ -45,6 +45,7 @@ func main() {
 	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
 	nodeTLSCert := flag.String("node-tls-cert", os.Getenv("PAYESH_NODE_TLS_CERT"), "node transport TLS server certificate PEM path")
 	nodeTLSKey := flag.String("node-tls-key", os.Getenv("PAYESH_NODE_TLS_KEY"), "node transport TLS server private key PEM path")
+	transportURL := flag.String("transport-url", os.Getenv("PAYESH_TRANSPORT_URL"), "public transport URL advertised to nodes (or PAYESH_TRANSPORT_URL)")
 	flag.Parse()
 	nodeConfig, nodeConfigErr := newNodeTransportConfig(*nodeListen, *nodeTLSCert, *nodeTLSKey)
 	if nodeConfigErr != nil {
@@ -182,6 +183,13 @@ func main() {
 				return digestErr
 			}
 			installService.Executor = fleet.SSHInstallerFunc(installpkg.InstallOverSSH)
+		}
+		installService.Authority = enrollmentAuthority
+		installService.TransportURL = strings.TrimSpace(*transportURL)
+		if nodeConfig.CertFile != "" {
+			if certPEM, err := os.ReadFile(nodeConfig.CertFile); err == nil {
+				installService.HubTrustPEM = certPEM
+			}
 		}
 		alertService, alertErr := alerts.NewService(store)
 		if alertErr != nil {

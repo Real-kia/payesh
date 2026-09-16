@@ -1740,6 +1740,48 @@ func (s *Store) TouchServer(ctx context.Context, serverID contracts.ServerID, re
 	return nil
 }
 
+// UpdateServerHello updates the server inventory (architecture, platform, capabilities, version)
+// and marks it connected when a node performs its transport handshake.
+func (s *Store) UpdateServerHello(ctx context.Context, serverID contracts.ServerID, hello contracts.Hello, receivedAt time.Time) error {
+	if serverID == "" || receivedAt.IsZero() {
+		return errors.New("server_id and received_at are required")
+	}
+	caps := append([]string(nil), hello.Capabilities...)
+	if len(caps) == 0 {
+		caps = []string{"metrics", "traffic"}
+	}
+	capsJSON, err := json.Marshal(caps)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE servers SET
+		last_heartbeat=?,
+		connection_state='connected',
+		freshness_state='fresh',
+		freshness_reason=NULL,
+		architecture=CASE WHEN ? != '' AND ? != 'unknown' THEN ? ELSE architecture END,
+		platform=CASE WHEN ? != '' AND ? != 'unknown' THEN ? ELSE platform END,
+		version=CASE WHEN ? != '' THEN ? ELSE version END,
+		capabilities_json=?
+		WHERE id=?`,
+		FormatPersistedTime(receivedAt),
+		hello.Architecture, hello.Architecture, hello.Architecture,
+		hello.Platform, hello.Platform, hello.Platform,
+		hello.Version, hello.Version,
+		string(capsJSON),
+		string(serverID),
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // AdvanceServerConfigurationRevision conditionally advances the owner-facing
 // configuration revision. Mutating APIs use this compare-and-swap boundary so
 // a stale client cannot silently overwrite a newer configuration.
@@ -1820,6 +1862,36 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 		return contracts.Server{}, false, err
 	}
 	return server, true, nil
+}
+
+// DeleteServer permanently removes a managed node and its cascade-owned data.
+// The running hub/standalone identity requires its dedicated uninstall flow.
+func (s *Store) DeleteServer(ctx context.Context, serverID contracts.ServerID, expectedRevision uint64) error {
+	if !validStoreServerID(serverID) {
+		return errors.New("server_id must be a bounded URL-safe identifier")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=? AND role='node' AND configuration_revision=?`, string(serverID), strconv.FormatUint(expectedRevision, 10))
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 1 {
+		return nil
+	}
+	server, found, err := s.GetServer(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	if server.Role != "node" {
+		return errors.New("server_role_not_deletable")
+	}
+	return errors.New("configuration_revision_conflict")
 }
 
 type serverCursor struct {
@@ -2354,16 +2426,20 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 		}
 		return orderedTargets[i].start.Before(orderedTargets[j].start)
 	})
+	const maxTargetsPerMaterialize = 100
+	if len(orderedTargets) > maxTargetsPerMaterialize {
+		orderedTargets = orderedTargets[:maxTargetsPerMaterialize]
+	}
 	gaps, gapsTruncated, err := s.queryRollupGaps(ctx, serverID)
 	if err != nil {
 		_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets)
 		return err
 	}
 
-	for _, target := range orderedTargets {
+	for index, target := range orderedTargets {
 		window, truncated, err := s.queryRollupSamples(ctx, serverID, target.start, target.seconds)
 		if err != nil {
-			_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets)
+			_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets[index:])
 			return err
 		}
 		if len(window) == 0 {
@@ -2390,7 +2466,7 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 				batchSize = len(selected)
 			}
 			if err := s.PutRollups(ctx, selected[:batchSize]); err != nil {
-				_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets)
+				_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets[index:])
 				return err
 			}
 			selected = selected[batchSize:]
@@ -3466,6 +3542,9 @@ func (s *Store) PutRollups(ctx context.Context, rollups []Rollup) error {
 		return err
 	}
 	for _, rollup := range rollups {
+		if rollup.ObservedSeconds > float64(rollup.BucketSeconds) {
+			rollup.ObservedSeconds = float64(rollup.BucketSeconds)
+		}
 		if err := rollup.Validate(); err != nil {
 			_ = tx.Rollback()
 			return err
@@ -3716,6 +3795,16 @@ func (s *Store) Prune(ctx context.Context, now time.Time, policy RetentionPolicy
 			}
 			count, _ := result.RowsAffected()
 			*item.value += count
+			if count == 0 {
+				break
+			}
+		}
+		for i := 0; i < 100; i++ {
+			result, err := s.db.ExecContext(ctx, `DELETE FROM rollup_rebuild_queue WHERE rowid IN (SELECT rowid FROM rollup_rebuild_queue WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?)`, map[string]int{"minute": 60, "hour": 3600}[item.name], FormatPersistedTime(now.Add(-item.age)), policy.BatchSize)
+			if err != nil {
+				return stats, err
+			}
+			count, _ := result.RowsAffected()
 			if count == 0 {
 				break
 			}

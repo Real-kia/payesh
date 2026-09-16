@@ -7,8 +7,9 @@ Wants=network-online.target
 Type=simple
 User=payesh
 Group=payesh
-ExecStartPre=/bin/sh -c '/usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null'
-ExecStart=/bin/bash -o pipefail -c '/usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null'
+EnvironmentFile=-/etc/payesh/payesh.env
+ExecStartPre=/bin/sh -c 'if [ -z "$PAYESH_TRANSPORT_URL" ]; then /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null; fi'
+ExecStart=/bin/bash -o pipefail -c 'if [ -n "$PAYESH_TRANSPORT_URL" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'
 Restart=on-failure
 RestartSec=5s
 KillMode=control-group

@@ -1,6 +1,7 @@
 # 11 — Integration, security, performance and release readiness
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: initial local release-readiness checkpoint; acceptance pending.
+Planning baseline: 2026-09-08.
 Risk/assignment guidance: Lead/reviewer; bounded docs tasks can use lower-cost model.
 Master milestone: M7; integrate after every package.
 

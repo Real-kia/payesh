@@ -1,6 +1,13 @@
 # 09 — Bandwidth caps and quota enforcement
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: implementation complete in the working tree. The optional module
+binary, authenticated Unix-socket API integration, tc executor, trusted
+management discovery, durable policy/audit state, 15-second quota worker, and
+independent rollback watchdog are present. An isolated Ubuntu 20.04 kernel
+test now covers tc apply/verify/revert, foreign-root refusal, management-failure
+rollback, and expired watchdog recovery. Measured throughput/overshoot,
+crash/reboot, full service lifecycle, and overhead evidence remains outstanding.
+Planning baseline: 2026-09-08.
 Risk/assignment guidance: Very hard; strongest available reviewer and real Linux tests.
 Master milestone: M5 module.
 

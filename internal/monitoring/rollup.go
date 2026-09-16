@@ -32,7 +32,8 @@ func (r Rollup) Validate() error {
 	if r.BucketSeconds != 60 && r.BucketSeconds != 3600 {
 		return errors.New("rollup bucket must be minute or hour")
 	}
-	if r.SampleCount < 1 || r.SampleCount > 1000000 || r.ObservedSeconds < 0 || r.ObservedSeconds > float64(r.BucketSeconds) || math.IsNaN(r.ObservedSeconds) || math.IsInf(r.ObservedSeconds, 0) {
+	maxDuration := float64(r.BucketSeconds) + 1e-3
+	if r.SampleCount < 1 || r.SampleCount > 1000000 || r.ObservedSeconds < 0 || r.ObservedSeconds > maxDuration || math.IsNaN(r.ObservedSeconds) || math.IsInf(r.ObservedSeconds, 0) {
 		return errors.New("invalid rollup sample count or duration")
 	}
 	if r.Coverage != "complete" && r.Coverage != "gap" && r.Coverage != "uncertain" {
@@ -240,6 +241,9 @@ func BuildRollupsWithGaps(serverID contracts.ServerID, samples []contracts.Metri
 		}
 		if pointsHaveGap(points, gaps) {
 			rollup.Coverage = "uncertain"
+		}
+		if duration > float64(bucketSeconds) {
+			duration = float64(bucketSeconds)
 		}
 		rollup.ObservedSeconds = duration
 		if duration > 0 {

@@ -100,6 +100,29 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteServer
+      summary: Permanently delete a managed node and its stored data
+      security:
+        - SessionCookie: []
+          CSRFToken: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision]
+              properties:
+                expected_revision: { type: string, pattern: '^[0-9]+$' }
+      responses:
+        '204': { description: Server and cascade-owned data deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /servers/{serverId}/metrics:
     parameters:
       - $ref: '#/components/parameters/ServerID'

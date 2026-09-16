@@ -4,6 +4,7 @@ package fleet
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -193,10 +194,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			a.sessions.Middleware(http.HandlerFunc(a.createPendingServer)).ServeHTTP(w, r)
 			return
 		}
-		if r.Method == http.MethodDelete {
-			a.logout(w, r)
-			return
-		}
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
+		a.sessions.Middleware(http.HandlerFunc(a.deleteServer)).ServeHTTP(w, r)
+		return
 	}
 	if a.alerts != nil && (isFleetResourcePath(r.URL.Path, "/api/v1/alerts") || isFleetResourcePath(r.URL.Path, "/api/v1/maintenance-windows") || strings.HasPrefix(r.URL.Path, "/api/v1/incidents/")) {
 		a.alerts.ServeHTTP(w, r)
@@ -246,6 +247,35 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	a.monitoring.ServeHTTP(w, r)
 }
 
+type deleteServerRequest struct {
+	ExpectedRevision uint64 `json:"expected_revision,string"`
+}
+
+func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/servers/"), "/")
+	if strings.Contains(id, "/") || len(id) < 16 || len(id) > 128 {
+		writeFleetError(w, http.StatusNotFound, "not_found", "server not found", false)
+		return
+	}
+	var request deleteServerRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	err := a.store.DeleteServer(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, sql.ErrNoRows):
+		writeFleetError(w, http.StatusNotFound, "not_found", "server not found", false)
+	case err.Error() == "configuration_revision_conflict":
+		writeFleetError(w, http.StatusConflict, "revision_conflict", "server changed; reload before deleting", false)
+	case err.Error() == "server_role_not_deletable":
+		writeFleetError(w, http.StatusConflict, "server_role_not_deletable", "the local hub or standalone server cannot be deleted here", false)
+	default:
+		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not delete server", true)
+	}
+}
+
 type createServerRequest struct {
 	Name         string `json:"name"`
 	Address      string `json:"address"`
@@ -279,7 +309,7 @@ func (a *API) createPendingServer(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusInternalServerError, "internal_error", "could not create server identity", true)
 		return
 	}
-	server := contracts.Server{ID: contracts.ServerID("server-" + hex.EncodeToString(random)), Name: request.Name, Address: request.Address, Role: "node", Platform: request.Platform, Architecture: request.Architecture, Capabilities: []string{}, ConnectionState: "never-connected", FreshnessState: "unknown", FreshnessReason: "awaiting automatic platform detection"}
+	server := contracts.Server{ID: contracts.ServerID("server-" + hex.EncodeToString(random)), Name: request.Name, Address: request.Address, Role: "node", Platform: request.Platform, Architecture: request.Architecture, Capabilities: []string{"metrics", "traffic"}, ConnectionState: "never-connected", FreshnessState: "unknown", FreshnessReason: "awaiting automatic platform detection"}
 	if err := a.store.EnsureServer(r.Context(), server); err != nil {
 		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not create server", true)
 		return

@@ -1,6 +1,10 @@
 # 10 — Updates, recovery and role/history migration
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: implementation checkpoint present for signed verification, bounded
+fetch/staging, activation/rollback, independent recovery, SQLite backup, and
+role/history export/import, schema-aware forward migration orchestration, and a
+durable role-cutover state machine. Production hook wiring and live acceptance
+remain. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Very hard; strongest available reviewer for data safety.
 Master milestone: M6; design interfaces in 01.
 

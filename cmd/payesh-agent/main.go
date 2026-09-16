@@ -125,7 +125,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "open sample spool:", err)
 			os.Exit(1)
 		}
-		capabilities := []string{"metrics"}
+		capabilities := []string{"metrics", "traffic"}
 		var actionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 		if socket := strings.TrimSpace(*privdSocket); socket != "" {
 			capabilities = append(capabilities, "actions")

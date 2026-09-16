@@ -1,6 +1,9 @@
 # 07 — Per-port traffic accounting
 
-Status: not started. Planning baseline: 2026-09-08.
+Status: Checkpoint A accounting contract, guarded nftables adapter, explicit
+local/forwarded-path classification, and pending desired-scope persistence/API
+implemented in the working tree; module lifecycle/helper wiring and real Linux
+networking acceptance remain outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Hard; Linux networking review.
 Master milestone: M5 module.
 

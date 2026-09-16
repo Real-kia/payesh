@@ -1,8 +1,9 @@
 # 08 — CPU controls for safe workload targets
 
-Status: Checkpoint A implemented in the working tree (see `docs/handoffs/08.md`);
-real CPU-load enforcement on disposable Linux, the `payesh run` CLI
-workflow, and target discovery remain outstanding. Planning baseline: 2026-09-08.
+Status: Checkpoint A implemented and safety-review fixes applied (see `docs/handoffs/08.md`);
+real CPU-load enforcement on disposable Linux remains outstanding. The local
+`payesh run` workflow and read-only target discovery are implemented. Planning
+baseline: 2026-09-08.
 Risk/assignment guidance: Hard; cgroup/privilege review.
 Master milestone: M5 module.
 
@@ -18,10 +19,10 @@ Inspect actual repository conventions before selecting source paths. The lead ow
 
 ## Work to implement
 
-1. Implement target discovery, millicore preview/validation, effective quota inspection and restoration of changed CPU properties only.
+1. Extend the implemented target discovery, millicore preview/validation, effective quota inspection and restoration of changed CPU properties only.
 2. Distinguish dedicated groups from unsafe shared groups; verify PID start identity/pidfd so PID reuse cannot inherit stale policy.
 3. Handle persistent service versus temporary process-group lifetime, stricter parent quotas and external configuration changes.
-4. Provide local payesh run workflow for a dedicated group when safe; coordinate CLI integration. Do not create a remote arbitrary-command endpoint.
+4. Harden the local `payesh run` workflow for a dedicated group on real Linux; do not create a remote arbitrary-command endpoint.
 5. Implement audit/revert/restart and failed-cleanup recovery through 06; preserve unrelated supervisor/resource settings.
 6. Explain cores versus whole-server percentage; workload budgets do not change provider allocation or constrain all kernel work.
 

@@ -254,7 +254,7 @@ func (h *Hub) Open(ctx context.Context, certificatePEM []byte, hello contracts.H
 	}
 	c := &Connection{hub: h, ServerID: id, hello: hello, certificatePEM: append([]byte(nil), certificatePEM...), certificateFingerprint: certificateFingerprint, seenJobKeys: make(map[string]struct{}), leases: make(map[string]monitoring.JobLease)}
 	h.connections[id] = c
-	if err := h.Store.TouchServer(ctx, id, now.UTC()); err != nil {
+	if err := h.Store.UpdateServerHello(ctx, id, hello, now.UTC()); err != nil {
 		delete(h.connections, id)
 		return nil, err
 	}

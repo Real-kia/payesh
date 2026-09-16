@@ -1,7 +1,12 @@
 # 04 — Fleet identity, transport and installation
 
 Status: Checkpoint A implemented in the working tree (see `docs/handoffs/04.md`);
-persistence, WebSocket framing, offline spool, renewal/recovery, SSH/direct
+browser owner/session/throttle persistence, the SQLite-backed enrollment
+CA/token/certificate/revocation repository, bootstrap token consumption and
+certificate rotation, generic durable job read/cancel foundation, the bounded
+crash-safe offline spool, and transport-neutral frame codec/backoff are
+implemented, while enrollment job transition wiring, authenticated WebSocket connection wiring,
+SSH/direct
 installers, and Linux acceptance remain outstanding. Planning baseline: 2026-09-08.
 Risk/assignment guidance: Hard; security review required.
 Master milestone: M3.
