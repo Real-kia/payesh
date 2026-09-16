@@ -368,9 +368,10 @@ func readProcessTicks(path string) (uint64, uint64) {
 
 func measureActiveUploadRate(localIP, remoteIP string, port int, duration time.Duration) float64 {
 	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(localIP)}}
-	conn, err := dialer.Dial("tcp", fmt.Sprintf("%s:%d", remoteIP, port))
+	targetAddr := net.JoinHostPort(remoteIP, strconv.Itoa(port))
+	conn, err := dialer.Dial("tcp", targetAddr)
 	if err != nil {
-		panic(fmt.Sprintf("Dial %s:%d: %v", remoteIP, port, err))
+		panic(fmt.Sprintf("Dial %s: %v", targetAddr, err))
 	}
 	defer conn.Close()
 
