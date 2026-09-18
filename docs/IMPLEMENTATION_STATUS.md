@@ -1,6 +1,11 @@
 # Implementation status
 
-Updated: 2026-09-13
+Updated: 2026-09-18
+
+For the current verified command results and the only remaining external
+acceptance requirements, see [`ACCEPTANCE_STATUS.md`](ACCEPTANCE_STATUS.md).
+The package handoffs below are historical implementation evidence; they are not
+the authority for current acceptance status when they conflict with that file.
 
 This file records implementation evidence, not planning intent. The repository
 started as planning documents only. Package 01 / milestone M0 is **ready for review**
