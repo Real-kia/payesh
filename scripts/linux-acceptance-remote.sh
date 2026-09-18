@@ -162,6 +162,11 @@ elif (( EUID != 0 )); then
 elif ! grep -qw cpu <<<"$controllers"; then
   mark_unsupported cpu_control "cgroup-v2-cpu-controller-unavailable"
   cpu_acceptance_ready=0
+elif command -v systemd-run >/dev/null 2>&1 && [[ "$(cat /proc/1/comm 2>/dev/null || true)" == systemd ]]; then
+  # The test is launched below a transient Delegate=yes unit. Its delegated
+  # cgroup, rather than the SSH session's root cgroup, owns the subtree-control
+  # boundary that the probe is allowed to change.
+  :
 elif [[ ! -r /sys/fs/cgroup/cgroup.subtree_control ]] || ! grep -qw cpu /sys/fs/cgroup/cgroup.subtree_control; then
   mark_unsupported cpu_control "cgroup-v2-cpu-controller-not-delegated"
   cpu_acceptance_ready=0

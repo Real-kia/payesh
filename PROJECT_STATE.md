@@ -1,8 +1,12 @@
 # Project state
 
-Updated: 2026-09-12
+Updated: 2026-09-18
 
-Latest verification on 2026-09-12 passed the full Go race suite, `go vet`,
+The canonical current verification and remaining-gates list is now
+`docs/ACCEPTANCE_STATUS.md`. Older package handoffs preserve historical
+evidence and are not authoritative when their status differs from that file.
+
+Historical verification on 2026-09-12 passed the full Go race suite, `go vet`,
 OpenAPI contract check, web type/build check, shell syntax checks, Linux
 amd64/arm64 build matrix, init-definition checks, and disposable
 install/upgrade/recovery/uninstall acceptance. A fresh 10-second monitoring
@@ -304,27 +308,20 @@ as the full package milestone because external acceptance work remains.
 
 ## Verification
 
-The current workspace passes `go test ./...`, `go test -race ./...`, `go vet
-./...`, `make lint`, `make build`, `make build-matrix`, `make web-check`, and
-`make contract-check`, including the final disabled-rule, forecast-continuity,
-retirement-authority, effective-at, and delayed-period identity regressions,
-plus the `internal/trust`, `internal/modules`, and `internal/cpucontrol`
-suites (JCS canonicalization, Ed25519 verification, archive-safety,
-lifecycle-transition, and manager/HTTP integration tests; cgroup v2
-file-format/ownership behavior, PID-reuse-safe identity verification, and the
-CPU-controls preview/apply/revert lifecycle). In this sandbox, Go commands use
-`GOCACHE=/private/tmp/payesh-go-cache`.
+The current repository-side and remote verification is recorded in
+`docs/ACCEPTANCE_STATUS.md`. On 2026-09-18, `go test ./...`,
+`go test -race ./...`, `make lint`, the OpenAPI contract check, web type/build
+checks, disposable installer acceptance, the monitoring smoke, Linux
+`amd64`/`arm64` builds, shell checks, unsigned release packaging, and the
+disposable Ubuntu all-profile acceptance passed. The shared Debian arm64 host
+also passed the non-invasive core profile without changes to its normalized
+services, listeners, or containers.
 
 ## Next milestone
 
-For package 08: run real CPU-load enforcement tests on a disposable Linux
-host, exercise shared-group/parent-quota/PID-reuse/restart/OpenRC scenarios
-for real; the local `payesh run` workflow and target discovery are implemented.
-For package 06: provision a
-production release-signing key, and run acceptance tests against real signed
-module release artifacts on a disposable Linux host (the `api/openapi.yaml`
-contract mismatch has been reconciled — see `docs/handoffs/06.md`/`08.md`).
-For package 05: request package acceptance
-with the external Linux/provider/observer/notification and soak evidence
-called out above. Package 09 next needs only the real Linux acceptance matrix
-and signed-module deployment evidence described in `docs/handoffs/09.md`.
+The disposable Ubuntu host has now passed the core, CPU, bandwidth, Port
+Traffic, network, module-socket, throughput, reboot, and live node-installer
+gates. The remaining work is recorded in `docs/ACCEPTANCE_STATUS.md`: longer
+retention/resource and pressure evidence, OpenRC and broader topology coverage,
+production signing and signed clean-host rollout, provider-scope evidence,
+browser/accessibility acceptance, and remote role-cutover execution.

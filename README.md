@@ -10,6 +10,7 @@ checksums are reproducible, but they are intentionally unsigned until an
 authorized owner performs the external Ed25519 signing step.
 
 - [Quickstart](docs/QUICKSTART.md) — build, preflight, and run a local preview
+- [Acceptance status](docs/ACCEPTANCE_STATUS.md) — current verified checks and remaining gates
 - [Update and recovery](docs/UPDATE_AND_RECOVERY.md)
 - [Uninstall and detachment](docs/UNINSTALL.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)

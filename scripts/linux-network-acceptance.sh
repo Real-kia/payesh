@@ -281,11 +281,16 @@ if ! require_commands; then
   exit 0
 fi
 
-test_veth_namespace || { mark_unsupported network_veth_namespace capability-or-kernel-rejected; }
+if test_veth_namespace; then
+  # The NAT stage below tears down the first namespace topology, so inspect
+  # the disposable host-side veth while it still exists.
+  test_offload
+else
+  mark_unsupported network_veth_namespace capability-or-kernel-rejected
+fi
 test_bridge || { mark_unsupported network_bridge_veth capability-or-kernel-rejected; }
 test_nat || { mark_unsupported network_nat capability-or-kernel-rejected; }
 test_tunnel
-test_offload
 test_container_runtime
 
 if (( unsupported > 0 )); then
