@@ -51,6 +51,18 @@ insecure/symlinked key inputs and refuses to replace an existing signature.
 Keep private keys outside this checkout and retain the public key as the
 operator-managed trust anchor.
 
+### Publishing to GitHub Releases
+
+Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`, which
+builds the web bundle, runs `release-package` with the tag's version and
+commit timestamp, validates it, and uploads every archive plus `manifest.json`
+and `SHA256SUMS` as a GitHub Release. The one-line `install.sh` installs from
+the latest such release, so publish only commits that pass CI:
+
+```sh
+git tag v0.1.1 && git push origin v0.1.1
+```
+
 Record exact commands, environment, skipped Linux/kernel checks, resource
 measurements, and remaining blockers in `docs/handoffs/11.md`. “Ready for
 review” and “accepted” are different statuses; a successful unit test is not

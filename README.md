@@ -5,11 +5,27 @@ servers. The current source includes a Go agent, SQLite-backed server/API,
 CLI, installer preflight, update/recovery primitives, and separately built
 Port Traffic, CPU Controls, and Bandwidth Controls modules.
 
-This repository is not a published v1 release. Local release archives and
-checksums are reproducible, but they are intentionally unsigned until an
-authorized owner performs the external Ed25519 signing step.
+## Install
 
-- [Quickstart](docs/QUICKSTART.md) — build, preflight, and run a local preview
+On a Linux server (x86_64 or arm64, systemd or OpenRC):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
+```
+
+The installer downloads the latest release, verifies it, and starts Payesh.
+Your login is in `/etc/payesh/owner-credentials`. See the
+[quickstart](docs/QUICKSTART.md) for opening the dashboard, HTTPS with a
+domain, installer options, and (temporarily) installing while the repository
+is private.
+
+Release `0.1.0` is a preview, not v1. Release archives are checksummed but
+intentionally unsigned until an authorized owner performs the external
+Ed25519 signing step.
+
+## Documentation
+
+- [Quickstart](docs/QUICKSTART.md) — one-line install, dashboard access, and building from source
 - [Acceptance status](docs/ACCEPTANCE_STATUS.md) — current verified checks and remaining gates
 - [Update and recovery](docs/UPDATE_AND_RECOVERY.md)
 - [Uninstall and detachment](docs/UNINSTALL.md)
