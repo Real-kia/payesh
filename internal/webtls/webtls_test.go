@@ -267,4 +267,13 @@ func TestSettingsHandler(t *testing.T) {
 	if recorder.Code != http.StatusAccepted || strings.Contains(recorder.Body.String(), "tok") {
 		t.Fatalf("PUT = %d %s (token must never be echoed)", recorder.Code, recorder.Body)
 	}
+	// Let the background order fail against the dead directory before the
+	// temporary state directory is removed.
+	deadline := time.Now().Add(10 * time.Second)
+	for manager.busy.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status := manager.Status(); status.State != StateFailed || strings.Contains(status.Error, "tok") {
+		t.Fatalf("status after background order = %+v", status)
+	}
 }
