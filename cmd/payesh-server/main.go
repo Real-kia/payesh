@@ -48,6 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 	allowInsecureHTTP := flag.Bool("allow-insecure-http", insecureHTTPDefault, "allow browser logins over plain HTTP on a public listener until a domain certificate is active (or PAYESH_ALLOW_INSECURE_HTTP)")
+	webDir := flag.String("web-dir", envOr("PAYESH_WEB_DIR", defaultWebDir), "built dashboard directory served on non-API paths (or PAYESH_WEB_DIR)")
 	tlsDir := flag.String("tls-dir", os.Getenv("PAYESH_TLS_DIR"), "automatic HTTPS state directory (default: tls/ beside the database)")
 	trustedProxyCIDRs := flag.String("trusted-proxy-cidrs", os.Getenv("PAYESH_TRUSTED_PROXY_CIDRS"), "comma-separated trusted reverse-proxy IPs/CIDRs for client-address headers")
 	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
@@ -321,7 +322,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           httpsManager.RedirectToHTTPS(handler),
+		Handler:           httpsManager.RedirectToHTTPS(withWebAssets(*webDir, handler)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		// Live tails are bounded to five minutes by the API. Keep the write
