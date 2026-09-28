@@ -45,7 +45,8 @@ the earlier sandbox-only loopback bind failure in
 | Bandwidth Controls | Real `tc` apply/verify/revert, rollback/watchdog paths, 4 Mbit/s known-volume throughput, quota overshoot, and module socket passed on the disposable Ubuntu host. |
 | Installer/uninstaller | Live pinned-host-key SSH node install passed; data-preserving uninstall and explicit data removal both passed on the disposable host. |
 | Updates/recovery/migrations | Local signed-release verification, staging, backup, rollback, watchdog, and scheduling are implemented and tested; remote rollout/role cutover remains. |
-| Release operations | Reproducible unsigned bundle generation/validation and checksums pass; production signing/publication remains. |
+| Release operations | Reproducible unsigned bundle generation/validation and checksums pass. Tag-triggered publication (`.github/workflows/release.yml`) published `v0.1.0` to GitHub Releases; production signing remains. |
+| One-line installer | `install.sh` downloaded `v0.1.0` through the GitHub API (private-repository token mode), verified all archives against `SHA256SUMS`, and installed/started the standalone role in a disposable Debian 12 arm64 systemd container on 2026-09-28: `payesh-server` and `payesh-agent` active, `/healthz` 200, owner credentials generated. amd64, OpenRC, and public (tokenless) download remain unexercised. |
 
 ## Remote evidence completed on 2026-09-18
 
