@@ -8,7 +8,7 @@ Type=simple
 User=payesh
 Group=payesh
 EnvironmentFile=-/etc/payesh/payesh.env
-ExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=127.0.0.1:8787
+ExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=0.0.0.0:8787
 StandardOutput=append:/var/log/payesh/server.err
 StandardError=append:/var/log/payesh/server.err
 Restart=on-failure
@@ -19,8 +19,9 @@ ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/payesh /var/log/payesh
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-CapabilityBoundingSet=
-AmbientCapabilities=
+# Port 80 is bound only while a Let's Encrypt HTTP-01 check is pending.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

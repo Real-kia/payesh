@@ -6,7 +6,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type HTTPSStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -18,6 +18,8 @@
   // Development builds use the real API by default. Opt into fixtures
   // explicitly so a local preview can never accidentally mask API failures.
   const PREVIEW_MODE = import.meta.env.VITE_PAYESH_PREVIEW === 'true';
+  // Plain HTTP to anything but this machine sends the password unencrypted.
+  const insecureConnection = typeof window !== 'undefined' && window.location.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const totalTrafficBytes = '1526000000000';
   const totalAllowanceBytes = '2500000000000';
 
@@ -38,6 +40,13 @@
   let logError = '';
   let logEntries: PreviewLogEntry[] = [];
   let apiAbortController: AbortController | null = null;
+  let httpsStatus: HTTPSStatus | null = null;
+  let httpsDomain = '';
+  let httpsEmail = '';
+  let httpsToken = '';
+  let httpsBusy = false;
+  let httpsError = '';
+  let httpsPoll: ReturnType<typeof setTimeout> | null = null;
   let logAbortController: AbortController | null = null;
   let notice = '';
   let setupStep = 1;
@@ -312,6 +321,60 @@
     }
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
+    if (page === 'settings' && !PREVIEW_MODE) void loadHTTPS();
+  }
+
+  async function loadHTTPS(): Promise<void> {
+    if (httpsPoll) { clearTimeout(httpsPoll); httpsPoll = null; }
+    try {
+      httpsStatus = await apiClient.getHTTPSSettings();
+      if (!httpsDomain && httpsStatus.domain) httpsDomain = httpsStatus.domain;
+      if (httpsStatus.state === 'pending' && activePage === 'settings') httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
+      else httpsBusy = false;
+      // HTTPS just came up while this page is on plain HTTP: move to it. The
+      // session cookie belongs to this address, so the user signs in again.
+      if (httpsStatus.state === 'active' && insecureConnection && httpsStatus.domain) {
+        notice = `HTTPS is ready. Opening ${httpsURL(httpsStatus)} …`;
+        setTimeout(() => { window.location.href = httpsURL(httpsStatus!) + window.location.pathname; }, 1500);
+      }
+    } catch (error) {
+      httpsBusy = false;
+      httpsError = error instanceof Error ? error.message : 'Could not read HTTPS settings.';
+    }
+  }
+
+  async function saveHTTPS(): Promise<void> {
+    httpsError = '';
+    httpsBusy = true;
+    try {
+      httpsStatus = await apiClient.setHTTPSDomain({ domain: httpsDomain.trim(), email: httpsEmail.trim() || undefined, cloudflare_api_token: httpsToken.trim() || undefined });
+      httpsToken = '';
+      httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
+    } catch (error) {
+      httpsBusy = false;
+      httpsError = error instanceof Error ? error.message : 'Could not start the certificate request.';
+    }
+  }
+
+  function httpsURL(status: HTTPSStatus): string {
+    const port = status.https_port && status.https_port !== '443' ? `:${status.https_port}` : '';
+    return `https://${status.domain}${port}`;
+  }
+
+  function promptRemoveHTTPS() {
+    openConfirmModal({
+      title: 'Remove domain?',
+      description: 'The certificate is deleted and the dashboard goes back to plain HTTP. Logins will no longer be encrypted.',
+      tone: 'warning',
+      icon: 'alert-triangle',
+      confirmText: 'Remove domain',
+      cancelText: 'Keep HTTPS',
+      action: async () => {
+        await apiClient.removeHTTPSDomain();
+        httpsDomain = '';
+        await loadHTTPS();
+      }
+    });
   }
 
   async function loadModules(force = false): Promise<void> {
@@ -1210,6 +1273,9 @@
 
     {#if notice}<div class="notice" role="status"><Icon name="check" size={14} /><span>{notice}</span></div>{/if}
     {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span></div>{/if}
+    {#if insecureConnection && !PREVIEW_MODE && sessionState === 'authenticated'}
+      <div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => navigate('settings')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
+    {/if}
 
     {#if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
@@ -1522,6 +1588,45 @@
             </div>
             <div class="settings-actions">
               <button class="button ghost" type="button" on:click={() => promptSignOut()}>Sign out of hub</button>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Domain & HTTPS</h2>
+                <p class="muted">Point a domain or subdomain at this server and Payesh gets a free Let's Encrypt certificate and renews it automatically. HTTPS is served on the dashboard's own port; port 443 and other web servers such as nginx are left alone.</p>
+              </div>
+            </div>
+            <div class="settings-meta-box">
+              <div class="meta-row">
+                <span>Status</span>
+                {#if httpsStatus?.state === 'active'}
+                  <span class="status-pill healthy"><i class="status-dot"></i> HTTPS active</span>
+                {:else if httpsStatus?.state === 'pending'}
+                  <span class="status-pill pending"><i class="status-dot"></i> Requesting certificate…</span>
+                {:else if httpsStatus?.state === 'failed'}
+                  <span class="status-pill failed"><i class="status-dot"></i> Certificate request failed</span>
+                {:else}
+                  <span class="status-pill pending"><i class="status-dot"></i> Not encrypted (HTTP)</span>
+                {/if}
+              </div>
+              {#if httpsStatus?.domain}
+                <div class="meta-row"><span>Address</span><span class="mono">{#if httpsStatus.state === 'active'}<a href={httpsURL(httpsStatus)}>{httpsURL(httpsStatus)}</a>{:else}{httpsStatus.domain}{/if}</span></div>
+              {/if}
+              {#if httpsStatus?.expires_at}
+                <div class="meta-row"><span>Renews before</span><span>{new Date(httpsStatus.expires_at).toLocaleDateString()}</span></div>
+              {/if}
+            </div>
+            {#if httpsStatus?.state === 'failed' && httpsStatus.error}<p class="form-error" role="alert">{httpsStatus.error}</p>{/if}
+            <form class="form-grid" on:submit|preventDefault={() => void saveHTTPS()}>
+              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy} /><small>Create a DNS A record pointing to this server first.</small></label>
+              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy} /><small>Let's Encrypt sends expiry warnings here.</small></label>
+              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy} /><small>Payesh uses port 80 briefly to verify the domain. If nginx or another program uses port 80, give a Cloudflare token with Zone → DNS → Edit permission instead.</small></label>
+            </form>
+            {#if httpsError}<p class="form-error" role="alert">{httpsError}</p>{/if}
+            <div class="settings-actions">
+              <button class="button primary" type="button" disabled={httpsBusy || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
+              {#if httpsStatus?.domain && !httpsBusy}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
             </div>
           </article>
         </div>
@@ -1898,6 +2003,7 @@
                   <input type="password" bind:value={authPassword} autocomplete="current-password" placeholder="••••••••••••" required />
                 </label>
                 {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
+                {#if insecureConnection}<p class="insecure-login" role="note"><Icon name="alert-triangle" size={14} /> Not encrypted: your password is sent without SSL. Add a domain in Settings to enable HTTPS.</p>{/if}
                 <button class="button primary" type="submit" disabled={authBusy}>
                   {authBusy ? 'Authenticating…' : 'Sign in to Console'}
                 </button>
@@ -3328,7 +3434,25 @@
   .settings-actions {
     display: flex;
     justify-content: flex-start;
+    gap: 12px;
     margin-top: 16px;
+  }
+  .link-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .insecure-login {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: var(--warning);
+    font-size: 12px;
   }
 
   /* --------------------------------------------------------------------------

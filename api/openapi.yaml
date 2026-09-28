@@ -471,6 +471,25 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsRequest' } } } }
       responses: { '200': { description: Settings updated, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /settings/https:
+    get:
+      operationId: getHTTPSSettings
+      summary: Dashboard domain and automatic certificate state
+      security: [{ SessionCookie: [] }]
+      responses: { '200': { description: HTTPS state, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    put:
+      operationId: setHTTPSDomain
+      summary: Set the dashboard domain and request a Let's Encrypt certificate in the background
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSSettingsRequest' } } } }
+      responses: { '202': { description: Certificate request started; poll GET for the result, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+    delete:
+      operationId: removeHTTPSDomain
+      summary: Remove the domain and certificate; the dashboard returns to plain HTTP
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      responses: { '204': { description: Domain removed }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /backups:
     get:
       operationId: listBackups
@@ -596,6 +615,24 @@ components:
       description: Whole seconds to wait before the next login attempt.
       schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
+    HTTPSStatus:
+      type: object
+      required: [state]
+      properties:
+        domain: { type: string, maxLength: 253 }
+        state: { type: string, enum: [disabled, pending, active, failed] }
+        method: { type: string, enum: [http-01, dns-cloudflare] }
+        expires_at: { type: string, format: date-time }
+        error: { type: string }
+        https_port: { type: string }
+    HTTPSSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [domain]
+      properties:
+        domain: { type: string, maxLength: 253 }
+        email: { type: string, format: email }
+        cloudflare_api_token: { type: string, writeOnly: true, description: Zone DNS edit token used for DNS validation when port 80 is in use }
     SetupRequest:
       type: object
       required: [setup_secret, username, password]

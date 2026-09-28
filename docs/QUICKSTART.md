@@ -15,7 +15,7 @@ That's it. The installer:
    against the release `SHA256SUMS`,
 3. installs the services, creates your login, and starts Payesh.
 
-When it finishes, it prints how to open the dashboard.
+When it finishes, it prints the dashboard address and your login.
 
 > Want to see if your server is supported first, without changing anything?
 > Add `-s -- --check` at the end:
@@ -23,50 +23,91 @@ When it finishes, it prints how to open the dashboard.
 
 ## Open the dashboard
 
-Get your login (generated during install):
+Browse to **http://YOUR_SERVER_IP:8787** and log in with the username and
+password the installer printed. You can show them again with:
 
 ```sh
 sudo cat /etc/payesh/owner-credentials
 ```
 
-Payesh listens only on the server itself (`127.0.0.1:8787`) so it's never
-exposed by accident. From your own computer, open an SSH tunnel:
+> ⚠️ **No SSL yet.** Until you add a domain, the dashboard uses plain HTTP, so
+> your password and data are not encrypted on the way. The installer and the
+> dashboard both warn about this. Adding a domain takes one command (below).
+
+If a firewall is active, allow the port, for example `sudo ufw allow 8787/tcp`.
+The installer tells you when it detects `ufw` or `firewalld`.
+
+## Turn on HTTPS (free, automatic)
+
+1. Create a DNS **A record** for a domain or subdomain (for example
+   `panel.example.com`) pointing to your server's IP.
+2. Run:
 
 ```sh
-ssh -N -L 8787:127.0.0.1:8787 root@YOUR_SERVER_IP
+sudo payesh domain panel.example.com
 ```
 
-Then browse to **http://127.0.0.1:8787** and log in.
+Payesh gets a free Let's Encrypt certificate, switches the dashboard to
+**https://panel.example.com:8787**, and renews the certificate automatically.
+Plain `http://` visits are redirected to HTTPS.
 
-## Access from anywhere (optional, needs a domain)
+What it does and doesn't touch:
 
-Point a domain at your server, then run:
+- HTTPS runs on the **same port as the dashboard (8787)**. Port 443 is not used.
+- nginx, Apache, Caddy and other web servers are **left alone**.
+- Let's Encrypt must check the domain on port 80. If port 80 is free, Payesh
+  uses it for a few seconds while the certificate is issued or renewed. If
+  something else (such as nginx) already uses port 80, Payesh verifies
+  through DNS instead, which needs a Cloudflare API token (next section).
+
+You can also set the domain:
+
+- **during install:** `curl -fsSL …/install.sh | sudo sh -s -- --domain panel.example.com`
+- **from the dashboard:** Settings → Domain & HTTPS
+
+Other commands:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/scripts/configure-public-access.sh \
-  | sudo sh -s -- --domain payesh.example.com --apply
+sudo payesh domain                 # show the domain and certificate expiry
+sudo payesh domain --remove        # go back to plain HTTP
 ```
 
-It installs Caddy, gets a free HTTPS certificate, and renews it
-automatically. It never touches anything already using ports 80 or 443. Run
-it without `--apply` to preview what it would do.
+### When port 80 is taken (nginx etc.): Cloudflare DNS
+
+If your domain uses Cloudflare DNS, Payesh can prove ownership with a DNS
+record instead of port 80:
+
+1. In Cloudflare, go to **My Profile → API Tokens → Create Token**, use the
+   **Edit zone DNS** template, and limit it to your domain's zone.
+2. Run:
+
+```sh
+sudo PAYESH_CLOUDFLARE_API_TOKEN=your-token payesh domain panel.example.com
+```
+
+Or paste the token into the Cloudflare field under Settings → Domain & HTTPS.
+The token is stored owner-only in `/var/lib/payesh/tls` so renewals keep
+working, and it is never shown again.
 
 ## Installer options
 
 Pass options after `sh -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --role node
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --domain panel.example.com
 ```
 
 | Option | What it does |
 | --- | --- |
+| `--domain panel.example.com` | Turn on HTTPS right after installing |
+| `--email you@example.com` | Optional Let's Encrypt expiry notices |
 | `--role standalone` | Dashboard + monitoring on this server (default) |
 | `--role node` | Monitoring agent only, reporting to another Payesh |
 | `--role hub` | Dashboard for a fleet of nodes |
 | `--role cli-only` | Only the `payesh` command-line tool |
-| `--version 0.1.0` | Install a specific release instead of the latest |
-| `--listen 127.0.0.1:9000` | Use a different dashboard address |
+| `--version 0.2.0` | Install a specific release instead of the latest |
+| `--listen 0.0.0.0:9000` | Use a different dashboard port (default `0.0.0.0:8787`) |
+| `--listen 127.0.0.1:8787` | Keep the dashboard private to the server (use an SSH tunnel) |
 | `--check` | Only check the server; install nothing |
 
 ## Uninstall
@@ -101,7 +142,9 @@ curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
   | sudo --preserve-env=GITHUB_TOKEN sh
 ```
 
-Installer options work the same way, e.g. `... | sudo --preserve-env=GITHUB_TOKEN sh -s -- --check`.
+Installer options work the same way, e.g. `... | sudo --preserve-env=GITHUB_TOKEN sh -s -- --domain panel.example.com`.
+To also pass a Cloudflare token, list both variables:
+`sudo --preserve-env=GITHUB_TOKEN,PAYESH_CLOUDFLARE_API_TOKEN sh -s -- --domain panel.example.com`.
 To test an unmerged branch's installer, add `?ref=BRANCH` to the
 `contents/install.sh` URL.
 

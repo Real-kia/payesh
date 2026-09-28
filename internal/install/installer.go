@@ -267,7 +267,7 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	if len(services) > 0 {
 		listen := strings.TrimSpace(opts.Listen)
 		if listen == "" {
-			listen = "127.0.0.1:8787"
+			listen = DefaultWebListen
 		}
 		if err := installServiceDefinitions(root, p.Init, services, listen); err != nil {
 			return result, fmt.Errorf("install service definitions: %w", err)
@@ -285,6 +285,10 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	}
 	return result, nil
 }
+
+// DefaultWebListen serves the dashboard on every interface. It starts as plain
+// HTTP; `payesh domain NAME` switches the same port to automatic HTTPS.
+const DefaultWebListen = "0.0.0.0:8787"
 
 func previousServerInstall(root, init string, state installState) bool {
 	found := false
@@ -344,7 +348,7 @@ func ensureOwnerCredentials(envPath, credentialsPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(envPath, []byte("PAYESH_OWNER_USERNAME=owner_"+u+"\nPAYESH_OWNER_PASSWORD="+p+"\nPAYESH_BOOTSTRAP_SECRET="+s+"\nPAYESH_SECURE_BROWSER_COOKIES=true\n"), 0o640); err != nil {
+	if err := os.WriteFile(envPath, []byte("PAYESH_OWNER_USERNAME=owner_"+u+"\nPAYESH_OWNER_PASSWORD="+p+"\nPAYESH_BOOTSTRAP_SECRET="+s+"\nPAYESH_ALLOW_INSECURE_HTTP=true\n"), 0o640); err != nil {
 		return err
 	}
 	if err := os.WriteFile(credentialsPath, []byte("username: "+"owner_"+u+"\npassword: "+p+"\n"), 0o600); err != nil {
@@ -678,7 +682,7 @@ func serviceDefinition(init, service, listen string) (string, bool) {
 		case "payesh-agent":
 			return "[Unit]\nDescription=Payesh local monitoring agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=payesh\nGroup=payesh\nEnvironmentFile=-/etc/payesh/payesh.env\nExecStartPre=/bin/sh -c 'if [ -z \"$PAYESH_TRANSPORT_URL\" ]; then /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null; fi'\nExecStart=/bin/bash -o pipefail -c 'if [ -n \"$PAYESH_TRANSPORT_URL\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'\nRestart=on-failure\nRestartSec=5s\nKillMode=control-group\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=/var/lib/payesh /var/log/payesh\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nCapabilityBoundingSet=\nAmbientCapabilities=\nStandardOutput=null\nStandardError=append:/var/log/payesh/agent.err\n\n[Install]\nWantedBy=multi-user.target\n", true
 		case "payesh-server":
-			return fmt.Sprintf("[Unit]\nDescription=Payesh local monitoring server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=payesh\nGroup=payesh\nEnvironmentFile=-/etc/payesh/payesh.env\nExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=%s\nStandardOutput=append:/var/log/payesh/server.err\nStandardError=append:/var/log/payesh/server.err\nRestart=on-failure\nRestartSec=5s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=/var/lib/payesh /var/log/payesh\n\n[Install]\nWantedBy=multi-user.target\n", systemdArg(listen)), true
+			return fmt.Sprintf("[Unit]\nDescription=Payesh local monitoring server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=payesh\nGroup=payesh\nEnvironmentFile=-/etc/payesh/payesh.env\nExecStart=/usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=%s\nStandardOutput=append:/var/log/payesh/server.err\nStandardError=append:/var/log/payesh/server.err\nRestart=on-failure\nRestartSec=5s\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=/var/lib/payesh /var/log/payesh\n\n[Install]\nWantedBy=multi-user.target\n", systemdArg(listen)), true
 		}
 	}
 	if init == "openrc" {
@@ -686,7 +690,7 @@ func serviceDefinition(init, service, listen string) (string, bool) {
 		case "payesh-agent":
 			return "#!/sbin/openrc-run\nname=\"payesh-agent\"\ndescription=\"Payesh local monitoring agent\"\ncommand=\"/bin/sh\"\ncommand_args=\"-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then . /etc/payesh/payesh.env; fi; if [ -n \\\"$PAYESH_TRANSPORT_URL\\\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'\"\ncommand_user=\"payesh:payesh\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/dev/null\"\nerror_log=\"/var/log/payesh/agent.err\"\n\nstart_pre() {\n\tif [ -z \"$PAYESH_TRANSPORT_URL\" ]; then /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null || return 1; fi\n}\n\ndepend() {\n\tneed net\n\tafter firewall\n}\n", true
 		case "payesh-server":
-			return fmt.Sprintf("#!/sbin/openrc-run\nname=\"payesh-server\"\ndescription=\"Payesh local monitoring server\"\ncommand=\"/usr/bin/payesh-server\"\ncommand_args=\"-db=/var/lib/payesh/payesh.db -listen=%s\"\ncommand_user=\"payesh:payesh\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/server.log\"\nerror_log=\"/var/log/payesh/server.err\"\n\ndepend() {\n\tneed net\n\tafter firewall\n}\n", openRCArg(listen)), true
+			return fmt.Sprintf("#!/sbin/openrc-run\nname=\"payesh-server\"\ndescription=\"Payesh local monitoring server\"\ncommand=\"/usr/bin/payesh-server\"\ncommand_args=\"-db=/var/lib/payesh/payesh.db -listen=%s\"\ncommand_user=\"payesh:payesh\"\ncapabilities=\"^cap_net_bind_service\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/server.log\"\nerror_log=\"/var/log/payesh/server.err\"\n\ndepend() {\n\tneed net\n\tafter firewall\n}\n", openRCArg(listen)), true
 		}
 	}
 	return "", false

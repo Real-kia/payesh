@@ -80,7 +80,7 @@ func Check(root, role, listen string) (Preflight, error) {
 	}
 	if role != "node" && role != "cli-only" {
 		if listen == "" {
-			listen = "127.0.0.1:8787"
+			listen = DefaultWebListen
 		}
 		if err := validateListenAddress(listen); err != nil {
 			p.Supported = false

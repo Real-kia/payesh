@@ -61,6 +61,8 @@ func main() {
 		err = backupDatabase(ctx, os.Args[2:])
 	case "verify-backup":
 		err = verifyBackup(ctx, os.Args[2:])
+	case "domain":
+		err = domain(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -91,7 +93,8 @@ commands:
   cpu-services     list selectable systemd/OpenRC CPU service targets (read-only)
   run              start a command in a Payesh-owned cgroup (Linux only)
   backup           create a consistent online SQLite backup using VACUUM INTO
-  verify-backup    run PRAGMA integrity_check against a SQLite backup file`)
+  verify-backup    run PRAGMA integrity_check against a SQLite backup file
+  domain           set the dashboard domain and get an automatic HTTPS certificate`)
 }
 
 func runWorkload(ctx context.Context, args []string) error {

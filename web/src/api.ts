@@ -51,6 +51,8 @@ export type Server = {
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
+export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
+export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
 export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string };
 export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
@@ -253,6 +255,18 @@ export class ApiClient {
     return this.request<Job>(`/servers/${encodeURIComponent(serverId)}/enrollment`, {
       method: 'DELETE', headers: this.mutationHeaders({ 'Idempotency-Key': idempotencyKey }), signal: options.signal
     });
+  }
+
+  getHTTPSSettings(options: QueryOptions = {}): Promise<HTTPSStatus> {
+    return this.request<HTTPSStatus>('/settings/https', { signal: options.signal });
+  }
+
+  setHTTPSDomain(body: HTTPSSettingsRequest, options: QueryOptions = {}): Promise<HTTPSStatus> {
+    return this.request<HTTPSStatus>('/settings/https', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  removeHTTPSDomain(options: QueryOptions = {}): Promise<void> {
+    return this.request<void>('/settings/https', { method: 'DELETE', headers: this.mutationHeaders(), signal: options.signal });
   }
 
   getJob(jobId: string, options: QueryOptions = {}): Promise<Job> {

@@ -10,8 +10,16 @@
 # Options (flags, or the matching environment variable):
 #   --role ROLE        standalone (default), hub, node, or cli-only   PAYESH_ROLE
 #   --version X.Y.Z    release to install (default: latest)          PAYESH_VERSION
-#   --listen ADDR      web listen address (default 127.0.0.1:8787)   PAYESH_LISTEN
+#   --listen ADDR      web listen address (default 0.0.0.0:8787)     PAYESH_LISTEN
+#   --domain NAME      get a free HTTPS certificate for NAME          PAYESH_DOMAIN
+#   --email ADDR       optional Let's Encrypt contact email           PAYESH_EMAIL
 #   --check            only run the host preflight, change nothing
+#
+# The dashboard is reachable at http://SERVER_IP:8787 right away, without
+# encryption. With --domain (or later: sudo payesh domain NAME) the same port
+# switches to HTTPS. Port 443 and existing web servers such as nginx are never
+# touched. Port 80 is used briefly to verify the domain if it is free;
+# otherwise set PAYESH_CLOUDFLARE_API_TOKEN to verify through Cloudflare DNS.
 #
 # Private repository (temporary, for testing): export GITHUB_TOKEN with read
 # access to the repository and the installer downloads through the GitHub API.
@@ -21,6 +29,8 @@ REPO="${PAYESH_REPO:-Real-kia/payesh}"
 ROLE="${PAYESH_ROLE:-standalone}"
 VERSION="${PAYESH_VERSION:-latest}"
 LISTEN="${PAYESH_LISTEN:-}"
+DOMAIN="${PAYESH_DOMAIN:-}"
+EMAIL="${PAYESH_EMAIL:-}"
 CHECK_ONLY=0
 TOKEN="${GITHUB_TOKEN:-}"
 
@@ -36,9 +46,13 @@ while [ $# -gt 0 ]; do
 	--version=*) VERSION="${1#*=}"; shift ;;
 	--listen) LISTEN="${2:?--listen needs a value}"; shift 2 ;;
 	--listen=*) LISTEN="${1#*=}"; shift ;;
+	--domain) DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
+	--domain=*) DOMAIN="${1#*=}"; shift ;;
+	--email) EMAIL="${2:?--email needs a value}"; shift 2 ;;
+	--email=*) EMAIL="${1#*=}"; shift ;;
 	--check) CHECK_ONLY=1; shift ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--check]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
@@ -207,25 +221,64 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	exit 0
 fi
 
+# Earlier installs forced Secure cookies, which browsers refuse over plain
+# HTTP. Payesh still marks cookies Secure automatically on HTTPS requests.
+ENV_FILE=/etc/payesh/payesh.env
+if [ -f "$ENV_FILE" ] && grep -q '^PAYESH_SECURE_BROWSER_COOKIES=true$' "$ENV_FILE" && ! grep -q '^PAYESH_ALLOW_INSECURE_HTTP=' "$ENV_FILE"; then
+	sed -i 's/^PAYESH_SECURE_BROWSER_COOKIES=true$/PAYESH_ALLOW_INSECURE_HTTP=true/' "$ENV_FILE"
+	say "Updated $ENV_FILE for public HTTP access"
+fi
+
 say "Installing and starting services"
 "$INSTALLER" --role "$ROLE" --install --start --artifact-dir "$ARTIFACTS" "$@"
 
 echo
 say "Payesh $VERSION is installed."
 case "$ROLE" in
-standalone | hub)
-	cat <<EOF
-
-  Dashboard:   http://${LISTEN:-127.0.0.1:8787}  (listening on this server only)
-  Login:       sudo cat /etc/payesh/owner-credentials
-
-  Open it from your computer through an SSH tunnel:
-      ssh -N -L 8787:127.0.0.1:8787 root@<this-server-ip>
-  then browse to http://127.0.0.1:8787
-
-  Have a domain? Put Payesh behind HTTPS with automatic certificates:
-      see "Access from anywhere" in docs/QUICKSTART.md
-
-EOF
-	;;
+standalone | hub) ;;
+*) exit 0 ;;
 esac
+
+PORT="${LISTEN##*:}"
+PORT="${PORT:-8787}"
+IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+IP="${IP:-SERVER_IP}"
+
+HTTPS_OK=0
+if [ -n "$DOMAIN" ]; then
+	say "Setting up HTTPS for $DOMAIN"
+	if /usr/bin/payesh domain "$DOMAIN" ${EMAIL:+--email "$EMAIL"}; then
+		HTTPS_OK=1
+	else
+		warn "HTTPS setup did not finish; Payesh is still reachable over HTTP. Fix the problem above, then run: sudo payesh domain $DOMAIN"
+	fi
+fi
+
+echo
+if [ "$HTTPS_OK" = 1 ]; then
+	printf '  Dashboard:  https://%s:%s\n' "$DOMAIN" "$PORT"
+else
+	printf '  Dashboard:  http://%s:%s\n' "$IP" "$PORT"
+fi
+if [ -r /etc/payesh/owner-credentials ]; then
+	sed 's/^/  /' /etc/payesh/owner-credentials
+	echo "  (saved in /etc/payesh/owner-credentials)"
+fi
+if [ "$HTTPS_OK" != 1 ]; then
+	printf '\n  \033[1;33mWARNING: no SSL.\033[0m The connection is not encrypted, so your password\n'
+	cat <<MSG
+  and data travel in plain text. To turn on HTTPS, point a domain or
+  subdomain at $IP and run:
+
+      sudo payesh domain panel.example.com
+
+  Payesh gets a free Let's Encrypt certificate and renews it automatically.
+  HTTPS runs on port $PORT; port 443 and nginx are not touched.
+MSG
+fi
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+	printf '\n  Firewall (ufw) is active. Allow the dashboard with: sudo ufw allow %s/tcp\n' "$PORT"
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+	printf '\n  firewalld is active. Allow the dashboard with:\n      sudo firewall-cmd --permanent --add-port=%s/tcp && sudo firewall-cmd --reload\n' "$PORT"
+fi
+echo
