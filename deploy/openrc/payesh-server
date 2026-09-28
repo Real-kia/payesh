@@ -3,8 +3,10 @@
 name="payesh-server"
 description="Payesh local monitoring server"
 command="/usr/bin/payesh-server"
-command_args="-db=/var/lib/payesh/payesh.db -listen=127.0.0.1:8787"
+command_args="-db=/var/lib/payesh/payesh.db -listen=0.0.0.0:8787"
 command_user="payesh:payesh"
+# Port 80 is bound only while a Let's Encrypt HTTP-01 check is pending.
+capabilities="^cap_net_bind_service"
 supervisor="supervise-daemon"
 supervise_daemon_args="--respawn-delay 5"
 output_log="/var/log/payesh/server.log"

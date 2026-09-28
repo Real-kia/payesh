@@ -28,6 +28,7 @@ import (
 	"github.com/Real-kia/payesh/internal/transport"
 	"github.com/Real-kia/payesh/internal/trust"
 	"github.com/Real-kia/payesh/internal/updater"
+	"github.com/Real-kia/payesh/internal/webtls"
 )
 
 func main() {
@@ -41,6 +42,13 @@ func main() {
 		os.Exit(2)
 	}
 	secureBrowserCookies := flag.Bool("secure-browser-cookies", secureCookiesDefault, "mark browser session cookies Secure; use when this HTTP listener is behind HTTPS (or PAYESH_SECURE_BROWSER_COOKIES)")
+	insecureHTTPDefault, insecureHTTPErr := environmentBool("PAYESH_ALLOW_INSECURE_HTTP", false)
+	if insecureHTTPErr != nil {
+		fmt.Fprintln(os.Stderr, "configure public HTTP:", insecureHTTPErr)
+		os.Exit(2)
+	}
+	allowInsecureHTTP := flag.Bool("allow-insecure-http", insecureHTTPDefault, "allow browser logins over plain HTTP on a public listener until a domain certificate is active (or PAYESH_ALLOW_INSECURE_HTTP)")
+	tlsDir := flag.String("tls-dir", os.Getenv("PAYESH_TLS_DIR"), "automatic HTTPS state directory (default: tls/ beside the database)")
 	trustedProxyCIDRs := flag.String("trusted-proxy-cidrs", os.Getenv("PAYESH_TRUSTED_PROXY_CIDRS"), "comma-separated trusted reverse-proxy IPs/CIDRs for client-address headers")
 	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
 	nodeTLSCert := flag.String("node-tls-cert", os.Getenv("PAYESH_NODE_TLS_CERT"), "node transport TLS server certificate PEM path")
@@ -52,9 +60,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "configure node transport:", nodeConfigErr)
 		os.Exit(2)
 	}
-	if *bootstrapSecret != "" && !*secureBrowserCookies && !loopbackListenAddress(*listen) {
-		fmt.Fprintln(os.Stderr, "browser-session API requires a loopback listener for HTTP cookies; use --secure-browser-cookies behind HTTPS")
+	if *bootstrapSecret != "" && !*secureBrowserCookies && !*allowInsecureHTTP && !loopbackListenAddress(*listen) {
+		fmt.Fprintln(os.Stderr, "browser-session API requires a loopback listener for HTTP cookies; use --secure-browser-cookies behind HTTPS, or --allow-insecure-http to accept unencrypted public logins")
 		os.Exit(2)
+	}
+	if *tlsDir == "" {
+		*tlsDir = filepath.Join(filepath.Dir(*dbPath), "tls")
+	}
+	httpsManager, httpsErr := webtls.NewManager(*tlsDir)
+	if httpsErr != nil {
+		fmt.Fprintln(os.Stderr, "configure automatic HTTPS:", httpsErr)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -239,7 +255,7 @@ func main() {
 			}
 			bandwidthService = handlerService{handler: proxy}
 		}
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx)})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -305,7 +321,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           handler,
+		Handler:           httpsManager.RedirectToHTTPS(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		// Live tails are bounded to five minutes by the API. Keep the write
@@ -337,9 +353,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "listen:", err)
 		os.Exit(1)
 	}
-	defer listener.Close()
+	if _, port, splitErr := net.SplitHostPort(listener.Addr().String()); splitErr == nil {
+		httpsManager.Port = port
+	}
+	dashboardListener := webtls.NewListener(listener, httpsManager)
+	defer dashboardListener.Close()
+	go httpsManager.RenewLoop(ctx, func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	fmt.Fprintf(os.Stderr, "payesh-server listening on %s\n", listener.Addr().String())
-	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if status := httpsManager.Status(); status.State == webtls.StateActive {
+		fmt.Fprintf(os.Stderr, "HTTPS active for %s on port %s\n", status.Domain, status.HTTPSPort)
+	} else if !loopbackListenAddress(*listen) {
+		fmt.Fprintln(os.Stderr, "WARNING: the dashboard is served over plain HTTP without encryption; set a domain (payesh domain NAME) to enable HTTPS")
+	}
+	if err := server.Serve(dashboardListener); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		os.Exit(1)
 	}

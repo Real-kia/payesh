@@ -46,6 +46,7 @@ type API struct {
 	install         http.Handler
 	enrollment      http.Handler
 	enrollmentToken http.Handler
+	httpsSettings   http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -96,6 +97,8 @@ type Options struct {
 	// InstallService enables the authenticated durable SSH-install producer.
 	// Its credential handoff remains process-memory only.
 	InstallService *InstallService
+	// HTTPSSettings owns the dashboard domain/certificate settings route.
+	HTTPSSettings http.Handler
 }
 
 func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Options) (*API, error) {
@@ -169,7 +172,11 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		}
 		installHandler = sessions.Middleware(options.InstallService.Handler())
 	}
-	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	var httpsSettingsHandler http.Handler
+	if options.HTTPSSettings != nil {
+		httpsSettingsHandler = sessions.Middleware(options.HTTPSSettings)
+	}
+	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -204,6 +211,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trimmedPath := strings.TrimRight(r.URL.Path, "/")
+	if a.httpsSettings != nil && trimmedPath == "/api/v1/settings/https" {
+		a.httpsSettings.ServeHTTP(w, r)
+		return
+	}
 	if a.updates != nil && trimmedPath == "/api/v1/updates" {
 		a.updates.ServeHTTP(w, r)
 		return

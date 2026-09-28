@@ -1,11 +1,14 @@
 module github.com/Real-kia/payesh
 
-go 1.26
+go 1.26.0
 
 require (
-	golang.org/x/sys v0.36.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.39.1
+)
 
+require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

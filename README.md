@@ -13,13 +13,20 @@ On a Linux server (x86_64 or arm64, systemd or OpenRC):
 curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
 ```
 
-The installer downloads the latest release, verifies it, and starts Payesh.
-Your login is in `/etc/payesh/owner-credentials`. See the
-[quickstart](docs/QUICKSTART.md) for opening the dashboard, HTTPS with a
-domain, installer options, and (temporarily) installing while the repository
-is private.
+The installer downloads the latest release, verifies it, starts Payesh, and
+prints your login. Open **http://YOUR_SERVER_IP:8787**. That connection is not
+encrypted until you add a domain:
 
-Release `0.1.0` is a preview, not v1. Release archives are checksummed but
+```sh
+sudo payesh domain panel.example.com
+```
+
+Payesh then gets a free Let's Encrypt certificate and serves HTTPS on the same
+port, without using port 443 or touching nginx. See the
+[quickstart](docs/QUICKSTART.md) for details, installer options, and
+(temporarily) installing while the repository is private.
+
+Current releases are previews, not v1. Release archives are checksummed but
 intentionally unsigned until an authorized owner performs the external
 Ed25519 signing step.
 

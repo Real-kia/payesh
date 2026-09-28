@@ -56,7 +56,7 @@ const requiredPaths = [
   '/servers/{serverId}/cpu-policies/{targetKind}/{targetName}/revert:',
   '/updates/preflight:', '/backups:', '/backups/export:', '/backups/import:',
   '/role-transitions:', '/servers/{serverId}/enrollment:', '/servers/{serverId}/enrollment-token:', '/jobs/{jobId}:',
-  '/audit-events:'
+  '/audit-events:', '/settings/https:'
 ];
 for (const path of requiredPaths) {
   if (!spec.includes(`  ${path}`)) throw new Error(`OpenAPI path missing: ${path}`);
