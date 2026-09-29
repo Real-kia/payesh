@@ -171,10 +171,6 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 			return InstallResult{}, fmt.Errorf("convert hub to node: %w", err)
 		}
 	}
-	if !p.Supported && stateErr == nil && state.Role == role && state.Init == p.Init && previousServerInstall(root, p.Init, state) {
-		p.Problems = removeProblem(p.Problems, "requested listen address is already occupied")
-		p.Supported = len(p.Problems) == 0
-	}
 	if !p.Supported {
 		return InstallResult{Preflight: p}, &UnsupportedError{Reason: strings.Join(p.Problems, "; ")}
 	}
@@ -349,16 +345,6 @@ func previousServerInstall(root, init string, state installState) bool {
 	}
 	info, err := os.Lstat(rooted(root, servicePath))
 	return err == nil && info.Mode().IsRegular()
-}
-
-func removeProblem(problems []string, target string) []string {
-	filtered := problems[:0]
-	for _, problem := range problems {
-		if problem != target {
-			filtered = append(filtered, problem)
-		}
-	}
-	return filtered
 }
 
 func ensureOwnerCredentials(envPath, credentialsPath string) error {
@@ -769,8 +755,8 @@ func (m commandServiceManager) Apply(ctx context.Context, root, init string, ser
 				return commandError("systemctl enable "+service, out, err)
 			}
 			if start {
-				if out, err := m.runner.Run(ctx, "systemctl", "start", service); err != nil {
-					return commandError("systemctl start "+service, out, err)
+				if out, err := m.runner.Run(ctx, "systemctl", "restart", service); err != nil {
+					return commandError("systemctl restart "+service, out, err)
 				}
 				if out, err := m.runner.Run(ctx, "systemctl", "is-active", "--quiet", service); err != nil {
 					return commandError("systemctl health "+service, out, err)
@@ -787,8 +773,8 @@ func (m commandServiceManager) Apply(ctx context.Context, root, init string, ser
 			return commandError("rc-update add "+service, out, err)
 		}
 		if start {
-			if out, err := m.runner.Run(ctx, "rc-service", service, "start"); err != nil {
-				return commandError("rc-service start "+service, out, err)
+			if out, err := m.runner.Run(ctx, "rc-service", service, "restart"); err != nil {
+				return commandError("rc-service restart "+service, out, err)
 			}
 			if out, err := m.runner.Run(ctx, "rc-service", service, "status"); err != nil {
 				return commandError("rc-service health "+service, out, err)

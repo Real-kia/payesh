@@ -85,7 +85,7 @@ func Check(root, role, listen string) (Preflight, error) {
 		if err := validateListenAddress(listen); err != nil {
 			p.Supported = false
 			p.Problems = append(p.Problems, "requested listen address is invalid: "+err.Error())
-		} else if occupied(listen) {
+		} else if occupied(listen) && !existingServerListen(root, role, p.Init, listen) {
 			p.Supported = false
 			p.Problems = append(p.Problems, "requested listen address is already occupied")
 		}
@@ -299,4 +299,30 @@ func occupied(address string) bool {
 }
 func Format(p Preflight) string {
 	return fmt.Sprintf("%s %s %s (%s, %s)", p.Role, p.Distribution, p.Version, p.Architecture, p.Init)
+}
+
+// existingServerListen permits a rerun on the address recorded by the installed
+// server service. An installation on another address cannot waive a conflict.
+func existingServerListen(root, role, init, listen string) bool {
+	state, err := loadState(rooted(root, filepath.Join(dataDir, "install-state.json")))
+	if err != nil || state.Role != role || state.Init != init || !previousServerInstall(root, init, state) {
+		return false
+	}
+	body, err := os.ReadFile(servicePath(root, init, "payesh-server"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if init == "systemd" && strings.HasPrefix(line, "ExecStart=/usr/bin/payesh-server ") {
+			for _, arg := range strings.Fields(line) {
+				if arg == "-listen="+systemdArg(listen) {
+					return true
+				}
+			}
+		}
+		if init == "openrc" && line == "command_args=\"-db=/var/lib/payesh/payesh.db -listen="+openRCArg(listen)+"\"" {
+			return true
+		}
+	}
+	return false
 }

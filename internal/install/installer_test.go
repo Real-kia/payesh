@@ -157,6 +157,23 @@ func TestInstallUpgradeAllowsItsExistingListenAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	p, err := Check(root, "hub", address)
+	if err != nil || !p.Supported {
+		t.Fatalf("rerun preflight rejected existing listener: %+v err=%v", p, err)
+	}
+	other, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	p, err = Check(root, "hub", other.Addr().String())
+	if err != nil || p.Supported {
+		t.Fatalf("unrelated occupied address accepted: %+v err=%v", p, err)
+	}
+	p, err = Check(root, "standalone", address)
+	if err != nil || p.Supported {
+		t.Fatalf("different role accepted: %+v err=%v", p, err)
+	}
 	if _, err := Install(context.Background(), opts); err != nil {
 		t.Fatalf("upgrade rejected the existing Payesh listener: %v", err)
 	}
@@ -384,5 +401,37 @@ func TestInstallRejectsSymlinkArtifactSource(t *testing.T) {
 	_, err := Install(context.Background(), InstallOptions{Root: root, Role: "node", ArtifactDir: artifactDir, Verify: acceptArtifact, AccountManager: &testAccountManager{}})
 	if !errors.Is(err, ErrUnsafeArtifactPath) {
 		t.Fatalf("symlink artifact err=%v", err)
+	}
+}
+
+type recordingInstallRunner struct{ calls []string }
+
+func (r *recordingInstallRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
+	return nil, nil
+}
+
+func TestServiceActivationRestartsUpdatedBinaries(t *testing.T) {
+	for _, init := range []string{"systemd", "openrc"} {
+		t.Run(init, func(t *testing.T) {
+			runner := &recordingInstallRunner{}
+			manager := commandServiceManager{runner: runner}
+			services := []string{"payesh-agent", "payesh-server"}
+			if err := manager.Apply(context.Background(), "/", init, services, true); err != nil {
+				t.Fatal(err)
+			}
+			calls := strings.Join(runner.calls, "\n")
+			for _, service := range services {
+				restart := "systemctl restart " + service
+				health := "systemctl is-active --quiet " + service
+				if init == "openrc" {
+					restart = "rc-service " + service + " restart"
+					health = "rc-service " + service + " status"
+				}
+				if !strings.Contains(calls, restart) || !strings.Contains(calls, health) {
+					t.Fatalf("missing restart or health check: %s", calls)
+				}
+			}
+		})
 	}
 }
