@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { formatNetworkRate } from './network';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import type { PreviewChartData } from './preview/fixtures';
@@ -7,7 +8,11 @@
   let { data }: { data: PreviewChartData } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
-  const rate = (value: number) => `${(value * 8 / 1_000_000).toFixed(2)} Mbit/s`;
+  const rate = formatNetworkRate;
+
+  $effect(() => {
+    if (plot) plot.setData([data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)] as uPlot.AlignedData);
+  });
 
   onMount(() => {
     if (!data.networkRx || !data.networkTx || data.timestamps.length < 2) return;

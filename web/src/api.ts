@@ -60,6 +60,7 @@ export type ModulePage = { items: Module[]; next_cursor?: string };
 export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
 export type ModuleInstallationPage = { items: ModuleInstallation[]; next_cursor?: string };
 export type ModuleManifest = Record<string, unknown>;
+export type PackageSource = { kind: 'github' | 'local' | 'url'; location: string; version?: string; manifest_location?: string; signature_location?: string };
 export type AlertState = { id: string; rule_id: string; server_id?: string; state: 'pending' | 'firing' | 'recovered'; last_observation?: string; last_value?: number; incident_id?: string; precision_warning?: string };
 export type AlertStatePage = { items: AlertState[]; next_cursor?: string };
 
@@ -316,6 +317,10 @@ export class ApiClient {
 
   installModule(serverId: string, moduleId: string, body: { manifest: ModuleManifest; manifest_signature_b64: string; archive_base64: string; expected_revision: string; idempotency_key: string }, options: QueryOptions = {}): Promise<ModuleInstallation> {
     return this.request<ModuleInstallation>(`/servers/${encodeURIComponent(serverId)}/modules/${encodeURIComponent(moduleId)}/install`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  installModuleSource(serverId: string, moduleId: string, source: PackageSource, expectedRevision: string, idempotencyKey: string): Promise<ModuleInstallation> {
+    return this.request<ModuleInstallation>(`/servers/${encodeURIComponent(serverId)}/modules/${encodeURIComponent(moduleId)}/install`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ source, expected_revision: expectedRevision, idempotency_key: idempotencyKey }) });
   }
 
   moduleAction(serverId: string, moduleId: string, action: 'enable' | 'disable' | 'remove', expectedRevision: string, idempotencyKey: string, options: QueryOptions = {}): Promise<ModuleInstallation> {

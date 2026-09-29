@@ -231,6 +231,7 @@ func main() {
 			moduleManager.Executor = privdModuleExecutor{client: privd.Client{SocketPath: socket}}
 		}
 		moduleService := modules.NewService(moduleManager)
+		moduleService.Sources.GitHubToken = os.Getenv("GITHUB_TOKEN")
 		portTrafficService := porttraffic.NewService(&porttraffic.Manager{Store: store})
 		var cpuControlService interface{ Handler() http.Handler } = unavailableCPUService{}
 		if socket := strings.TrimSpace(os.Getenv("PAYESH_CPU_SOCKET")); socket != "" {
