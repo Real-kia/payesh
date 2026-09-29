@@ -176,6 +176,14 @@ func SaveAcceptedState(path string, state AcceptedState) error {
 
 func validSemver(version string) bool { return semverPattern.MatchString(version) }
 
+// CompareReleases compares validated release versions. It returns -1, 0, or 1.
+func CompareReleases(a, b string) (int, error) {
+	if !validSemver(a) || !validSemver(b) {
+		return 0, errors.New("invalid release version")
+	}
+	return compareSemver(a, b), nil
+}
+
 func compareSemver(a, b string) int {
 	am, bm := semverPattern.FindStringSubmatch(a), semverPattern.FindStringSubmatch(b)
 	for i := 1; i <= 3; i++ {

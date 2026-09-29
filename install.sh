@@ -14,6 +14,10 @@
 #   --domain NAME      get a free HTTPS certificate for NAME          PAYESH_DOMAIN
 #   --email ADDR       optional Let's Encrypt contact email           PAYESH_EMAIL
 #   --check            only run the host preflight, change nothing
+#   --convert-from ROLE explicit hub/standalone to node conversion
+#   --transport-url URL destination hub wss URL for conversion
+#   --node-identity-file PATH enrolled node identity for conversion
+#   --hub-ca-file PATH destination hub CA certificate for conversion
 #
 # The dashboard is reachable at http://SERVER_IP:8787 right away, without
 # encryption. With --domain (or later: sudo payesh domain NAME) the same port
@@ -32,6 +36,10 @@ LISTEN="${PAYESH_LISTEN:-}"
 DOMAIN="${PAYESH_DOMAIN:-}"
 EMAIL="${PAYESH_EMAIL:-}"
 CHECK_ONLY=0
+CONVERT_FROM=""
+TRANSPORT_URL=""
+NODE_IDENTITY_FILE=""
+HUB_CA_FILE=""
 TOKEN="${GITHUB_TOKEN:-}"
 
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -51,18 +59,28 @@ while [ $# -gt 0 ]; do
 	--email) EMAIL="${2:?--email needs a value}"; shift 2 ;;
 	--email=*) EMAIL="${1#*=}"; shift ;;
 	--check) CHECK_ONLY=1; shift ;;
+	--convert-from) CONVERT_FROM="${2:?--convert-from needs a value}"; shift 2 ;;
+	--transport-url) TRANSPORT_URL="${2:?--transport-url needs a value}"; shift 2 ;;
+	--node-identity-file) NODE_IDENTITY_FILE="${2:?--node-identity-file needs a value}"; shift 2 ;;
+	--hub-ca-file) HUB_CA_FILE="${2:?--hub-ca-file needs a value}"; shift 2 ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
 	esac
 done
 
+if [ -n "$CONVERT_FROM" ]; then
+	[ "$ROLE" = node ] || die "conversion target must be node"
+	[ -n "$TRANSPORT_URL" ] && [ -n "$NODE_IDENTITY_FILE" ] && [ -n "$HUB_CA_FILE" ] || die "conversion needs --transport-url, --node-identity-file, and --hub-ca-file"
+fi
+
 case "$ROLE" in
 standalone | hub | node | cli-only) ;;
 *) die "unsupported role '$ROLE' (use standalone, hub, node, or cli-only)" ;;
 esac
+
 VERSION="${VERSION#v}"
 
 # --- host checks -----------------------------------------------------------
@@ -210,10 +228,15 @@ done
 INSTALLER="$ARTIFACTS/payesh-install"
 chmod 0755 "$INSTALLER"
 
+set -- --role "$ROLE" "$@"
+if [ -n "$CONVERT_FROM" ]; then
+	set -- "$@" --convert-from "$CONVERT_FROM" --transport-url "$TRANSPORT_URL" --node-identity-file "$NODE_IDENTITY_FILE" --hub-ca-file "$HUB_CA_FILE"
+fi
+
 # --- install ---------------------------------------------------------------
 
 say "Checking this server"
-if ! "$INSTALLER" --role "$ROLE" ${LISTEN:+--listen "$LISTEN"}; then
+if ! "$INSTALLER" "$@"; then
 	die "this server did not pass the Payesh preflight (see the problems above)."
 fi
 if [ "$CHECK_ONLY" = 1 ]; then
@@ -230,7 +253,7 @@ if [ -f "$ENV_FILE" ] && grep -q '^PAYESH_SECURE_BROWSER_COOKIES=true$' "$ENV_FI
 fi
 
 say "Installing and starting services"
-"$INSTALLER" --role "$ROLE" --install --start --artifact-dir "$ARTIFACTS" "$@"
+"$INSTALLER" --install --start --artifact-dir "$ARTIFACTS" "$@"
 
 echo
 say "Payesh $VERSION is installed."

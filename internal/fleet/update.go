@@ -1,14 +1,19 @@
 package fleet
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/release"
 	"github.com/Real-kia/payesh/internal/updater"
+	"github.com/Real-kia/payesh/internal/version"
 )
 
 const defaultUpdateAuthorizationTTL = 30 * time.Minute
@@ -17,9 +22,12 @@ const defaultUpdateAuthorizationTTL = 30 * time.Minute
 // loop: workers call Scheduler.RunOnce/Run against the durable job ID. This
 // keeps owner intent and execution separate and makes a process restart safe.
 type UpdateService struct {
-	Store     *monitoring.Store
-	Scheduler *updater.Scheduler
-	Now       func() time.Time
+	Store          *monitoring.Store
+	Scheduler      *updater.Scheduler
+	Now            func() time.Time
+	ReleaseChecker interface {
+		Latest(context.Context) (release.GitHubRelease, error)
+	}
 }
 
 func NewUpdateService(store *monitoring.Store, scheduler *updater.Scheduler) (*UpdateService, error) {
@@ -47,6 +55,36 @@ type updateRequest struct {
 }
 
 func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v1/updates/latest" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		checker := s.ReleaseChecker
+		if checker == nil {
+			checker = release.GitHubClient{Token: os.Getenv("GITHUB_TOKEN")}
+		}
+		latest, err := checker.Latest(r.Context())
+		if err != nil {
+			writeFleetError(w, http.StatusBadGateway, "release_check_failed", "could not check GitHub Releases; for a private repository configure GITHUB_TOKEN", true)
+			return
+		}
+		available := true
+		if updater.ValidRelease(version.Value) {
+			if comparison, err := updater.CompareReleases(version.Value, latest.Version); err == nil {
+				available = comparison < 0
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Current         string `json:"current"`
+			Latest          string `json:"latest"`
+			UpdateAvailable bool   `json:"update_available"`
+			URL             string `json:"url"`
+		}{version.Value, latest.Version, available, latest.URL})
+		return
+	}
 	if r.URL.Path != "/api/v1/updates" {
 		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
 		return

@@ -53,6 +53,7 @@ export type Server = {
 export type ServerPage = { items: Server[]; next_cursor?: string };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
+export type UpdateStatus = { current: string; latest: string; update_available: boolean; url: string };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
 export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string };
@@ -290,6 +291,8 @@ export class ApiClient {
   createUpdate(body: UpdateRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>('/updates', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
   }
+
+  checkLatestUpdate(): Promise<UpdateStatus> { return this.request<UpdateStatus>('/updates/latest'); }
 
   enqueueInstall(body: InstallRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>('/installations', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
