@@ -202,6 +202,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.URL.Path == "/api/v1/account/me" || isFleetResourcePath(r.URL.Path, "/api/v1/accounts") {
+		a.sessions.Middleware(http.HandlerFunc(a.accountHTTP)).ServeHTTP(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 		a.sessions.Middleware(http.HandlerFunc(a.deleteServer)).ServeHTTP(w, r)
 		return

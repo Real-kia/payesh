@@ -1,7 +1,4 @@
-// Package auth provides the small, stateful authentication boundary used by
-// the web role. It deliberately keeps credentials out of request handlers and
-// stores only password/session digests in memory; a later persistence adapter
-// can serialize the same records without changing the security semantics.
+// Package auth owns browser accounts, sessions, CSRF, and role permissions.
 package auth
 
 import (
@@ -14,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +37,19 @@ type Repository interface {
 
 type passwordRecord struct{ salt, digest []byte }
 type sessionRecord struct {
-	digest  []byte
-	expires time.Time
-	csrf    string
+	digest   []byte
+	expires  time.Time
+	csrf     string
+	username string
+}
+type Account struct {
+	Username   string `json:"username"`
+	Role       string `json:"role"`
+	Permission string `json:"permission"`
+}
+type accountRecord struct {
+	Account
+	password passwordRecord
 }
 type throttleRecord struct {
 	failures     int
@@ -49,13 +57,14 @@ type throttleRecord struct {
 	blockedUntil time.Time
 }
 
-// Manager owns the one-owner account and browser sessions. It is safe for
+// Manager owns the owner account, delegated accounts, and browser sessions. It is safe for
 // concurrent use. No cleartext password, setup secret, or session token is
 // retained after the operation that consumes it.
 type Manager struct {
 	mu          sync.Mutex
 	owner       passwordRecord
 	username    string
+	accounts    map[string]accountRecord
 	configured  bool
 	setupDigest []byte
 	sessions    map[string]sessionRecord // keyed by a SHA-256 session digest
@@ -75,7 +84,7 @@ func NewPersistent(setupSecret string, repository Repository) (*Manager, error) 
 		return nil, errors.New("setup secret must contain at least 16 characters")
 	}
 	d := sha256.Sum256([]byte(setupSecret))
-	m := &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), throttle: make(map[string]throttleRecord), now: time.Now, repository: repository}
+	m := &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), accounts: make(map[string]accountRecord), throttle: make(map[string]throttleRecord), now: time.Now, repository: repository}
 	if repository == nil {
 		return m, nil
 	}
@@ -160,7 +169,8 @@ func (m *Manager) LoginWithUsername(key, username, password string) (session, cs
 	if !t.blockedUntil.IsZero() && now.Before(t.blockedUntil) {
 		return "", "", fmt.Errorf("auth.rate_limited")
 	}
-	ok := m.configured && subtle.ConstantTimeCompare([]byte(username), []byte(m.username)) == 1 && verifyPassword(m.owner, password)
+	record, member := m.accounts[username]
+	ok := m.configured && ((subtle.ConstantTimeCompare([]byte(username), []byte(m.username)) == 1 && verifyPassword(m.owner, password)) || (member && verifyPassword(record.password, password)))
 	if !ok {
 		if t.since.IsZero() || now.Sub(t.since) >= loginWindow {
 			t = throttleRecord{since: now}
@@ -185,7 +195,7 @@ func (m *Manager) LoginWithUsername(key, username, password string) (session, cs
 	csrf = randomToken(24)
 	d := sha256.Sum256([]byte(session))
 	sessionKey := base64.RawURLEncoding.EncodeToString(d[:])
-	m.sessions[sessionKey] = sessionRecord{digest: d[:], expires: now.Add(sessionTTL), csrf: csrf}
+	m.sessions[sessionKey] = sessionRecord{digest: d[:], expires: now.Add(sessionTTL), csrf: csrf, username: username}
 	if err := m.persistLocked(); err != nil {
 		delete(m.sessions, sessionKey)
 		return "", "", fmt.Errorf("persist session: %w", err)
@@ -292,6 +302,186 @@ func (m *Manager) Validate(session string) (csrf string, ok bool) {
 	return s.csrf, true
 }
 
+func (m *Manager) SessionAccount(session string) (Account, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := sha256.Sum256([]byte(session))
+	s, ok := m.sessions[base64.RawURLEncoding.EncodeToString(d[:])]
+	if !ok || !m.now().UTC().Before(s.expires) {
+		return Account{}, false
+	}
+	if s.username == m.username {
+		return Account{Username: m.username, Role: "owner", Permission: "edit"}, true
+	}
+	a, ok := m.accounts[s.username]
+	return a.Account, ok
+}
+
+func (m *Manager) Accounts() []Account {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := []Account{{Username: m.username, Role: "owner", Permission: "edit"}}
+	for _, a := range m.accounts {
+		result = append(result, a.Account)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Username < result[j].Username })
+	return result
+}
+
+func (m *Manager) SaveAccount(username, role, permission, password string) error {
+	if len(username) < 3 || len(username) > 128 || strings.ContainsAny(username, " \t\r\n/") {
+		return errors.New("invalid username")
+	}
+	if role != "admin" && role != "member" {
+		return errors.New("role must be admin or member")
+	}
+	if permission != "read" && permission != "edit" {
+		return errors.New("permission must be read or edit")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if username == m.username {
+		return errors.New("owner account cannot be changed here")
+	}
+	old, exists := m.accounts[username]
+	if exists {
+		return errors.New("username already exists")
+	}
+	if len(m.accounts) >= 100 {
+		return errors.New("account limit reached")
+	}
+	if password == "" {
+		return errors.New("password is required")
+	}
+	if len(password) < 12 || len(password) > 256 {
+		return errors.New("password must contain 12..256 characters")
+	}
+	var err error
+	old.password, err = newPasswordRecord(password)
+	if err != nil {
+		return err
+	}
+	old.Account = Account{Username: username, Role: role, Permission: permission}
+	m.accounts[username] = old
+	if err := m.persistLocked(); err != nil {
+		delete(m.accounts, username)
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) DeleteAccount(username string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if username == m.username {
+		return errors.New("owner account cannot be deleted")
+	}
+	old, exists := m.accounts[username]
+	if !exists {
+		return errors.New("account not found")
+	}
+	delete(m.accounts, username)
+	previousSessions := make(map[string]sessionRecord, len(m.sessions))
+	for key, s := range m.sessions {
+		previousSessions[key] = s
+	}
+	for key, s := range m.sessions {
+		if s.username == username {
+			delete(m.sessions, key)
+		}
+	}
+	if err := m.persistLocked(); err != nil {
+		m.accounts[username] = old
+		m.sessions = previousSessions
+		return err
+	}
+	return nil
+}
+
+// UpdateAccount changes an account and its sessions in one persisted state.
+func (m *Manager) UpdateAccount(oldName, newName, role, permission, password string) error {
+	if newName == "" {
+		newName = oldName
+	}
+	if len(newName) < 3 || len(newName) > 128 || strings.ContainsAny(newName, " \t\r\n/") {
+		return errors.New("invalid username")
+	}
+	if password != "" && (len(password) < 12 || len(password) > 256) {
+		return errors.New("password must contain 12..256 characters")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	owner := oldName == m.username
+	if !owner && (role != "admin" && role != "member" || permission != "read" && permission != "edit") {
+		return errors.New("invalid role or permission")
+	}
+	if owner && (role != "" || permission != "") {
+		return errors.New("owner role cannot change")
+	}
+	if !owner {
+		if _, ok := m.accounts[oldName]; !ok {
+			return errors.New("account not found")
+		}
+	}
+	if newName != oldName {
+		if newName == m.username {
+			return errors.New("username already exists")
+		}
+		if _, ok := m.accounts[newName]; ok {
+			return errors.New("username already exists")
+		}
+	}
+	previousUsername, previousOwner := m.username, m.owner
+	previousAccounts := make(map[string]accountRecord, len(m.accounts))
+	for key, value := range m.accounts {
+		previousAccounts[key] = value
+	}
+	previousSessions := make(map[string]sessionRecord, len(m.sessions))
+	for key, value := range m.sessions {
+		previousSessions[key] = value
+	}
+	if owner {
+		m.username = newName
+		if password != "" {
+			record, err := newPasswordRecord(password)
+			if err != nil {
+				m.username = previousUsername
+				return err
+			}
+			m.owner = record
+		}
+	} else {
+		account := m.accounts[oldName]
+		delete(m.accounts, oldName)
+		account.Username, account.Role, account.Permission = newName, role, permission
+		if password != "" {
+			record, err := newPasswordRecord(password)
+			if err != nil {
+				m.accounts = previousAccounts
+				return err
+			}
+			account.password = record
+		}
+		m.accounts[newName] = account
+	}
+	for key, session := range m.sessions {
+		if session.username != oldName {
+			continue
+		}
+		if password != "" {
+			delete(m.sessions, key)
+		} else {
+			session.username = newName
+			m.sessions[key] = session
+		}
+	}
+	if err := m.persistLocked(); err != nil {
+		m.username, m.owner, m.accounts, m.sessions = previousUsername, previousOwner, previousAccounts, previousSessions
+		return err
+	}
+	return nil
+}
+
 // Middleware protects browser routes with an HttpOnly SameSite cookie. Mutating
 // requests additionally require the per-session CSRF header.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
@@ -313,6 +503,11 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 			if subtle.ConstantTimeCompare([]byte(csrf), []byte(r.Header.Get("X-CSRF-Token"))) != 1 {
 				writeAuthError(w, http.StatusForbidden, "csrf_required", "csrf token required", false)
+				return
+			}
+			account, ok := m.SessionAccount(c.Value)
+			if !ok || account.Permission != "edit" {
+				writeAuthError(w, http.StatusForbidden, "read_only", "this account has read-only access", false)
 				return
 			}
 		}
@@ -392,14 +587,22 @@ type persistedState struct {
 	OwnerSalt  []byte                       `json:"owner_salt,omitempty"`
 	OwnerHash  []byte                       `json:"owner_hash,omitempty"`
 	Username   string                       `json:"username,omitempty"`
+	Accounts   map[string]persistedAccount  `json:"accounts,omitempty"`
 	Sessions   map[string]persistedSession  `json:"sessions,omitempty"`
 	Throttle   map[string]persistedThrottle `json:"throttle,omitempty"`
 }
 
 type persistedSession struct {
-	Digest  []byte    `json:"digest"`
-	Expires time.Time `json:"expires"`
-	CSRF    string    `json:"csrf"`
+	Digest   []byte    `json:"digest"`
+	Expires  time.Time `json:"expires"`
+	CSRF     string    `json:"csrf"`
+	Username string    `json:"username,omitempty"`
+}
+type persistedAccount struct {
+	Role       string `json:"role"`
+	Permission string `json:"permission"`
+	Salt       []byte `json:"salt"`
+	Hash       []byte `json:"hash"`
 }
 
 type persistedThrottle struct {
@@ -412,9 +615,12 @@ func (m *Manager) persistLocked() error {
 	if m.repository == nil {
 		return nil
 	}
-	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Username: m.username, Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
+	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Username: m.username, Accounts: make(map[string]persistedAccount, len(m.accounts)), Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
+	for name, a := range m.accounts {
+		state.Accounts[name] = persistedAccount{Role: a.Role, Permission: a.Permission, Salt: a.password.salt, Hash: a.password.digest}
+	}
 	for key, record := range m.sessions {
-		state.Sessions[key] = persistedSession{Digest: record.digest, Expires: record.expires, CSRF: record.csrf}
+		state.Sessions[key] = persistedSession{Digest: record.digest, Expires: record.expires, CSRF: record.csrf, Username: record.username}
 	}
 	for key, record := range m.throttle {
 		state.Throttle[key] = persistedThrottle{Failures: record.failures, Since: record.since, BlockedUntil: record.blockedUntil}
@@ -443,6 +649,15 @@ func (m *Manager) restore(data []byte) error {
 		m.username = "admin"
 	}
 	m.owner = passwordRecord{salt: append([]byte(nil), state.OwnerSalt...), digest: append([]byte(nil), state.OwnerHash...)}
+	if len(state.Accounts) > 100 {
+		return errors.New("too many accounts")
+	}
+	for name, a := range state.Accounts {
+		if name == m.username || len(name) < 3 || len(name) > 128 || strings.ContainsAny(name, " \t\r\n/") || len(a.Salt) != 16 || len(a.Hash) != 32 || (a.Role != "admin" && a.Role != "member") || (a.Permission != "read" && a.Permission != "edit") {
+			return errors.New("invalid persisted account")
+		}
+		m.accounts[name] = accountRecord{Account: Account{Username: name, Role: a.Role, Permission: a.Permission}, password: passwordRecord{salt: a.Salt, digest: a.Hash}}
+	}
 	for i := range m.setupDigest {
 		m.setupDigest[i] = 0
 	}
@@ -451,7 +666,16 @@ func (m *Manager) restore(data []byte) error {
 		if len(record.Digest) != sha256.Size || record.CSRF == "" || !now.Before(record.Expires) {
 			continue
 		}
-		m.sessions[key] = sessionRecord{digest: append([]byte(nil), record.Digest...), expires: record.Expires, csrf: record.CSRF}
+		name := record.Username
+		if name == "" {
+			name = m.username
+		}
+		if name != m.username {
+			if _, exists := m.accounts[name]; !exists {
+				continue
+			}
+		}
+		m.sessions[key] = sessionRecord{digest: append([]byte(nil), record.Digest...), expires: record.Expires, csrf: record.CSRF, username: name}
 	}
 	for key, record := range state.Throttle {
 		value := throttleRecord{failures: record.Failures, since: record.Since, blockedUntil: record.BlockedUntil}

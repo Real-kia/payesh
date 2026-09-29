@@ -15,6 +15,12 @@ Browser mutations require both the secure session cookie and the
 `X-CSRF-Token` header. API clients must not infer CSRF exemption from a JSON
 content type; the server validates the token and origin policy.
 
+The owner can manage up to 100 delegated `admin` or `member` accounts through
+`/accounts`. Each has `read` or `edit` permission. Read-only sessions may query
+the API but cannot mutate it; only the owner may list, create, change, or delete
+accounts. Password resets revoke that account's sessions. `GET /account/me`
+returns the current role and permission without credential material.
+
 The packaged server's default browser mode binds to the loopback HTTP listener
 and uses a non-Secure cookie so a local browser can complete setup. A
 non-loopback deployment must set `--secure-browser-cookies` and place the
