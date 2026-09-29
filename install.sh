@@ -30,7 +30,7 @@
 set -eu
 
 REPO="${PAYESH_REPO:-Real-kia/payesh}"
-ROLE="${PAYESH_ROLE:-standalone}"
+ROLE="${PAYESH_ROLE:-}"
 VERSION="${PAYESH_VERSION:-latest}"
 LISTEN="${PAYESH_LISTEN:-}"
 DOMAIN="${PAYESH_DOMAIN:-}"
@@ -75,6 +75,19 @@ if [ -n "$CONVERT_FROM" ]; then
 	[ "$ROLE" = node ] || die "conversion target must be node"
 	[ -n "$TRANSPORT_URL" ] && [ -n "$NODE_IDENTITY_FILE" ] && [ -n "$HUB_CA_FILE" ] || die "conversion needs --transport-url, --node-identity-file, and --hub-ca-file"
 fi
+
+UPDATING=0
+STATE_FILE=/var/lib/payesh/install-state.json
+if [ -f "$STATE_FILE" ]; then
+ UPDATING=1
+ if [ -z "$ROLE" ]; then
+  ROLE="$(sed -n 's/.*"role": *"\([^"]*\)".*/\1/p' "$STATE_FILE" | head -n 1)"
+ fi
+fi
+ROLE="${ROLE:-standalone}"
+ACTION=Installing
+DONE=installed
+if [ "$UPDATING" = 1 ]; then ACTION=Updating; DONE=updated; fi
 
 case "$ROLE" in
 standalone | hub | node | cli-only) ;;
@@ -140,7 +153,7 @@ mkdir -p "$WORK/archives" "$ARTIFACTS"
 # --- locate the release ----------------------------------------------------
 
 if [ -n "$TOKEN" ]; then
-	warn "GITHUB_TOKEN is set: downloading through the GitHub API (private repository mode)."
+	: # Use authenticated downloads without printing repository mode.
 	if [ "$VERSION" = latest ]; then
 		api="https://api.github.com/repos/$REPO/releases/latest"
 	else
@@ -189,7 +202,7 @@ node) NEEDED="payesh-agent payesh-privd payesh" ;;
 cli-only) NEEDED="payesh" ;;
 esac
 
-say "Installing Payesh ${VERSION:-latest} ($ROLE, linux/$ARCH) from github.com/$REPO"
+say "$ACTION Payesh ${VERSION:-latest} ($ROLE, linux/$ARCH) from github.com/$REPO"
 get_asset SHA256SUMS "$WORK/SHA256SUMS"
 
 for name in payesh-install $NEEDED; do
@@ -235,8 +248,8 @@ fi
 
 # --- install ---------------------------------------------------------------
 
-say "Checking this server"
-if ! "$INSTALLER" "$@"; then
+if ! "$INSTALLER" "$@" >"$WORK/preflight"; then
+	cat "$WORK/preflight" >&2
 	die "this server did not pass the Payesh preflight (see the problems above)."
 fi
 if [ "$CHECK_ONLY" = 1 ]; then
@@ -244,19 +257,8 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	exit 0
 fi
 
-# Earlier installs forced Secure cookies, which browsers refuse over plain
-# HTTP. Payesh still marks cookies Secure automatically on HTTPS requests.
-ENV_FILE=/etc/payesh/payesh.env
-if [ -f "$ENV_FILE" ] && grep -q '^PAYESH_SECURE_BROWSER_COOKIES=true$' "$ENV_FILE" && ! grep -q '^PAYESH_ALLOW_INSECURE_HTTP=' "$ENV_FILE"; then
-	sed -i 's/^PAYESH_SECURE_BROWSER_COOKIES=true$/PAYESH_ALLOW_INSECURE_HTTP=true/' "$ENV_FILE"
-	say "Updated $ENV_FILE for public HTTP access"
-fi
-
-say "Installing and starting services"
-"$INSTALLER" --install --start --artifact-dir "$ARTIFACTS" "$@"
-
-echo
-say "Payesh $VERSION is installed."
+"$INSTALLER" --install --start --artifact-dir "$ARTIFACTS" "$@" >"$WORK/result.json"
+say "Payesh $VERSION $DONE."
 case "$ROLE" in
 standalone | hub) ;;
 *) exit 0 ;;
@@ -267,41 +269,29 @@ PORT="${PORT:-8787}"
 IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
 IP="${IP:-SERVER_IP}"
 
-HTTPS_OK=0
 if [ -n "$DOMAIN" ]; then
-	say "Setting up HTTPS for $DOMAIN"
-	if /usr/bin/payesh domain "$DOMAIN" ${EMAIL:+--email "$EMAIL"}; then
-		HTTPS_OK=1
-	else
-		warn "HTTPS setup did not finish; Payesh is still reachable over HTTP. Fix the problem above, then run: sudo payesh domain $DOMAIN"
-	fi
+ set -- "$DOMAIN"
+ [ -z "$EMAIL" ] || set -- "$@" --email "$EMAIL"
+ /usr/bin/payesh domain "$@" >"$WORK/domain-result" || die "HTTPS setup failed."
 fi
 
-echo
-if [ "$HTTPS_OK" = 1 ]; then
-	printf '  Dashboard:  https://%s:%s\n' "$DOMAIN" "$PORT"
+# Read saved certificate state rather than assuming HTTP on every rerun.
+STATUS="$(/usr/bin/payesh domain 2>/dev/null)" || die "could not read HTTPS settings."
+SAVED_DOMAIN="$(printf '%s\n' "$STATUS" | awk '$1 == "domain:" {print $2}')"
+TLS_STATE="$(printf '%s\n' "$STATUS" | awk '$1 == "state:" {print $2}')"
+for service in /etc/systemd/system/payesh-server.service /etc/init.d/payesh-server; do
+ if [ -r "$service" ]; then
+  SAVED_LISTEN="$(tr '\042\047' '  ' <"$service" | sed -n 's/.*-listen=\([^ ]*\).*/\1/p' | head -n 1)"
+  [ -z "$SAVED_LISTEN" ] || PORT="${SAVED_LISTEN##*:}"
+  break
+ fi
+done
+if [ "$TLS_STATE" = active ]; then
+ printf 'Dashboard: https://%s:%s\n' "$SAVED_DOMAIN" "$PORT"
 else
-	printf '  Dashboard:  http://%s:%s\n' "$IP" "$PORT"
+ printf 'Dashboard: http://%s:%s\n' "$IP" "$PORT"
+ [ -z "$SAVED_DOMAIN" ] || warn "HTTPS for $SAVED_DOMAIN is $TLS_STATE."
 fi
-if [ -r /etc/payesh/owner-credentials ]; then
-	sed 's/^/  /' /etc/payesh/owner-credentials
-	echo "  (saved in /etc/payesh/owner-credentials)"
+if [ "$UPDATING" = 0 ] && [ -r /etc/payesh/owner-credentials ]; then
+ sed 's/^/  /' /etc/payesh/owner-credentials
 fi
-if [ "$HTTPS_OK" != 1 ]; then
-	printf '\n  \033[1;33mWARNING: no SSL.\033[0m The connection is not encrypted, so your password\n'
-	cat <<MSG
-  and data travel in plain text. To turn on HTTPS, point a domain or
-  subdomain at $IP and run:
-
-      sudo payesh domain panel.example.com
-
-  Payesh gets a free Let's Encrypt certificate and renews it automatically.
-  HTTPS runs on port $PORT; port 443 and nginx are not touched.
-MSG
-fi
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-	printf '\n  Firewall (ufw) is active. Allow the dashboard with: sudo ufw allow %s/tcp\n' "$PORT"
-elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-	printf '\n  firewalld is active. Allow the dashboard with:\n      sudo firewall-cmd --permanent --add-port=%s/tcp && sudo firewall-cmd --reload\n' "$PORT"
-fi
-echo

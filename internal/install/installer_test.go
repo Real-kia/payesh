@@ -435,3 +435,62 @@ func TestServiceActivationRestartsUpdatedBinaries(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdatePreservesServiceSettingsAndHTTPS(t *testing.T) {
+	for _, init := range []string{"systemd", "openrc"} {
+		t.Run(init, func(t *testing.T) {
+			root, artifacts := installFixture(t, init)
+			os.WriteFile(filepath.Join(artifacts, "payesh-server"), []byte("server-v1"), 0755)
+			os.Mkdir(filepath.Join(artifacts, "web-assets"), 0755)
+			os.WriteFile(filepath.Join(artifacts, "web-assets/index.html"), []byte("dashboard"), 0644)
+			opts := InstallOptions{Root: root, Role: "hub", Listen: "127.0.0.1:0", ArtifactDir: artifacts, Verify: acceptArtifact, AccountManager: &testAccountManager{}}
+			if _, err := Install(context.Background(), opts); err != nil {
+				t.Fatal(err)
+			}
+			serverUnit := servicePath(root, init, "payesh-server")
+			unit, err := os.ReadFile(serverUnit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unit = append(unit, []byte("\n# Operator HTTPS service configuration\n")...)
+			if err := os.WriteFile(serverUnit, unit, 0644); err != nil {
+				t.Fatal(err)
+			}
+			tls := filepath.Join(root, "var/lib/payesh/tls")
+			if err := os.MkdirAll(tls, 0700); err != nil {
+				t.Fatal(err)
+			}
+			retained := map[string]string{"config.json": `{"domain":"panel.example.com"}`, "cert.pem": "existing-cert", "key.pem": "existing-key"}
+			for name, content := range retained {
+				if err := os.WriteFile(filepath.Join(tls, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env, _ := os.ReadFile(filepath.Join(root, "etc/payesh/payesh.env"))
+			credentials, _ := os.ReadFile(filepath.Join(root, "etc/payesh/owner-credentials"))
+			opts.Listen = ""
+			if got := installedServerListen(root, init); got != "127.0.0.1:0" {
+				t.Fatalf("saved listen=%q", got)
+			}
+			if err := os.WriteFile(filepath.Join(artifacts, "payesh-server"), []byte("server-v2"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			result, err := Install(context.Background(), opts)
+			if err != nil || !result.Resumed {
+				t.Fatalf("update=%+v err=%v", result, err)
+			}
+			for path, want := range map[string]string{serverUnit: string(unit), filepath.Join(root, "etc/payesh/payesh.env"): string(env), filepath.Join(root, "etc/payesh/owner-credentials"): string(credentials), filepath.Join(root, "usr/bin/payesh-server"): "server-v2"} {
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("%s changed unexpectedly: err=%v", path, err)
+				}
+			}
+			for name, want := range retained {
+				got, err := os.ReadFile(filepath.Join(tls, name))
+				if err != nil || string(got) != want {
+					t.Fatalf("TLS %s changed: %v", name, err)
+				}
+			}
+		})
+	}
+}

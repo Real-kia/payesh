@@ -307,7 +307,17 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		if listen == "" {
 			listen = DefaultWebListen
 		}
-		if err := installServiceDefinitions(root, p.Init, services, listen); err != nil {
+		definitions := services
+		if result.Resumed && opts.Listen == "" {
+			definitions = nil
+			for _, service := range services {
+				info, err := os.Lstat(servicePath(root, p.Init, service))
+				if err != nil || !info.Mode().IsRegular() {
+					definitions = append(definitions, service)
+				}
+			}
+		}
+		if err := installServiceDefinitions(root, p.Init, definitions, listen); err != nil {
 			return result, fmt.Errorf("install service definitions: %w", err)
 		}
 		if opts.Start {

@@ -81,7 +81,6 @@ options:`)
 	}
 	port := dashboardPort()
 	fmt.Printf("\nDashboard: https://%s:%s\n", status.Domain, port)
-	fmt.Println("The certificate renews automatically.")
 	return nil
 }
 
