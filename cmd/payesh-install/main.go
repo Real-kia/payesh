@@ -27,7 +27,15 @@ func main() {
 	start := flag.Bool("start", false, "enable and start installed services (requires --install)")
 	uninstall := flag.Bool("uninstall", false, "stop/remove Payesh services and owned artifacts")
 	removeData := flag.Bool("remove-data", false, "with --uninstall, also remove Payesh data/config/log directories")
+	convertFrom := flag.String("convert-from", "", "explicit source role for hub-to-node conversion")
+	transportURL := flag.String("transport-url", "", "destination hub wss URL")
+	nodeIdentity := flag.String("node-identity-file", "", "enrolled node identity JSON")
+	hubCA := flag.String("hub-ca-file", "", "destination hub CA PEM")
 	flag.Parse()
+	var conversion *install.ConversionConfig
+	if *convertFrom != "" {
+		conversion = &install.ConversionConfig{FromRole: *convertFrom, TransportURL: *transportURL, NodeIdentityFile: *nodeIdentity, HubCAFile: *hubCA}
+	}
 	if *uninstall && *apply {
 		fmt.Fprintln(os.Stderr, "--uninstall cannot be combined with --install")
 		os.Exit(2)
@@ -79,6 +87,7 @@ func main() {
 		}
 		result, err := install.Install(context.Background(), install.InstallOptions{
 			Root: *root, Role: *role, Listen: *listen, ArtifactDir: *artifactDir, Start: *start,
+			Conversion:    conversion,
 			InstallerPath: installerPath,
 			Verify: func(name, path string) error {
 				expected, ok := digests[name]
@@ -118,6 +127,12 @@ func main() {
 		return
 	}
 
+	if conversion != nil {
+		if err := install.CheckHubToNode(context.Background(), *root, *conversion); err != nil {
+			fmt.Fprintln(os.Stderr, "conversion preflight:", err)
+			os.Exit(1)
+		}
+	}
 	preflight, err := install.Check(*root, *role, *listen)
 	if err != nil {
 		if *jsonOutput {

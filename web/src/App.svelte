@@ -6,7 +6,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -89,6 +89,9 @@
   let jobPollController: AbortController | null = null;
   let updateRelease = '';
   let updateBusy = false;
+  let updateStatus: UpdateStatus | null = null;
+  let updateCheckBusy = false;
+  let updateCheckError = '';
   let installHost = '';
   let installPort = '22';
   let installUser = 'root';
@@ -332,7 +335,15 @@
     }
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
-    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); }
+    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); }
+  }
+
+  async function checkLatestUpdate(): Promise<void> {
+    if (updateCheckBusy || PREVIEW_MODE) return;
+    updateCheckBusy = true; updateCheckError = '';
+    try { updateStatus = await apiClient.checkLatestUpdate(); }
+    catch (error) { updateCheckError = error instanceof Error ? error.message : 'Could not check GitHub Releases.'; }
+    finally { updateCheckBusy = false; }
   }
 
   async function loadAccounts(): Promise<void> {
@@ -1697,6 +1708,20 @@
             {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
           </article>
           {/if}
+          <article class="panel account-management">
+            <div class="panel-heading"><div><h2>Updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{updateCheckBusy ? 'Checking…' : 'Check GitHub'}</button></div>
+            {#if updateStatus}
+              <div class="settings-meta-box">
+                <div class="meta-row"><span>Installed</span><strong>v{updateStatus.current}</strong></div>
+                <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
+                <div class="meta-row"><span>Status</span><span class={`status-pill ${updateStatus.update_available ? 'pending' : 'healthy'}`}>{updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
+              </div>
+            {/if}
+            {#if updateCheckError}<p class="form-error" role="alert">{updateCheckError}</p>{/if}
+            <p class="muted">Run the update on this server:</p>
+            <code class="update-command">sudo payesh update</code>
+            <small class="muted">Private repository: pass a read-only GitHub token with <code>sudo --preserve-env=GITHUB_TOKEN payesh update</code>.</small>
+          </article>
           <article class="panel">
             <div class="panel-heading">
               <div>
@@ -2515,6 +2540,7 @@
   .account-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   .account-row strong, .account-row small { display: block; }
   .account-row small { color: var(--muted); margin-top: 3px; }
+  .update-command { display: block; width: fit-content; max-width: 100%; padding: 10px 14px; margin: 12px 0; border-radius: var(--radius-md); background: var(--surface-muted); overflow-wrap: anywhere; }
 
   .nav-count {
     margin-left: auto;

@@ -480,6 +480,26 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
       responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /updates/latest:
+    get:
+      operationId: checkLatestGitHubRelease
+      summary: Compare this installation with the latest GitHub release
+      security: [{ SessionCookie: [] }]
+      responses:
+        '200':
+          description: Latest release and update status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, latest, update_available, url]
+                properties:
+                  current: { type: string }
+                  latest: { type: string }
+                  update_available: { type: boolean }
+                  url: { type: string, format: uri }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: GitHub release lookup failed }
   /installations:
     post:
       operationId: startSSHInstallation

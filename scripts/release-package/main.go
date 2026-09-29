@@ -134,7 +134,7 @@ func run(version, output, baseURL, created string, includeWeb bool) error {
 		}
 		for _, target := range targets {
 			binary := filepath.Join(archDir, target.name)
-			if err := build(root, target.path, binary, arch); err != nil {
+			if err := build(root, target.path, binary, arch, version); err != nil {
 				return fmt.Errorf("build %s linux/%s: %w", target.name, arch, err)
 			}
 			archiveName := target.name + "-linux-" + arch + ".tar.gz"
@@ -267,8 +267,9 @@ func resolveOutputDir(raw string) (string, error) {
 	return resolved, nil
 }
 
-func build(root, packagePath, output, arch string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", output, packagePath)
+func build(root, packagePath, output, arch, version string) error {
+	ldflags := "-buildid= -X github.com/Real-kia/payesh/internal/version.Value=" + version
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags="+ldflags, "-o", output, packagePath)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

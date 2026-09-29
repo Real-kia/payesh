@@ -23,6 +23,7 @@ import (
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
 	"github.com/Real-kia/payesh/internal/updater"
+	"github.com/Real-kia/payesh/internal/version"
 )
 
 func main() {
@@ -63,6 +64,12 @@ func main() {
 		err = verifyBackup(ctx, os.Args[2:])
 	case "domain":
 		err = domain(ctx, os.Args[2:])
+	case "update":
+		err = updateCommand(ctx, os.Args[2:])
+	case "role":
+		err = roleCommand(ctx, os.Args[2:])
+	case "version":
+		fmt.Println(version.Value)
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -93,8 +100,11 @@ commands:
   cpu-services     list selectable systemd/OpenRC CPU service targets (read-only)
   run              start a command in a Payesh-owned cgroup (Linux only)
   backup           create a consistent online SQLite backup using VACUUM INTO
+  role             convert an enrolled hub to a monitoring node
   verify-backup    run PRAGMA integrity_check against a SQLite backup file
-  domain           set the dashboard domain and get an automatic HTTPS certificate`)
+  domain           set the dashboard domain and get an automatic HTTPS certificate
+  update           check GitHub Releases or install the latest local release
+  version          print this binary's release version`)
 }
 
 func runWorkload(ctx context.Context, args []string) error {

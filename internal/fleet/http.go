@@ -33,20 +33,21 @@ type API struct {
 	monitoring http.Handler
 	// secureCookies is false only for the explicitly loopback-bound HTTP
 	// mode. Public deployments should construct the API with true behind TLS.
-	secureCookies   bool
-	trustedProxies  []*net.IPNet
-	alerts          http.Handler
-	traffic         http.Handler
-	modules         http.Handler
-	cpuControl      http.Handler
-	bandwidth       http.Handler
-	portTraffic     http.Handler
-	jobs            http.Handler
-	updates         http.Handler
-	install         http.Handler
-	enrollment      http.Handler
-	enrollmentToken http.Handler
-	httpsSettings   http.Handler
+	secureCookies       bool
+	trustedProxies      []*net.IPNet
+	alerts              http.Handler
+	traffic             http.Handler
+	modules             http.Handler
+	cpuControl          http.Handler
+	bandwidth           http.Handler
+	portTraffic         http.Handler
+	jobs                http.Handler
+	updates             http.Handler
+	install             http.Handler
+	enrollment          http.Handler
+	enrollmentToken     http.Handler
+	enrollmentAuthority *transport.CertificateAuthority
+	httpsSettings       http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -176,7 +177,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.HTTPSSettings != nil {
 		httpsSettingsHandler = sessions.Middleware(options.HTTPSSettings)
 	}
-	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -219,7 +220,7 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.httpsSettings.ServeHTTP(w, r)
 		return
 	}
-	if a.updates != nil && trimmedPath == "/api/v1/updates" {
+	if a.updates != nil && (trimmedPath == "/api/v1/updates" || trimmedPath == "/api/v1/updates/latest") {
 		a.updates.ServeHTTP(w, r)
 		return
 	}
@@ -275,6 +276,19 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
 	var request deleteServerRequest
 	if !decode(w, r, &request) {
 		return
+	}
+	if a.enrollmentAuthority != nil {
+		server, found, lookupErr := a.store.GetServer(r.Context(), contracts.ServerID(id))
+		if lookupErr != nil {
+			writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not inspect server", true)
+			return
+		}
+		if found && server.Role == "node" && server.ConfigurationRevision == request.ExpectedRevision {
+			if err := a.enrollmentAuthority.RevokeServer(contracts.ServerID(id)); err != nil {
+				writeFleetError(w, http.StatusServiceUnavailable, "revocation_failed", "could not revoke node identity", true)
+				return
+			}
+		}
 	}
 	err := a.store.DeleteServer(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
 	switch {

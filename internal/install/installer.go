@@ -104,6 +104,8 @@ type InstallOptions struct {
 	AccountManager AccountManager
 	ServiceManager ServiceManager
 	CommandRunner  CommandRunner
+	ServiceRemover ServiceRemover
+	Conversion     *ConversionConfig
 	Start          bool
 }
 
@@ -155,6 +157,20 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	}
 	statePath := rooted(root, filepath.Join(dataDir, "install-state.json"))
 	state, stateErr := loadState(statePath)
+	converting := opts.Conversion != nil
+	if stateErr == nil && state.Role != role {
+		if !converting || role != "node" || opts.Conversion.FromRole != state.Role {
+			return InstallResult{}, fmt.Errorf("changing installed role from %s to %s requires explicit conversion", state.Role, role)
+		}
+	}
+	if converting {
+		if role != "node" {
+			return InstallResult{}, errors.New("conversion target must be node")
+		}
+		if err := CheckHubToNode(ctx, root, *opts.Conversion); err != nil {
+			return InstallResult{}, fmt.Errorf("convert hub to node: %w", err)
+		}
+	}
 	if !p.Supported && stateErr == nil && state.Role == role && state.Init == p.Init && previousServerInstall(root, p.Init, state) {
 		p.Problems = removeProblem(p.Problems, "requested listen address is already occupied")
 		p.Supported = len(p.Problems) == 0
@@ -187,7 +203,7 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	if stateErr == nil && state.Role == role && state.Init == p.Init {
 		result.Resumed = len(state.Installed) > 0
 	}
-	if state.Role != role || state.Init != p.Init {
+	if !converting && (state.Role != role || state.Init != p.Init) {
 		state = installState{Role: role, Init: p.Init}
 	}
 
@@ -243,8 +259,10 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 		result.Installed = append(result.Installed, name)
 		state.Installed = appendUnique(state.Installed, name)
-		if err := saveState(statePath, state); err != nil {
-			return result, fmt.Errorf("save install state: %w", err)
+		if !converting {
+			if err := saveState(statePath, state); err != nil {
+				return result, fmt.Errorf("save install state: %w", err)
+			}
 		}
 	}
 	if strings.TrimSpace(opts.InstallerPath) != "" {
@@ -257,8 +275,32 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 		result.Installed = append(result.Installed, "payesh-install")
 		state.Installed = appendUnique(state.Installed, "payesh-install")
+		if !converting {
+			if err := saveState(statePath, state); err != nil {
+				return result, fmt.Errorf("save install state: %w", err)
+			}
+		}
+	}
+	if converting {
+		remover := opts.ServiceRemover
+		if remover == nil {
+			remover = commandServiceRemover{runner: chooseRunner(opts.CommandRunner)}
+		}
+		if err := remover.Remove(ctx, root, state.Init, serviceNames(state.Role), true); err != nil {
+			return result, fmt.Errorf("stop old hub services: %w", err)
+		}
+		if err := writeNodeConversionConfig(root, *opts.Conversion, account); err != nil {
+			return result, fmt.Errorf("configure node enrollment: %w", err)
+		}
+		for _, path := range []string{servicePath(root, state.Init, "payesh-server"), artifactDestination(root, "payesh-server"), artifactDestination(root, "web-assets")} {
+			if _, err := removeOwnedPath(path, root); err != nil {
+				return result, fmt.Errorf("remove old hub artifact: %w", err)
+			}
+		}
+		state.Role, state.Init = role, p.Init
+		state.Installed = append([]string(nil), result.Installed...)
 		if err := saveState(statePath, state); err != nil {
-			return result, fmt.Errorf("save install state: %w", err)
+			return result, fmt.Errorf("save converted role: %w", err)
 		}
 	}
 

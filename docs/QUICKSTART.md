@@ -31,6 +31,59 @@ That's it. The installer:
 
 When it finishes, it prints the dashboard address and your login.
 
+### Install a monitoring node in one line
+
+Run this on the server that will become a node:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --role node
+```
+
+While the repository is private, use a read-only token instead:
+
+```sh
+GITHUB_TOKEN='YOUR_GITHUB_PAT' sh -c 'curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/Real-kia/payesh/contents/install.sh | sudo --preserve-env=GITHUB_TOKEN sh -s -- --role node'
+```
+
+This installs the agent. To send data to a hub, enroll the node through the
+hub's **Add Server** flow; a node without enrollment collects locally only.
+
+### Check for updates
+
+In **Settings → Updates**, select **Check GitHub** to compare the installed
+version with the latest release. From the server shell:
+
+```sh
+payesh update check
+sudo payesh update
+```
+
+For a private repository, set a read-only `GITHUB_TOKEN` and preserve it through
+`sudo`, as in the private install command above. `payesh update` keeps the
+installed role and downloads verified release archives.
+
+### Convert a hub to a node
+
+First move every managed node to another hub and remove its old record and
+enrollment from this hub. Enroll this server with the destination hub, then
+save its node identity JSON and the destination hub CA certificate locally.
+The conversion refuses to run if the old hub still has node records or active
+certificates.
+
+```sh
+sudo payesh role convert node --transport-url wss://NEW_HUB:8787/node/v1 \
+  --node-identity-file /root/new-node-identity.json \
+  --hub-ca-file /root/new-hub-ca.pem --check
+sudo payesh role convert node --transport-url wss://NEW_HUB:8787/node/v1 \
+  --node-identity-file /root/new-node-identity.json \
+  --hub-ca-file /root/new-hub-ca.pem
+```
+
+The conversion stops the old dashboard service, preserves its database for
+recovery, installs the node role, and starts the agent with the destination
+hub credentials. If the repository is still private, pass `GITHUB_TOKEN` as
+for `payesh update`.
+
 > Want to see if your server is supported first, without changing anything?
 > Add `-s -- --check` at the end:
 > `curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --check`
