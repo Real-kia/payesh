@@ -80,7 +80,10 @@ func Check(root, role, listen string) (Preflight, error) {
 	}
 	if role != "node" && role != "cli-only" {
 		if listen == "" {
-			listen = DefaultWebListen
+			listen = installedServerListen(root, p.Init)
+			if listen == "" {
+				listen = DefaultWebListen
+			}
 		}
 		if err := validateListenAddress(listen); err != nil {
 			p.Supported = false
@@ -325,4 +328,27 @@ func existingServerListen(root, role, init, listen string) bool {
 		}
 	}
 	return false
+}
+
+func installedServerListen(root, init string) string {
+	body, err := os.ReadFile(servicePath(root, init, "payesh-server"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "ExecStart=/usr/bin/payesh-server ") && !strings.HasPrefix(line, "command_args=") {
+			continue
+		}
+		for _, field := range strings.Fields(strings.NewReplacer(`"`, " ", "'", " ").Replace(line)) {
+			if value, ok := strings.CutPrefix(field, "-listen="); ok {
+				if init == "systemd" {
+					value = strings.ReplaceAll(value, "%%", "%")
+				}
+				if validateListenAddress(value) == nil {
+					return value
+				}
+			}
+		}
+	}
+	return ""
 }
