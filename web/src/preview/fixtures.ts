@@ -60,5 +60,12 @@ export const previewLogEntries: PreviewLogEntry[] = [
 ];
 
 export function getPreviewServers(): PreviewServer[] {
+  for (const server of fixtureServers) {
+    if (!server.metricHistory) continue;
+    for (const range of Object.values(server.metricHistory.ranges)) {
+      range.networkRx = [800000, 1200000, 900000, 2100000, 1400000, 1250000];
+      range.networkTx = [300000, 500000, 450000, 900000, 700000, 625000];
+    }
+  }
   return fixtureServers.map((server) => ({ ...server, capabilities: [...server.capabilities] })).sort((a, b) => severity[a.displayState] - severity[b.displayState]);
 }

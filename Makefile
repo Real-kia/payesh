@@ -63,7 +63,7 @@ contract-check:
 	node scripts/contract-check.mjs
 
 web-check:
-	cd web && npm run check && npm run build
+	cd web && npm test && npm run check && npm run build
 
 # Runs only disposable filesystem-root installer acceptance; no supervisor or
 # host paths are changed. Live clean-host acceptance remains a separate gate.

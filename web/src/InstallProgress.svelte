@@ -421,7 +421,7 @@
     width: 100%;
     height: 6px;
     background: var(--surface-muted);
-    border-radius: 9999px;
+    border-radius: 4px;
     overflow: hidden;
     position: relative;
   }
@@ -430,7 +430,7 @@
     display: block;
     height: 100%;
     background: linear-gradient(90deg, #06b6d4, #3b82f6);
-    border-radius: 9999px;
+    border-radius: 4px;
     transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: 0 0 10px rgba(6, 182, 212, 0.4);
   }
@@ -566,7 +566,7 @@
   .terminal-window {
     background: #080c14;
     border: 1px solid #1e293b;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -701,7 +701,7 @@
     padding: 0.25rem 0.65rem 0.25rem 1.6rem;
     background: rgba(6, 182, 212, 0.08);
     border: 1px solid rgba(6, 182, 212, 0.25);
-    border-radius: 9999px;
+    border-radius: 4px;
     font-size: 0.75rem;
     font-weight: 600;
     color: #06b6d4;
@@ -745,7 +745,7 @@
     color: #ef4444;
     background: rgba(239, 68, 68, 0.08);
     border: 1px solid rgba(239, 68, 68, 0.25);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: all 0.15s ease;
     white-space: nowrap;
@@ -801,7 +801,7 @@
     gap: 1rem;
     background: rgba(239, 68, 68, 0.03);
     border: 1px solid rgba(239, 68, 68, 0.22);
-    border-radius: 10px;
+    border-radius: var(--radius-lg);
     padding: 1.25rem;
   }
 
@@ -828,7 +828,7 @@
     padding: 0.2rem 0.6rem;
     background: var(--surface-muted);
     border: 1px solid var(--border);
-    border-radius: 9999px;
+    border-radius: 4px;
     font-size: 0.6875rem;
     font-weight: 600;
     text-transform: uppercase;
@@ -868,7 +868,7 @@
   .diagnostic-box {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 1rem;
     display: flex;
     flex-direction: column;
@@ -926,16 +926,16 @@
   }
 
   .auto-retry-btn {
-    background: linear-gradient(135deg, #06b6d4, #3b82f6) !important;
+    background: var(--teal) !important;
     border: none !important;
     color: #fff !important;
     font-weight: 600 !important;
-    box-shadow: 0 2px 10px rgba(6, 182, 212, 0.35) !important;
+    box-shadow: none !important;
   }
 
   .auto-retry-btn:hover {
     filter: brightness(1.1);
     transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(6, 182, 212, 0.45) !important;
+    box-shadow: none !important;
   }
 </style>

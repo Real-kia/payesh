@@ -259,7 +259,7 @@
     justify-content: center;
     gap: 8px;
     padding: 8px 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-md, 5px);
     border: 1px solid transparent;
     font-size: 13px;
     font-weight: 500;
@@ -288,10 +288,10 @@
   }
 
   .button.primary {
-    background: linear-gradient(135deg, #0d9488, #059669);
-    border-color: #0d9488;
+    background: var(--teal);
+    border-color: var(--teal);
     color: #ffffff;
-    box-shadow: 0 2px 10px rgba(13, 148, 136, 0.35);
+    box-shadow: none;
     font-weight: 600;
   }
 
@@ -300,10 +300,10 @@
   }
 
   .button.danger {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
-    border-color: #ef4444;
+    background: var(--danger);
+    border-color: var(--danger);
     color: #ffffff;
-    box-shadow: 0 2px 10px rgba(239, 68, 68, 0.35);
+    box-shadow: none;
     font-weight: 600;
   }
 

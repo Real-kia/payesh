@@ -987,10 +987,25 @@ components:
       type: object
       required: [items]
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/ModuleInstallation' } }, next_cursor: { type: string, maxLength: 256 } }
+    PackageSource:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [github, local, url] }
+        location: { type: string, maxLength: 4096, description: 'GitHub owner/repository, absolute archive path on this Payesh server, or archive HTTP(S) URL.' }
+        version: { type: string, maxLength: 128, description: 'GitHub release tag or latest.' }
+        manifest_location: { type: string, maxLength: 4096 }
+        signature_location: { type: string, maxLength: 4096 }
     ModuleInstallRequest:
       type: object
-      required: [idempotency_key, expected_revision, manifest, manifest_signature_b64, archive_base64]
-      properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, manifest: { $ref: '#/components/schemas/ModuleManifest' }, manifest_signature_b64: { type: string, minLength: 1, maxLength: 512, description: 'Detached Ed25519 signature over the manifest RFC 8785 canonical JSON, unpadded base64url.' }, archive_base64: { type: string, description: 'Standard (padded) base64 of the verified module archive bytes.' } }
+      required: [idempotency_key, expected_revision]
+      oneOf:
+        - required: [source]
+          not: { anyOf: [{ required: [manifest] }, { required: [manifest_signature_b64] }, { required: [archive_base64] }] }
+        - required: [manifest, manifest_signature_b64, archive_base64]
+          not: { required: [source] }
+      properties: { source: { $ref: '#/components/schemas/PackageSource' }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, manifest: { $ref: '#/components/schemas/ModuleManifest' }, manifest_signature_b64: { type: string, minLength: 1, maxLength: 512, description: 'Detached Ed25519 signature over the manifest RFC 8785 canonical JSON, unpadded base64url.' }, archive_base64: { type: string, description: 'Standard (padded) base64 of the verified module archive bytes.' } }
     ModuleLifecycleRequest:
       type: object
       required: [idempotency_key, expected_revision]

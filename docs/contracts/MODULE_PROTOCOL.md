@@ -46,3 +46,25 @@ configuration endpoint). `Enable`/`Disable` do not yet drive a real
 `payesh-privd module.invoke` call — that wiring, plus a provisioned
 production signing key, is the next integration step. See
 `docs/handoffs/06.md`.
+
+## Package sources
+
+The dashboard offers GitHub, local path, and URL sources. The install request
+accepts `source: {kind, location, version?, manifest_location?, signature_location?}`
+instead of inline archive/manifest bytes. Local paths refer to regular files on
+the Payesh server, not files on the browser's computer. URL sources accept HTTP(S).
+
+For `cpu-controls-linux-amd64.tar.gz`, metadata defaults to
+`cpu-controls-linux-amd64.manifest.json` and
+`cpu-controls-linux-amd64.manifest.sig` in the same directory. Local and URL
+sources can override those locations. GitHub resolves these three release assets
+via the release API; `location` defaults to `Real-kia/payesh`, and `version` defaults
+to `latest`. Private repositories use the server's `GITHUB_TOKEN`.
+
+All sources retain pinned Ed25519 manifest verification and checksum/size/platform
+checks. A plain release archive without module metadata is not an installable
+signed module. Installation remains limited to the configured local standalone
+server with its privileged module executor; remote module execution is unchanged.
+
+Network download/upload monitoring is part of the base agent and dashboard;
+it does not require the bandwidth-controls or port-traffic modules.

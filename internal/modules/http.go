@@ -1,8 +1,8 @@
 package modules
 
 // The modules HTTP adapter exposes the curated catalog and the per-server
-// install/enable/disable/remove lifecycle. It never accepts a
-// request-provided download URL — Archive/Manifest bytes are verified
+// install/enable/disable/remove lifecycle. Package bytes from every source
+// are verified
 // against the pinned trust registry before anything is written to disk.
 
 import (
@@ -28,6 +28,7 @@ var moduleIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 type Service struct {
 	Store   *monitoring.Store
 	Manager *Manager
+	Sources SourceLoader
 }
 
 func NewService(manager *Manager) *Service {
@@ -93,6 +94,7 @@ type lifecycleRequest struct {
 	Manifest             *contracts.ModuleManifest `json:"manifest,omitempty"`
 	ManifestSignatureB64 string                    `json:"manifest_signature_b64,omitempty"`
 	ArchiveBase64        string                    `json:"archive_base64,omitempty"`
+	Source               *PackageSource            `json:"source,omitempty"`
 }
 
 var moduleActions = map[string]bool{"install": true, "enable": true, "disable": true, "remove": true}
@@ -155,6 +157,26 @@ func (s *Service) lifecycle(w http.ResponseWriter, r *http.Request, serverID con
 func (s *Service) runAction(r *http.Request, serverID contracts.ServerID, moduleID, action string, request lifecycleRequest) (contracts.ModuleInstallation, error) {
 	switch action {
 	case "install":
+		if request.Source != nil {
+			if request.Manifest != nil || request.ArchiveBase64 != "" || request.ManifestSignatureB64 != "" {
+				return contracts.ModuleInstallation{}, errors.New("choose a package source or inline package data")
+			}
+			server, found, err := s.Store.GetServer(r.Context(), serverID)
+			if err != nil {
+				return contracts.ModuleInstallation{}, err
+			}
+			if !found {
+				return contracts.ModuleInstallation{}, errors.New("server not found")
+			}
+			if s.Manager.LocalServerID != serverID || server.Role != "standalone" {
+				return contracts.ModuleInstallation{}, ErrModuleExecutorUnavailable
+			}
+			manifest, signature, archive, err := s.Sources.Load(r.Context(), *request.Source, moduleID, server.Architecture)
+			if err != nil {
+				return contracts.ModuleInstallation{}, err
+			}
+			return s.Manager.Install(r.Context(), InstallRequest{ServerID: serverID, ModuleID: moduleID, Manifest: manifest, ManifestSignatureB64: signature, Archive: archive, ExpectedRevision: request.ExpectedRevision})
+		}
 		if request.Manifest == nil {
 			return contracts.ModuleInstallation{}, errors.New("manifest is required to install a module")
 		}
