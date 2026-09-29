@@ -8,6 +8,20 @@ On your Linux server (x86_64 or arm64), run:
 curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
 ```
 
+### For a private repo
+
+Replace `YOUR_GITHUB_PAT` with a fine-grained GitHub token that has
+**Contents: Read-only** access to `Real-kia/payesh`, then run this single line:
+
+```sh
+GITHUB_TOKEN='YOUR_GITHUB_PAT' sh -c 'curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/Real-kia/payesh/contents/install.sh | sudo --preserve-env=GITHUB_TOKEN sh'
+```
+
+The token is also passed to the installer so it can download the private
+release. See [private-repository setup](#temporary-installing-while-the-repository-is-private)
+for token creation and cleanup. A token entered directly in this command may
+remain in your shell history.
+
 That's it. The installer:
 
 1. checks that the server is supported,
@@ -132,7 +146,8 @@ the GitHub API instead when `GITHUB_TOKEN` is set.
 1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
    limited to the `Real-kia/payesh` repository with **Contents: Read-only**
    and a short expiry.
-2. On the server (curl is required in this mode):
+2. On the server (curl is required in this mode), use the one-line command
+   [above](#for-a-private-repo), or export the token separately:
 
 ```sh
 export GITHUB_TOKEN=github_pat_xxx
