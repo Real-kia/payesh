@@ -6,11 +6,11 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type HTTPSStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
-  type Page = 'overview' | 'servers' | 'server' | 'alerts' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
+  type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
   type DetailTab = 'metrics' | 'traffic' | 'logs';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
@@ -68,6 +68,19 @@
   let authUsername = '';
   let authBusy = false;
   let authError = '';
+  let myAccount: Account | null = PREVIEW_MODE ? { username: 'admin', role: 'owner', permission: 'edit' } : null;
+  let accounts: Account[] = myAccount ? [myAccount] : [];
+  let accountUsername = '';
+  let accountPassword = '';
+  let accountRole: 'admin' | 'member' = 'member';
+  let accountPermission: 'read' | 'edit' = 'read';
+  let accountError = '';
+  let accountBusy = false;
+  let editingAccount = '';
+  let editUsername = '';
+  let editPassword = '';
+  let editRole: 'owner' | 'admin' | 'member' = 'member';
+  let editPermission: 'read' | 'edit' = 'read';
   let setupCompleted = false;
   let latestJob: Job | null = null;
   let activeInstall: InstallProgressData | null = null;
@@ -95,8 +108,6 @@
   let moduleInstallations: ModuleInstallation[] = [];
   let packageBusy = '';
   let packageError = '';
-  let packageSourceMode: 'server-path' | 'external-url' = 'server-path';
-  let packageSource = '';
   let alerts: AlertState[] = [];
   let alertsState: PreviewState = 'loading';
   let alertsError = '';
@@ -293,7 +304,7 @@
     if (parts[0] === 'servers' && parts[1] === 'new' && parts.length === 2) return { activePage: 'add-server' };
     if (parts[0] === 'servers' && parts[1] && parts.length === 2) return { activePage: 'server', selectedServerId: decodeURIComponent(parts[1]) };
     if (parts[0] === 'servers' && parts.length === 1) return { activePage: 'servers' };
-    if (parts.length === 1 && ['alerts', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
+    if (parts.length === 1 && ['monitoring', 'alerts', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
     return { activePage: 'overview' };
   }
 
@@ -321,7 +332,49 @@
     }
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
-    if (page === 'settings' && !PREVIEW_MODE) void loadHTTPS();
+    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); }
+  }
+
+  async function loadAccounts(): Promise<void> {
+    try {
+      myAccount = await apiClient.getMyAccount();
+      accounts = myAccount.role === 'owner' ? (await apiClient.listAccounts()).items : [];
+      accountError = '';
+    } catch (error) { accountError = error instanceof Error ? error.message : 'Could not load accounts.'; }
+  }
+
+  async function saveAccount(): Promise<void> {
+    if (!accountUsername.trim() || !accountPassword || accountBusy) return;
+    accountBusy = true; accountError = '';
+    try {
+      await apiClient.createAccount({ username: accountUsername.trim(), password: accountPassword, role: accountRole, permission: accountPermission });
+      accountUsername = ''; accountPassword = '';
+      await loadAccounts(); showNotice('Account added.');
+    } catch (error) { accountError = error instanceof Error ? error.message : 'Could not add account.'; }
+    finally { accountBusy = false; }
+  }
+
+  function startEditingAccount(account: Account): void {
+    editingAccount = account.username; editUsername = account.username; editPassword = '';
+    editRole = account.role; editPermission = account.permission; accountError = '';
+  }
+
+  async function editAccount(account: Account): Promise<void> {
+    accountError = '';
+    try {
+      await apiClient.updateAccount(account.username, { username: editUsername.trim(), ...(editPassword ? { password: editPassword } : {}), ...(account.role === 'owner' ? {} : { role: editRole, permission: editPermission }) });
+      const changedOwnPassword = account.role === 'owner' && editPassword !== '';
+      editingAccount = ''; editPassword = '';
+      if (changedOwnPassword) { sessionState = 'signed-out'; authExpired = true; navigate('overview'); showNotice('Password changed. Sign in again.'); }
+      else { await loadAccounts(); showNotice('Account updated.'); }
+    } catch (error) { accountError = error instanceof Error ? error.message : 'Could not update account.'; }
+  }
+
+  async function removeAccount(account: Account): Promise<void> {
+    if (!window.confirm(`Remove ${account.username}? Their sessions will be revoked.`)) return;
+    accountError = '';
+    try { await apiClient.deleteAccount(account.username); await loadAccounts(); showNotice('Account removed.'); }
+    catch (error) { accountError = error instanceof Error ? error.message : 'Could not remove account.'; }
   }
 
   async function loadHTTPS(): Promise<void> {
@@ -432,17 +485,20 @@
     return moduleInstallations.find((item) => item.module_id === moduleId);
   }
 
-  async function packageAction(module: Module, action: 'install' | 'enable' | 'disable' | 'remove'): Promise<void> {
+  function packageGitHubURL(module: Module): string {
+    const arch = servers.find((server) => server.id === packageServerId)?.architecture;
+    const release = `https://github.com/Real-kia/payesh/releases/tag/v${module.latest_version}`;
+    return arch === 'amd64' || arch === 'arm64'
+      ? `https://github.com/Real-kia/payesh/releases/download/v${module.latest_version}/${module.id}-linux-${arch}.tar.gz`
+      : release;
+  }
+
+  async function packageAction(module: Module, action: 'enable' | 'disable' | 'remove'): Promise<void> {
     if (!packageServerId || packageBusy) return;
     packageBusy = `${module.id}:${action}`; packageError = '';
     try {
       const current = moduleState(module.id);
-      let result: ModuleInstallation;
-      if (action === 'install') {
-        throw new Error('Source installation will be enabled when the hub release resolver is configured.');
-      } else {
-        result = await apiClient.moduleAction(packageServerId, module.id, action, current?.revision ?? '0', operationKey(`package-${action}`));
-      }
+      const result = await apiClient.moduleAction(packageServerId, module.id, action, current?.revision ?? '0', operationKey(`package-${action}`));
       moduleInstallations = [...moduleInstallations.filter((item) => item.module_id !== module.id), result];
       showNotice(`${module.name} is now ${result.state}.`);
     } catch (error) {
@@ -1085,6 +1141,7 @@
       if (controller.signal.aborted) return;
       sessionState = 'authenticated';
       servers = page.items.map(emptyApiServer);
+      void loadAccounts();
       selectedServerId = servers[0]?.id ?? '';
       restoreState(savedUiState);
       previewState = servers.length ? 'ready' : 'empty';
@@ -1131,7 +1188,7 @@
 
   function restoreState(state: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null) {
     if (!state) return;
-    if (state.activePage && ['overview', 'servers', 'server', 'alerts', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
+    if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
     if (state.detailTab === 'metrics' || state.detailTab === 'traffic' || state.detailTab === 'logs') detailTab = state.detailTab;
@@ -1203,6 +1260,10 @@
         <Icon name="overview" size={17} />
         <span>Overview</span>
       </button>
+      <button class:active={activePage === 'monitoring'} class="nav-item" type="button" on:click={() => navigate('monitoring')} aria-current={activePage === 'monitoring' ? 'page' : undefined}>
+        <Icon name="activity" size={17} />
+        <span>Server monitoring</span>
+      </button>
       <button class:active={activePage === 'servers' || activePage === 'server' || activePage === 'add-server' || activePage === 'install-progress'} class="nav-item" type="button" on:click={() => navigate('servers')}>
         <Icon name="servers" size={17} />
         <span>Servers</span>
@@ -1247,6 +1308,7 @@
       </div>
 
       <div class="topbar-actions">
+        {#if myAccount?.permission === 'read'}<span class="status-pill pending">Read only</span>{/if}
         {#if PREVIEW_MODE}
           <label class="preview-control">
             <span>Data</span>
@@ -1264,10 +1326,10 @@
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}
           <button class="button ghost small" type="button" on:click={() => promptSignOut()}>Sign out</button>
         {/if}
-        <button class="button primary small" type="button" on:click={() => openAddServer()}>
+        {#if myAccount?.permission !== 'read'}<button class="button primary small" type="button" on:click={() => openAddServer()}>
           <Icon name="plus" size={14} />
           <span>Add server</span>
-        </button>
+        </button>{/if}
       </div>
     </header>
 
@@ -1277,7 +1339,34 @@
       <div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => navigate('settings')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
     {/if}
 
-    {#if activePage === 'servers'}
+    {#if activePage === 'monitoring'}
+      <section class="page" aria-labelledby="monitoring-title">
+        <div class="page-heading">
+          <div><p class="eyebrow">Live fleet health</p><h1 id="monitoring-title">Server monitoring</h1><p class="lede">Key signals for every server in one view.</p></div>
+          <span class="heading-status-badge"><span class="live-ping"></span>{displayServers.length} servers</span>
+        </div>
+        <div class="summary-grid">
+          <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
+          <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
+          <article class="summary-card"><div class="card-header"><span class="stat-label">Fleet traffic</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">{formatBytes(overviewTrafficBytes)}</strong></article>
+        </div>
+        {#if displayServers.length === 0}<div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>{/if}
+        <div class="monitoring-grid">
+          {#each displayServers as server}
+            <article class="panel monitoring-card">
+              <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
+              <div class="monitoring-metrics">
+                <div><span>CPU</span><strong>{metricValue(server.metrics.cpu)}</strong></div>
+                <div><span>Memory</span><strong>{metricValue(server.metrics.memory)}</strong></div>
+                <div><span>Disk</span><strong>{metricValue(server.metrics.disk)}</strong></div>
+              </div>
+              <div class="monitoring-bottom"><span>Traffic: {formatBytes(server.traffic.countedBytes)}</span><span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
+              <button class="button ghost small" type="button" on:click={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
+            </article>
+          {/each}
+        </div>
+      </section>
+    {:else if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading">
           <div>
@@ -1285,10 +1374,10 @@
             <h1 id="servers-title">Servers</h1>
             <p class="lede">Manage every connected hub, node, and standalone instance from a single control plane.</p>
           </div>
-          <button class="button primary" type="button" on:click={() => openAddServer()}>
+          {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}>
             <Icon name="plus" size={15} />
             <span>Add server</span>
-          </button>
+          </button>{/if}
         </div>
 
         <div class="table-container">
@@ -1503,7 +1592,7 @@
               {/each}
             </select>
           </label>
-          <p class="muted info-hint">Package releases must be cryptographically signed by the trust key configured on this hub.</p>
+          <p class="muted info-hint">Browse <a href="https://github.com/Real-kia/payesh/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a> for Payesh packages. Dashboard installation requires a trusted signature.</p>
         </article>
 
         {#if modulesState === 'loading'}
@@ -1532,23 +1621,15 @@
                 <div class="module-meta">
                   <span>Status: <strong class="capitalize">{moduleState(module.id)?.state || 'not installed'}</strong></span>
                 </div>
+                <a class="button ghost small full-width" href={packageGitHubURL(module)} target="_blank" rel="noopener noreferrer">{['amd64', 'arm64'].includes(servers.find((server) => server.id === packageServerId)?.architecture || '') ? 'Download from GitHub' : 'View on GitHub'}</a>
                 {#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}
-                  <div class="package-source">
-                    <div class="radio-group">
-                      <label class="radio-pill"><input type="radio" bind:group={packageSourceMode} value="server-path" /> Host Path</label>
-                      <label class="radio-pill"><input type="radio" bind:group={packageSourceMode} value="external-url" /> External URL</label>
-                    </div>
-                    <input class="source-input" bind:value={packageSource} placeholder={packageSourceMode === 'server-path' ? '/opt/payesh/releases/...' : 'https://...'} />
-                  </div>
-                  <button class="button primary small full-width" type="button" disabled={!packageSource.trim() || !!packageBusy} on:click={() => void packageAction(module, 'install')}>
-                    {packageBusy === `${module.id}:install` ? 'Installing…' : 'Install from source'}
-                  </button>
-                {:else if moduleState(module.id)?.state === 'installed-disabled'}
+                  <p class="muted info-hint">Dashboard installation requires a signed module release. GitHub archives are available for download.</p>
+                {:else if moduleState(module.id)?.state === 'installed-disabled' && myAccount?.permission !== 'read'}
                   <div class="job-actions">
                     <button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button>
                     <button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'remove')}>Remove</button>
                   </div>
-                {:else if moduleState(module.id)?.state === 'enabled'}
+                {:else if moduleState(module.id)?.state === 'enabled' && myAccount?.permission !== 'read'}
                   <button class="button ghost small full-width" disabled={!!packageBusy} on:click={() => void packageAction(module, 'disable')}>Disable module</button>
                 {/if}
               </article>
@@ -1564,7 +1645,6 @@
           <div>
             <p class="eyebrow">Hub Administration</p>
             <h1 id="settings-title">Settings</h1>
-            <p class="lede">Manage hub security, encryption credentials, and operational preferences.</p>
           </div>
         </div>
 
@@ -1573,7 +1653,6 @@
             <div class="panel-heading">
               <div>
                 <h2>Account & Authentication</h2>
-                <p class="muted">Owner credentials protect the local hub API. Secrets are encrypted locally on the host.</p>
               </div>
             </div>
             <div class="settings-meta-box">
@@ -1581,20 +1660,47 @@
                 <span>Session State</span>
                 <span class="status-pill healthy"><i class="status-dot"></i> Authenticated</span>
               </div>
-              <div class="meta-row">
-                <span>Storage</span>
-                <span class="mono">Local-first encrypted SQLite</span>
-              </div>
             </div>
             <div class="settings-actions">
               <button class="button ghost" type="button" on:click={() => promptSignOut()}>Sign out of hub</button>
             </div>
           </article>
+          {#if myAccount?.role === 'owner'}
+          <article class="panel account-management">
+            <div class="panel-heading"><div><h2>Account management</h2></div></div>
+            <div class="account-list">
+              {#each accounts as account}
+                <div class="account-row">
+                  <div><strong>{account.username}</strong><small>{account.role} · {account.permission === 'read' ? 'Read only' : 'Can edit'}</small></div>
+                  <div class="settings-actions"><button class="button ghost small" type="button" on:click={() => startEditingAccount(account)}>Edit</button>{#if account.role !== 'owner'}<button class="button ghost small" type="button" on:click={() => void removeAccount(account)}>Remove</button>{/if}</div>
+                </div>
+                {#if editingAccount === account.username}
+                  <form class="form-grid account-edit-form" on:submit|preventDefault={() => void editAccount(account)}>
+                    <label>Username<input bind:value={editUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
+                    <label>New password<input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" /></label>
+                    {#if account.role !== 'owner'}
+                      <label>Role<select bind:value={editRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
+                      <label>Permission<select bind:value={editPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
+                    {/if}
+                    <div class="settings-actions"><button class="button primary small" type="submit">Save changes</button><button class="button ghost small" type="button" on:click={() => editingAccount = ''}>Cancel</button></div>
+                  </form>
+                {/if}
+              {/each}
+            </div>
+            <form class="form-grid" on:submit|preventDefault={() => void saveAccount()}>
+              <label>Username<input bind:value={accountUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
+              <label>Password<input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" /></label>
+              <label>Role<select bind:value={accountRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
+              <label>Permission<select bind:value={accountPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
+              <button class="button primary" type="submit" disabled={accountBusy}>Add account</button>
+            </form>
+            {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
+          </article>
+          {/if}
           <article class="panel">
             <div class="panel-heading">
               <div>
                 <h2>Domain & HTTPS</h2>
-                <p class="muted">Point a domain or subdomain at this server and Payesh gets a free Let's Encrypt certificate and renews it automatically. HTTPS is served on the dashboard's own port; port 443 and other web servers such as nginx are left alone.</p>
               </div>
             </div>
             <div class="settings-meta-box">
@@ -1619,14 +1725,14 @@
             </div>
             {#if httpsStatus?.state === 'failed' && httpsStatus.error}<p class="form-error" role="alert">{httpsStatus.error}</p>{/if}
             <form class="form-grid" on:submit|preventDefault={() => void saveHTTPS()}>
-              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy} /><small>Create a DNS A record pointing to this server first.</small></label>
-              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy} /><small>Let's Encrypt sends expiry warnings here.</small></label>
-              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy} /><small>Payesh uses port 80 briefly to verify the domain. If nginx or another program uses port 80, give a Cloudflare token with Zone → DNS → Edit permission instead.</small></label>
+              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Create a DNS A record pointing to this server first.</small></label>
+              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Let's Encrypt sends expiry warnings here.</small></label>
+              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Needed when port 80 is in use. Requires Zone → DNS → Edit.</small></label>
             </form>
             {#if httpsError}<p class="form-error" role="alert">{httpsError}</p>{/if}
             <div class="settings-actions">
-              <button class="button primary" type="button" disabled={httpsBusy || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
-              {#if httpsStatus?.domain && !httpsBusy}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
+              <button class="button primary" type="button" disabled={httpsBusy || myAccount?.permission === 'read' || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
+              {#if httpsStatus?.domain && !httpsBusy && myAccount?.permission !== 'read'}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
             </div>
           </article>
         </div>
@@ -2076,7 +2182,7 @@
               <p class="eyebrow">Fleet Overview</p>
               <h2>Servers ({displayServers.length})</h2>
             </div>
-            <span class="muted info-hint">Sorted by attention priority</span>
+            <button class="button ghost small" type="button" on:click={() => navigate('monitoring')}>Go to server monitoring <Icon name="chevron-right" size={14} /></button>
           </div>
 
           <div class="table-container">
@@ -2392,6 +2498,23 @@
     border-color: var(--line);
     box-shadow: var(--shadow-sm);
   }
+
+  .monitoring-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .monitoring-card { display: flex; flex-direction: column; gap: 18px; }
+  .monitoring-top, .monitoring-bottom { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .monitoring-top h2 { margin: 0 0 4px; font-size: 17px; }
+  .monitoring-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .monitoring-metrics div { padding: 12px; border-radius: var(--radius-md); background: var(--surface-muted); }
+  .monitoring-metrics span, .monitoring-metrics strong { display: block; }
+  .monitoring-metrics span, .monitoring-bottom { color: var(--muted); font-size: 12px; }
+  .monitoring-metrics strong { margin-top: 5px; font-size: 18px; color: var(--ink); }
+  .monitoring-bottom { flex-wrap: wrap; }
+  .monitoring-card > button { align-self: flex-start; margin-top: auto; }
+  .account-management { grid-column: 1 / -1; }
+  .account-list { margin-bottom: 20px; }
+  .account-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .account-row strong, .account-row small { display: block; }
+  .account-row small { color: var(--muted); margin-top: 3px; }
 
   .nav-count {
     margin-left: auto;

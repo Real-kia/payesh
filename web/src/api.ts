@@ -53,6 +53,7 @@ export type Server = {
 export type ServerPage = { items: Server[]; next_cursor?: string };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
+export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
 export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string };
 export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
@@ -225,6 +226,12 @@ export class ApiClient {
   login(username: string, password: string, options: QueryOptions = {}): Promise<void> {
     return this.request<void>('/session', { method: 'POST', body: JSON.stringify({ username, password }), signal: options.signal });
   }
+
+  getMyAccount(): Promise<Account> { return this.request<Account>('/account/me'); }
+  listAccounts(): Promise<{ items: Account[] }> { return this.request<{ items: Account[] }>('/accounts'); }
+  createAccount(body: Account & { password: string }): Promise<void> { return this.request<void>('/accounts', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  updateAccount(username: string, body: { username?: string; role?: string; permission?: string; password?: string }): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  deleteAccount(username: string): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
 
   async logout(options: QueryOptions = {}): Promise<void> {
     await this.request<void>('/session', { method: 'DELETE', headers: this.mutationHeaders(), signal: options.signal });

@@ -46,6 +46,50 @@ paths:
       responses:
         '204': { description: Session expired }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /account/me:
+    get:
+      operationId: getCurrentAccount
+      security: [{ SessionCookie: [] }]
+      responses:
+        '200': { description: Current account and permission, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: Owner only
+      security: [{ SessionCookie: [] }]
+      responses:
+        '200': { description: Accounts without credential hashes, content: { application/json: { schema: { $ref: '#/components/schemas/AccountPage' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAccount
+      summary: Owner only
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AccountCreateRequest' } } } }
+      responses:
+        '201': { description: Account created }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /accounts/{username}:
+    parameters: [{ name: username, in: path, required: true, schema: { type: string, minLength: 3, maxLength: 128 } }]
+    patch:
+      operationId: updateAccount
+      summary: Owner may change usernames, passwords, roles and permissions
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AccountUpdateRequest' } } } }
+      responses:
+        '204': { description: Account updated; password reset revokes its sessions }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      operationId: deleteAccount
+      summary: Owner may delete a delegated account; owner account cannot be deleted
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      responses:
+        '204': { description: Account deleted and sessions revoked }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /servers:
     get:
       operationId: listServers
@@ -615,6 +659,32 @@ components:
       description: Whole seconds to wait before the next login attempt.
       schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
+    Account:
+      type: object
+      required: [username, role, permission]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 128 }
+        role: { type: string, enum: [owner, admin, member] }
+        permission: { type: string, enum: [read, edit] }
+    AccountPage:
+      type: object
+      required: [items]
+      properties: { items: { type: array, maxItems: 101, items: { $ref: '#/components/schemas/Account' } } }
+    AccountCreateRequest:
+      type: object
+      required: [username, role, permission, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 128 }
+        role: { type: string, enum: [admin, member] }
+        permission: { type: string, enum: [read, edit] }
+        password: { type: string, minLength: 12, maxLength: 256 }
+    AccountUpdateRequest:
+      type: object
+      properties:
+        username: { type: string, minLength: 3, maxLength: 128 }
+        role: { type: string, enum: [admin, member] }
+        permission: { type: string, enum: [read, edit] }
+        password: { type: string, minLength: 12, maxLength: 256 }
     HTTPSStatus:
       type: object
       required: [state]
