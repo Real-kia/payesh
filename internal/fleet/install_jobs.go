@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,10 @@ type InstallService struct {
 	Transport          install.SSHTransport
 	ConfirmHostKey     func(install.SSHHostKey) bool
 	KnownHostsPath     string
+	Downloads          *install.DownloadRegistry
+	DownloadBaseURL    string
+	MatrixDir          string
+	ReleaseVersion     string
 
 	Authority    *transport.CertificateAuthority
 	TransportURL string
@@ -75,7 +80,7 @@ func NewInstallService(store *monitoring.Store) (*InstallService, error) {
 	if store == nil {
 		return nil, errors.New("install service requires store")
 	}
-	return &InstallService{Store: store, pending: make(map[string]install.SSHInstallOptions), notify: make(chan struct{}, 1)}, nil
+	return &InstallService{Store: store, Downloads: &install.DownloadRegistry{}, MatrixDir: "/usr/share/payesh/matrix", pending: make(map[string]install.SSHInstallOptions), notify: make(chan struct{}, 1)}, nil
 }
 
 func (s *InstallService) wakeWorker() {
@@ -98,6 +103,7 @@ func (s *InstallService) now() time.Time {
 func (s *InstallService) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
 
 type installRequest struct {
+	downloadBaseURL            string
 	ServerID                   string     `json:"server_id,omitempty"`
 	Mode                       string     `json:"mode,omitempty"`
 	Host                       string     `json:"host"`
@@ -136,6 +142,17 @@ func (s *InstallService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request.ServerID = string(pathID)
+	}
+	request.downloadBaseURL = s.DownloadBaseURL
+	if request.downloadBaseURL == "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if origin, err := url.Parse(r.Header.Get("Origin")); err == nil && origin.Host == r.Host && origin.Scheme == "https" {
+			scheme = "https"
+		}
+		request.downloadBaseURL = scheme + "://" + r.Host
 	}
 	job, err := s.Enqueue(r.Context(), request)
 	if err != nil {
@@ -264,8 +281,23 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 			nodeIdentityJSON, _ = json.Marshal(identity)
 		}
 	}
+	var download func(context.Context, string, string) (install.ArtifactDownload, error)
+	baseURL := request.downloadBaseURL
+	if baseURL == "" {
+		baseURL = s.DownloadBaseURL
+	}
+	if s.Downloads != nil && baseURL != "" {
+		download = func(ctx context.Context, arch, role string) (install.ArtifactDownload, error) {
+			paths, err := install.SelectLinuxArtifacts(s.InstallerPath, s.Artifacts, s.MatrixDir, arch, role, s.VerifyArtifact)
+			if err != nil {
+				return install.ArtifactDownload{}, err
+			}
+			return s.Downloads.Publish(ctx, baseURL, role, paths)
+		}
+	}
 	return install.SSHInstallOptions{
-		ServerID:         string(serverID),
+		ServerID:          string(serverID),
+		DownloadArtifacts: download, ReleaseVersion: s.ReleaseVersion,
 		TransportURL:     s.TransportURL,
 		NodeIdentityJSON: nodeIdentityJSON,
 		HubTrustPEM:      s.HubTrustPEM,

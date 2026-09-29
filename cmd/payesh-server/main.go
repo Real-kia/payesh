@@ -28,6 +28,7 @@ import (
 	"github.com/Real-kia/payesh/internal/transport"
 	"github.com/Real-kia/payesh/internal/trust"
 	"github.com/Real-kia/payesh/internal/updater"
+	"github.com/Real-kia/payesh/internal/version"
 	"github.com/Real-kia/payesh/internal/webtls"
 )
 
@@ -201,6 +202,8 @@ func main() {
 			}
 			installService.Executor = fleet.SSHInstallerFunc(installpkg.InstallOverSSH)
 		}
+		installService.DownloadBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("PAYESH_PUBLIC_URL")), "/")
+		installService.ReleaseVersion = version.Value
 		installService.Authority = enrollmentAuthority
 		installService.TransportURL = strings.TrimSpace(*transportURL)
 		if nodeConfig.CertFile != "" {

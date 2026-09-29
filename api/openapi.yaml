@@ -11,6 +11,20 @@ x-max-request-bytes: 1048576
 x-max-response-bytes: 1048576
 x-pagination-max-items: 200
 paths:
+  /install-artifacts/{token}/bundle.tar.gz:
+    get:
+      operationId: downloadInstallationBundle
+      summary: Download a job-scoped installation bundle
+      security: []
+      x-max-response-bytes: 134217728
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '200': { description: Verified installation archive, content: { application/gzip: { schema: { type: string, format: binary } } } }
+        '404': { description: Download token is invalid, expired, or revoked }
   /setup:
     post:
       operationId: completeSetup

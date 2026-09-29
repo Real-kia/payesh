@@ -28,6 +28,13 @@ for (const [path, item] of Object.entries(document.paths)) {
     if (!['get', 'post', 'put', 'patch', 'delete'].includes(method)) continue;
     const exempt = (path === '/setup' || path === '/session') && method === 'post';
     if (exempt) continue;
+    if (path === '/install-artifacts/{token}/bundle.tar.gz' && method === 'get') {
+      const token = operation.parameters?.find((parameter) => parameter.name === 'token');
+      if (operation.security?.length !== 0 || token?.in !== 'path' || token.required !== true || token.schema?.pattern !== '^[a-f0-9]{64}$') {
+        throw new Error('installation download must require a scoped 256-bit path token');
+      }
+      continue;
+    }
     const mutation = ['post', 'put', 'patch', 'delete'].includes(method);
     if (mutation && !operation.security?.some((scheme) => scheme.SessionCookie && scheme.CSRFToken)) {
       throw new Error(`mutation lacks session+CSRF security: ${method} ${path}`);
