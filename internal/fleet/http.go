@@ -44,6 +44,7 @@ type API struct {
 	jobs                http.Handler
 	updates             http.Handler
 	install             http.Handler
+	installDownloads    http.Handler
 	enrollment          http.Handler
 	enrollmentToken     http.Handler
 	enrollmentAuthority *transport.CertificateAuthority
@@ -167,21 +168,29 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		updateHandler = sessions.Middleware(updateService.Handler())
 	}
 	var installHandler http.Handler
+	var installDownloads http.Handler
 	if options.InstallService != nil {
 		if options.InstallService.Store != store {
 			return nil, errors.New("install service store does not match API store")
 		}
 		installHandler = sessions.Middleware(options.InstallService.Handler())
+		if options.InstallService.Downloads != nil {
+			installDownloads = options.InstallService.Downloads
+		}
 	}
 	var httpsSettingsHandler http.Handler
 	if options.HTTPSSettings != nil {
 		httpsSettingsHandler = sessions.Middleware(options.HTTPSSettings)
 	}
-	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
 func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if a.installDownloads != nil && strings.HasPrefix(r.URL.Path, "/api/v1/install-artifacts/") {
+		a.installDownloads.ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		a.monitoring.ServeHTTP(w, r)
 		return

@@ -614,11 +614,11 @@
 
     activeInstall.simulatedProgress = Math.max(activeInstall.simulatedProgress, Math.max(p, 12));
 
-    if (p >= 20 && !activeInstall.logs.some((l) => l.text.includes('Probing GitHub'))) {
-      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Probing GitHub releases (github.com/Real-kia/payesh) for remote package download...', level: 'info' }];
+    if (p >= 20 && !activeInstall.logs.some((l) => l.text.includes('Checking installation files'))) {
+      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Checking installation files.', level: 'info' }];
     }
-    if (p >= 35 && !activeInstall.logs.some((l) => l.text.includes('streaming binaries'))) {
-      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'GitHub package unavailable (private repo); streaming binaries directly from master hub...', level: 'info' }];
+    if (p === 35 && !activeInstall.logs.some((l) => l.text.includes('Downloading from hub'))) {
+      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Downloading from hub.', level: 'info' }];
     }
 
     if (targetStage !== activeInstall.currentStage) {

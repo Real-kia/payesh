@@ -215,6 +215,30 @@ for name in payesh-install $NEEDED; do
 	[ "$actual" = "$expected" ] || die "checksum mismatch for $file; refusing to install."
 	tar -xzf "$WORK/archives/$file" -C "$ARTIFACTS"
 done
+# Hubs retain both Linux architectures for node downloads when GitHub is
+# unavailable to a node. These are the core installer/agent artifacts only.
+MATRIX="$WORK/matrix"
+case "$ROLE" in
+standalone | hub)
+ mkdir -p "$MATRIX"
+ for matrix_arch in amd64 arm64; do
+  for matrix_name in payesh-install payesh-agent payesh-privd payesh; do
+   if [ "$matrix_arch" = "$ARCH" ]; then
+    cp "$ARTIFACTS/$matrix_name" "$MATRIX/$matrix_name-linux-$matrix_arch"
+   else
+    matrix_archive="$matrix_name-linux-$matrix_arch.tar.gz"
+    say "Downloading $matrix_archive"
+    get_asset "$matrix_archive" "$WORK/archives/$matrix_archive"
+    expected="$(awk -v f="$matrix_archive" '$2 == f { print $1; exit }' "$WORK/SHA256SUMS")"
+    [ -n "$expected" ] || die "$matrix_archive is not listed in SHA256SUMS."
+    actual="$(sha256 <"$WORK/archives/$matrix_archive")"
+    [ "$actual" = "$expected" ] || die "checksum mismatch for $matrix_archive."
+    tar -xzOf "$WORK/archives/$matrix_archive" "$matrix_name" >"$MATRIX/$matrix_name-linux-$matrix_arch"
+   fi
+  done
+ done
+ ;;
+esac
 say "All downloads match SHA256SUMS"
 
 # Digest in the same form payesh-install verifies: a plain SHA-256 for a
@@ -257,6 +281,16 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	exit 0
 fi
 
+if [ -d "$MATRIX" ]; then
+ mkdir -p /usr/share/payesh/matrix
+ chmod 0755 /usr/share/payesh /usr/share/payesh/matrix
+ for matrix_file in "$MATRIX"/*; do
+  matrix_target="/usr/share/payesh/matrix/${matrix_file##*/}"
+  cp "$matrix_file" "$matrix_target.tmp"
+  chmod 0755 "$matrix_target.tmp"
+  mv -f "$matrix_target.tmp" "$matrix_target"
+ done
+fi
 "$INSTALLER" --install --start --artifact-dir "$ARTIFACTS" "$@" >"$WORK/result.json"
 say "Payesh $VERSION $DONE."
 case "$ROLE" in

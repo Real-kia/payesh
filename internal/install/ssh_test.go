@@ -362,3 +362,53 @@ func TestInstallOverSSHGithubFallbackUploadsFromMaster(t *testing.T) {
 		t.Fatalf("expected uploads when GitHub fails and fallback engages")
 	}
 }
+
+type hubDownloadTransport struct{ fakeSSHTransport }
+
+func (f *hubDownloadTransport) Run(ctx context.Context, ep SSHEndpoint, hosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
+	if strings.Contains(command, "# payesh-executable-staging") {
+		f.commands = append(f.commands, command)
+		return []byte("/var/tmp/payesh-install-fixture"), nil
+	}
+	if command == "uname -m" {
+		f.commands = append(f.commands, command)
+		return []byte("aarch64\n"), nil
+	}
+	if strings.HasPrefix(command, "sh -c ") {
+		f.commands = append(f.commands, command)
+		return []byte("download_source=hub\n"), nil
+	}
+	return f.fakeSSHTransport.Run(ctx, ep, hosts, auth, command, stdin)
+}
+
+func TestInstallOverSSHUsesHubHTTPWithoutUploadingBinaries(t *testing.T) {
+	paths := downloadFixture(t)
+	key := testHostKey("node.example", 2222, 4)
+	transport := &hubDownloadTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "node", Supported: true, Architecture: "arm64", Artifacts: requiredArtifacts("node")}}}
+	closed := false
+	opts := SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 2222, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{Password: []byte("transient")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, Enroll: func(context.Context) error { return nil }, VerifyMeasurements: func(context.Context) error { return nil }}
+	opts.DownloadArtifacts = func(_ context.Context, arch, role string) (ArtifactDownload, error) {
+		if arch != "arm64" || role != "node" {
+			t.Fatalf("selection %s %s", arch, role)
+		}
+		digests := map[string]string{}
+		for name, path := range paths {
+			digest, err := ArtifactDigest(path, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digests[name] = digest
+		}
+		return ArtifactDownload{URL: "https://hub.example/api/v1/install-artifacts/token/bundle.tar.gz", SHA256: strings.Repeat("a", 64), Digests: digests, Close: func() { closed = true }}, nil
+	}
+	result, err := InstallOverSSH(context.Background(), opts)
+	if err != nil || result.Stage != "complete" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(transport.uploads) != 0 {
+		t.Fatalf("binary uploads=%v", transport.uploads)
+	}
+	if !closed {
+		t.Fatal("download lease not closed")
+	}
+}

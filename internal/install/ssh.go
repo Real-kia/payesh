@@ -103,6 +103,8 @@ type SSHInstallOptions struct {
 	Enroll             func(context.Context) error
 	VerifyMeasurements func(context.Context) error
 	OnProgress         func(stage string, progress uint8)
+	DownloadArtifacts  func(context.Context, string, string) (ArtifactDownload, error)
+	ReleaseVersion     string
 }
 
 type SSHInstallResult struct {
@@ -354,6 +356,17 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("prepare transfer", err)
 	}
 	remoteDir := "/tmp/payesh-install-" + id
+	if opts.DownloadArtifacts != nil {
+		stagingScript := "# payesh-executable-staging\numask 077\nfor base in /var/tmp /tmp \"$HOME\"; do\n dir=\"$base/payesh-install-" + id + "\"\n if mkdir -m 700 -- \"$dir\" 2>/dev/null; then\n if cp /bin/true \"$dir/.exec-check\" 2>/dev/null && chmod 700 \"$dir/.exec-check\" && \"$dir/.exec-check\" 2>/dev/null; then rm -f \"$dir/.exec-check\"; printf '%s' \"$dir\"; exit 0; fi\n rm -rf -- \"$dir\"\n fi\ndone\necho 'No writable executable staging directory is available' >&2\nexit 1"
+		output, stageErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, stagingScript, nil)
+		if stageErr != nil {
+			return result, sshStage("prepare executable staging", errors.New("no writable executable staging directory is available"))
+		}
+		remoteDir = strings.TrimSpace(string(output))
+		if !regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`).MatchString(remoteDir) {
+			return result, sshStage("prepare executable staging", errors.New("invalid remote staging directory"))
+		}
+	}
 
 	if ost, ok := transport.(OpenSSHTransport); ok && ost.ControlPath == "" {
 		controlPath := filepath.Join(os.TempDir(), fmt.Sprintf("p-ctl-%s.sock", id))
@@ -387,14 +400,20 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 			sudoPrefix = "sudo -n "
 		}
 	}
-	archOutput, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "uname -m", nil)
+	archOutput, archErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "uname -m", nil)
+	if opts.DownloadArtifacts != nil && archErr != nil {
+		return result, sshStage("detect node architecture", errors.New("could not detect node architecture"))
+	}
 	arch := "amd64"
 	switch strings.TrimSpace(string(archOutput)) {
 	case "aarch64", "arm64":
 		arch = "arm64"
-	case "armv7l", "arm":
-		arch = "arm"
+	case "x86_64", "amd64":
+		arch = "amd64"
 	default:
+		if opts.DownloadArtifacts != nil {
+			return result, sshStage("detect node architecture", errors.New("node architecture is not supported"))
+		}
 		arch = "amd64"
 	}
 
@@ -409,76 +428,80 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	scriptBody := fmt.Sprintf(githubBootstrapScriptTemplate,
 		remoteDir, arch, opts.Role, startFlag, opts.Listen, artifactsArg)
 
-	deployKey := loadGitHubDeployKey()
-	if len(deployKey) > 0 {
-		keyCmd := fmt.Sprintf("cat << 'EOF' > %s/id_github\n%s\nEOF\nchmod 600 %s/id_github",
-			remoteDir, string(deployKey), remoteDir)
-		_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, keyCmd, nil)
-	}
-
 	stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts)
+	if opts.DownloadArtifacts == nil {
+		deployKey := loadGitHubDeployKey()
+		if len(deployKey) > 0 {
+			keyCmd := fmt.Sprintf("cat << 'EOF' > %s/id_github\n%s\nEOF\nchmod 600 %s/id_github",
+				remoteDir, string(deployKey), remoteDir)
+			_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, keyCmd, nil)
+		}
 
-	writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
-		remoteDir, scriptBody, remoteDir)
+		writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
+			remoteDir, scriptBody, remoteDir)
 
-	if _, writeErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, writeScriptCmd, nil); writeErr == nil {
-		report("connecting", 20)
-		launchCmd := fmt.Sprintf("%snohup sh %s/github_bootstrap.sh >/dev/null 2>&1 &", sudoPrefix, remoteDir)
-		_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, launchCmd, sudoInput)
+		if _, writeErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, writeScriptCmd, nil); writeErr == nil {
+			report("connecting", 20)
+			launchCmd := fmt.Sprintf("%snohup sh %s/github_bootstrap.sh >/dev/null 2>&1 &", sudoPrefix, remoteDir)
+			_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, launchCmd, sudoInput)
 
-		deadline := time.Now().Add(90 * time.Second)
-		missingCount := 0
-		for time.Now().Before(deadline) {
-			select {
-			case <-ctx.Done():
-				return result, ctx.Err()
-			default:
-			}
-			statusOut, statusErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/status.txt")+" 2>/dev/null", nil)
-			status := strings.TrimSpace(string(statusOut))
-			if statusErr != nil || status == "" {
-				missingCount++
-				if missingCount >= 5 {
-					// Status file not created yet or transport is mock/fake without live shell; fallback immediately
+			deadline := time.Now().Add(90 * time.Second)
+			missingCount := 0
+			for time.Now().Before(deadline) {
+				select {
+				case <-ctx.Done():
+					return result, ctx.Err()
+				default:
+				}
+				statusOut, statusErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/status.txt")+" 2>/dev/null", nil)
+				status := strings.TrimSpace(string(statusOut))
+				if statusErr != nil || status == "" {
+					missingCount++
+					if missingCount >= 5 {
+						// Status file not created yet or transport is mock/fake without live shell; fallback immediately
+						break
+					}
+					time.Sleep(1 * time.Second)
+					continue
+				}
+				missingCount = 0
+				if strings.HasPrefix(status, "RUNNING:github_fetch") {
+					report("connecting", 25)
+				} else if strings.HasPrefix(status, "RUNNING:preflight") {
+					report("preflight", 50)
+				} else if strings.HasPrefix(status, "RUNNING:install") {
+					report("installing", 70)
+				}
+
+				if status == "SUCCESS:0" {
+					preflightOut, preErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/preflight.json")+" 2>/dev/null", nil)
+					if preErr == nil && json.Unmarshal(bytes.TrimSpace(preflightOut), &result.Preflight) == nil && result.Preflight.Supported {
+						githubSucceeded = true
+						result.Installed = append([]string(nil), result.Preflight.Artifacts...)
+						report("installing", 75)
+						break
+					}
+				}
+				if strings.HasPrefix(status, "FALLBACK") {
+					break
+				}
+				if strings.HasPrefix(status, "FAILED") {
+					logOut, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "tail -n 10 "+shellQuote(remoteDir+"/install.log")+" 2>/dev/null", nil)
+					if len(bytes.TrimSpace(logOut)) > 0 {
+						return result, sshStage("install", fmt.Errorf("GitHub install failed: %s", strings.TrimSpace(string(logOut))))
+					}
 					break
 				}
 				time.Sleep(1 * time.Second)
-				continue
 			}
-			missingCount = 0
-			if strings.HasPrefix(status, "RUNNING:github_fetch") {
-				report("connecting", 25)
-			} else if strings.HasPrefix(status, "RUNNING:preflight") {
-				report("preflight", 50)
-			} else if strings.HasPrefix(status, "RUNNING:install") {
-				report("installing", 70)
-			}
-
-			if status == "SUCCESS:0" {
-				preflightOut, preErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "cat "+shellQuote(remoteDir+"/preflight.json")+" 2>/dev/null", nil)
-				if preErr == nil && json.Unmarshal(bytes.TrimSpace(preflightOut), &result.Preflight) == nil && result.Preflight.Supported {
-					githubSucceeded = true
-					result.Installed = append([]string(nil), result.Preflight.Artifacts...)
-					report("installing", 75)
-					break
-				}
-			}
-			if strings.HasPrefix(status, "FALLBACK") {
-				break
-			}
-			if strings.HasPrefix(status, "FAILED") {
-				logOut, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "tail -n 10 "+shellQuote(remoteDir+"/install.log")+" 2>/dev/null", nil)
-				if len(bytes.TrimSpace(logOut)) > 0 {
-					return result, sshStage("install", fmt.Errorf("GitHub install failed: %s", strings.TrimSpace(string(logOut))))
-				}
-				break
-			}
-			time.Sleep(1 * time.Second)
 		}
+
 	}
 
 	if !githubSucceeded {
-		report("connecting", 35)
+		if opts.DownloadArtifacts == nil {
+			report("connecting", 35)
+		}
 		lookupArtifact := func(name, defaultPath string) string {
 			matrixPath := filepath.Join("/usr/share/payesh/matrix", name+"-linux-"+arch)
 			if stat, statErr := os.Stat(matrixPath); statErr == nil && !stat.IsDir() {
@@ -487,15 +510,41 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 			return defaultPath
 		}
 
-		installerSrc := lookupArtifact("payesh-install", opts.InstallerPath)
-		if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, installerSrc, remoteDir+"/payesh-install", false); err != nil {
-			return result, sshStage("upload installer", err)
-		}
-		for _, name := range requiredArtifacts(opts.Role) {
-			path := lookupArtifact(name, artifactPaths[name])
-			recursive := name == "web-assets"
-			if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, path, remoteDir+"/"+name, recursive); err != nil {
-				return result, sshStage("upload artifact", err)
+		usingDownload := opts.DownloadArtifacts != nil
+		if usingDownload {
+			download, downloadErr := opts.DownloadArtifacts(ctx, arch, opts.Role)
+			if downloadErr != nil {
+				return result, sshStage("prepare hub download", downloadErr)
+			}
+			if download.Close != nil {
+				defer download.Close()
+			}
+			script, scriptErr := artifactDownloadScript(remoteDir, opts.Role, opts.ReleaseVersion, arch, download)
+			if scriptErr != nil {
+				return result, sshStage("prepare hub download", scriptErr)
+			}
+			report("connecting", 25)
+			output, downloadErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "sh -c "+shellQuote(script), nil)
+			if downloadErr != nil {
+				return result, sshStage("download installation files", errors.New("node could not download verified installation files from the hub"))
+			}
+			if strings.Contains(string(output), "download_source=hub") {
+				report("connecting", 35)
+			}
+			for name, digest := range download.Digests {
+				artifactDigests[name] = digest
+			}
+		} else {
+			installerSrc := lookupArtifact("payesh-install", opts.InstallerPath)
+			if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, installerSrc, remoteDir+"/payesh-install", false); err != nil {
+				return result, sshStage("upload installer", err)
+			}
+			for _, name := range requiredArtifacts(opts.Role) {
+				path := lookupArtifact(name, artifactPaths[name])
+				recursive := name == "web-assets"
+				if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, path, remoteDir+"/"+name, recursive); err != nil {
+					return result, sshStage("upload artifact", err)
+				}
 			}
 		}
 		if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "chmod 700 -- "+shellQuote(remoteDir+"/payesh-install"), nil); err != nil {
@@ -524,7 +573,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		for _, name := range requiredArtifacts(opts.Role) {
 			path := lookupArtifact(name, artifactPaths[name])
 			digest := artifactDigests[name]
-			if actualDigest, dErr := ArtifactDigest(path, name == "web-assets"); dErr == nil && actualDigest != "" {
+			if actualDigest, dErr := ArtifactDigest(path, name == "web-assets"); !usingDownload && dErr == nil && actualDigest != "" {
 				digest = actualDigest
 			}
 			installCommand += " --artifact-sha256 " + shellQuote(name+"="+digest)
