@@ -28,7 +28,7 @@ func NewListener(inner net.Listener, manager *Manager) *Listener {
 	l := &Listener{
 		Listener: inner,
 		manager:  manager,
-		config:   &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: manager.GetCertificate, NextProtos: []string{"http/1.1"}},
+		config:   &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequestClientCert, GetCertificate: manager.GetCertificate, NextProtos: []string{"http/1.1"}},
 		conns:    make(chan net.Conn),
 		errs:     make(chan error, 1),
 		done:     make(chan struct{}),

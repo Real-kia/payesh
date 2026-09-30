@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -211,6 +212,28 @@ func main() {
 				installService.HubTrustPEM = certPEM
 			}
 		}
+		installService.ResolveTransport = func() (string, []byte, error) {
+			if installService.TransportURL != "" {
+				if !nodeConfig.Enabled() {
+					return "", nil, errors.New("configured node transport requires a node listener")
+				}
+				return installService.TransportURL, installService.HubTrustPEM, nil
+			}
+			if !httpsManager.Active() {
+				return "", nil, errors.New("enable HTTPS on the hub before installing nodes")
+			}
+			trustPEM, err := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
+			if err != nil {
+				return "", nil, fmt.Errorf("read system TLS trust: %w", err)
+			}
+			port := httpsManager.Port
+			host := httpsManager.Domain()
+			if port != "" && port != "443" {
+				host = net.JoinHostPort(host, port)
+			}
+			return "wss://" + host + "/node/v1", trustPEM, nil
+		}
+
 		alertService, alertErr := alerts.NewService(store)
 		if alertErr != nil {
 			fmt.Fprintln(os.Stderr, "create alert service:", alertErr)
@@ -277,6 +300,18 @@ func main() {
 		api.SetTrafficForecastHandler(trafficService.Handler())
 		handler = api.Handler()
 	}
+	if nodeHub != nil {
+		browserHandler := handler
+		nodeHandler := nodeTransportHandler(nodeHub)
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/node/v1" || r.URL.Path == "/node/bootstrap/v1" {
+				nodeHandler.ServeHTTP(w, r)
+				return
+			}
+			browserHandler.ServeHTTP(w, r)
+		})
+	}
+
 	if updateScheduler != nil {
 		updateWorkerDone = updateScheduler.StartWorker(ctx, updater.DefaultWorkerInterval, func(workerErr error) {
 			if ctx.Err() == nil {

@@ -277,3 +277,33 @@ func TestSettingsHandler(t *testing.T) {
 		t.Fatalf("status after background order = %+v", status)
 	}
 }
+
+func TestDashboardTLSRequestsNodeCertificate(t *testing.T) {
+	dir := t.TempDir()
+	writeSelfSigned(t, dir, "panel.example.com")
+	manager, err := NewManager(dir)
+	must(t, err)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	wrapped := NewListener(listener, manager)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
+			http.Error(w, "missing node certificate", 401)
+			return
+		}
+		w.WriteHeader(204)
+	})}
+	go server.Serve(wrapped)
+	defer server.Close()
+	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"))
+	must(t, err)
+	client := noRedirect()
+	config := client.Transport.(*http.Transport).TLSClientConfig
+	config.Certificates = []tls.Certificate{cert}
+	response, err := client.Get("https://" + listener.Addr().String() + "/node/v1")
+	must(t, err)
+	defer response.Body.Close()
+	if response.StatusCode != 204 {
+		t.Fatalf("TLS peer certificate not delivered: %d", response.StatusCode)
+	}
+}

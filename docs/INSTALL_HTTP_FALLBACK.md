@@ -22,3 +22,13 @@ The hub URL normally comes from the authenticated dashboard request. Set
 its externally reachable address differs from the address seen by a reverse
 proxy. Update the hub using the normal installation command, then retry the
 node installation.
+
+## Node telemetry and completion
+
+With dashboard HTTPS enabled, nodes use `wss://<dashboard-domain>:<dashboard-port>/node/v1` by default. The existing listener requests client certificates, and the node handler validates identities against the hub enrollment authority. Browser access still uses session authentication. An explicitly configured separate node listener continues to work.
+
+The hub installs its system certificate-authority bundle on the node to validate the dashboard certificate, including after automatic certificate renewal. Without HTTPS or a configured TLS node listener, node installation is rejected before remote changes.
+
+Installation completion requires a newly received, stored metric sample within 90 seconds. Enrollment does not fabricate a heartbeat. On success the dashboard clears the installation panel and opens the server metrics view. A single sample is shown as collecting history until a trend can be drawn.
+
+Nodes installed by older versions without a transport URL must be reinstalled from the updated hub to receive transport configuration and an authenticated identity. Updating the hub alone does not reconfigure existing nodes.

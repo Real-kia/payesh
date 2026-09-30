@@ -334,6 +334,7 @@
     if (typeof window !== 'undefined') {
       window.history.pushState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
     }
+    if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
     if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); }
@@ -581,17 +582,12 @@
       saveActiveInstall(activeInstall);
       return;
     }
-    if (job.state === 'succeeded' || p >= 100) {
-      activeInstall.currentStage = 'succeeded';
-      activeInstall.simulatedProgress = 100;
-      if (!activeInstall.logs.some((l) => l.text.includes('Installation complete'))) {
-        activeInstall.logs = [
-          ...activeInstall.logs,
-          { time: nowStr, text: 'First telemetry heartbeat received! Server is now active and monitored.', level: 'success' },
-          { time: nowStr, text: 'Installation complete! Node enrolled successfully.', level: 'success' }
-        ];
-      }
-      saveActiveInstall(activeInstall);
+    if (job.state === 'succeeded') {
+      const id = activeInstall.serverId;
+      saveActiveInstall(null);
+      detailTab = 'metrics';
+      navigate('server', id);
+      showNotice('Server installed.');
       return;
     }
 
@@ -1270,6 +1266,7 @@
   }
 
   onMount(() => {
+    let completedInstallServerId = '';
     try {
       savedUiState = JSON.parse(window.localStorage.getItem('payesh-ui-state') ?? 'null');
     } catch {
@@ -1279,7 +1276,11 @@
       const savedInstall = window.localStorage.getItem(ACTIVE_INSTALL_STORAGE_KEY);
       if (savedInstall) {
         const parsed = JSON.parse(savedInstall) as InstallProgressData;
-        if (parsed && parsed.jobId) {
+        if (parsed?.currentStage === 'succeeded') {
+          completedInstallServerId = parsed.serverId;
+          saveActiveInstall(null);
+        }
+        if (parsed && parsed.jobId && parsed.currentStage !== 'succeeded') {
           activeInstall = parsed;
           if (['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(parsed.currentStage)) {
             void pollJob(parsed.jobId);
@@ -1293,6 +1294,9 @@
     savedUiState = { ...(savedUiState ?? {}), ...stateFromLocation() };
     if (savedUiState.activePage) activePage = savedUiState.activePage;
     if (savedUiState.selectedServerId) selectedServerId = savedUiState.selectedServerId;
+    if (completedInstallServerId && activePage === 'install-progress') {
+      activePage = 'server'; selectedServerId = completedInstallServerId; detailTab = 'metrics'; saveUiState();
+    }
     if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
     window.history.replaceState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
     const onPopState = (event: PopStateEvent) => {
@@ -1563,7 +1567,7 @@
           <InstallProgress
             install={activeInstall}
             onCancel={() => promptCancelInstall()}
-            onViewServer={(id) => navigate('server', id)}
+            onViewServer={(id) => { saveActiveInstall(null); detailTab = 'metrics'; navigate('server', id); }}
             onRetry={() => {
               if (activeInstall) {
                 newServerName = activeInstall.serverName;
@@ -1953,7 +1957,7 @@
             install={activeInstall}
             compact={true}
             onCancel={() => promptCancelInstall()}
-            onViewServer={(id) => navigate('server', id)}
+            onViewServer={(id) => { saveActiveInstall(null); detailTab = 'metrics'; navigate('server', id); }}
             onRetry={() => { saveActiveInstall(null); }}
             onAddAnother={() => { saveActiveInstall(null); navigate('add-server'); }}
           />
@@ -2006,7 +2010,7 @@
                     <Sparkline values={metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk')} tone={metric[3] as 'teal' | 'purple' | 'blue'} />
                   </div>
                 {:else}
-                  <div class="sparkline-unavailable">Awaiting samples</div>
+                  <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
                 {/if}
                 <div class="metric-footer">
                   <span>{sampleAge(selectedServer)}</span>
