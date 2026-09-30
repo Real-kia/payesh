@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/alerts"
+	"github.com/Real-kia/payesh/internal/collector"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/fleet"
 	installpkg "github.com/Real-kia/payesh/internal/install"
@@ -252,9 +254,21 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configure module trust registry:", registryErr)
 			os.Exit(1)
 		}
-		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir(), LocalServerID: contracts.ServerID(strings.TrimSpace(os.Getenv("PAYESH_SERVER_ID")))}
+		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir(), LocalServerID: contracts.ServerID(strings.TrimSpace(os.Getenv("PAYESH_SERVER_ID"))), CoreVersion: version.Value, LifecycleMu: &sync.RWMutex{}}
 		if socket := strings.TrimSpace(os.Getenv("PAYESH_PRIVD_SOCKET")); socket != "" {
 			moduleManager.Executor = privdModuleExecutor{client: privd.Client{SocketPath: socket}}
+		}
+		if moduleManager.LocalServerID == "" {
+			if identity, err := collector.LoadOrCreateServerID(filepath.Join(filepath.Dir(*dbPath), "server-id")); err == nil {
+				moduleManager.LocalServerID = identity
+			} else {
+				fmt.Fprintln(os.Stderr, "resolve local package identity:", err)
+			}
+		}
+		processRuntime := &modules.ProcessRuntime{Context: ctx, Store: store, Root: moduleManager.RootDir, ServerID: moduleManager.LocalServerID, Fallback: moduleManager.Executor}
+		moduleManager.Executor = processRuntime
+		if err := processRuntime.Restore(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "restore process monitoring:", err)
 		}
 		moduleService := modules.NewService(moduleManager)
 		moduleService.Sources.GitHubToken = os.Getenv("GITHUB_TOKEN")
@@ -283,7 +297,7 @@ func main() {
 			}
 			bandwidthService = handlerService{handler: proxy}
 		}
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx)})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx)})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -553,25 +567,19 @@ func alertDestinationsFromEnvironment() []alerts.NotificationDestination {
 	return destinations
 }
 
-// moduleTrustRegistryFromEnvironment builds the pinned module-signing trust
-// anchor from PAYESH_MODULE_TRUST_KEY_ID/PAYESH_MODULE_TRUST_PUBLIC_KEY_B64
-// (a raw unpadded-base64url Ed25519 public key). No production release-
-// signing key is committed to this repository or generated here (see
-// docs/contracts/RELEASE_FORMAT.md); an empty registry is intentional and
-// safe: the catalog and status routes keep working, while every install
-// request fails closed with "unknown signing key" until an operator
-// provisions a real anchor.
+// moduleTrustRegistryFromEnvironment combines the built-in official process
+// package anchor with an optional operator-managed signing anchor.
 func moduleTrustRegistryFromEnvironment() (*trust.Registry, error) {
 	keyID := strings.TrimSpace(os.Getenv("PAYESH_MODULE_TRUST_KEY_ID"))
 	publicKeyB64 := strings.TrimSpace(os.Getenv("PAYESH_MODULE_TRUST_PUBLIC_KEY_B64"))
 	if keyID == "" || publicKeyB64 == "" {
-		return trust.NewRegistry()
+		return trust.NewRegistry(modules.ProcessTrustAnchor())
 	}
 	publicKey, err := base64.RawURLEncoding.DecodeString(publicKeyB64)
 	if err != nil {
 		return nil, fmt.Errorf("PAYESH_MODULE_TRUST_PUBLIC_KEY_B64 is not valid unpadded base64url: %w", err)
 	}
-	return trust.NewRegistry(trust.Anchor{KeyID: keyID, PublicKey: publicKey})
+	return trust.NewRegistry(modules.ProcessTrustAnchor(), trust.Anchor{KeyID: keyID, PublicKey: publicKey})
 }
 
 func moduleRootDir() string {

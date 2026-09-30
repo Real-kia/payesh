@@ -311,6 +311,10 @@ export class ApiClient {
     return this.request<Server>('/servers', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
   }
 
+  processes(serverId: string, sort: string, search: string, options: QueryOptions = {}): Promise<ProcessSnapshot> {
+    return this.request<ProcessSnapshot>(`/servers/${encodeURIComponent(serverId)}/processes${queryString({ sort, search, limit: 200 })}`, { signal: options.signal });
+  }
+
   listModules(options: QueryOptions = {}): Promise<ModulePage> {
     return this.request<ModulePage>(`/modules${queryString({ limit: 200 })}`, { signal: options.signal });
   }
@@ -357,3 +361,11 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+export type ProcessSample = {
+ pid: number; name: string; uid: number | null; state: string; threads: number;
+ memory_bytes: string; cpu_percent: number | null;
+ read_bytes_per_second: number | null; write_bytes_per_second: number | null;
+ connections: number | null;
+};
+export type ProcessSnapshot = { sampled_at: string; interval_seconds: number; total: number; matched: number; truncated: boolean; network_accounting: 'connections-only'; items: ProcessSample[] };

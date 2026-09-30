@@ -16,6 +16,15 @@ import "github.com/Real-kia/payesh/internal/contracts"
 // the UI never presents a guess as a measurement.
 var Catalog = []contracts.ModuleCatalogEntry{
 	{
+		ID:                       ProcessModuleID,
+		Name:                     "Advanced Process Monitoring",
+		Description:              "Per-process CPU, memory, disk I/O rates, and socket counts.",
+		LatestVersion:            "0.1.0",
+		EstimatedCompressedBytes: 1,
+		EstimatedUnpackedBytes:   1,
+		ResourceEstimateSource:   "unmeasured",
+	},
+	{
 		ID:                       "port-traffic",
 		Name:                     "Port Traffic",
 		Description:              "Per-port TCP/UDP byte totals and rates using kernel counters.",

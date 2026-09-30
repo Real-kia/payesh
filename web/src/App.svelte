@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ProcessTable from './ProcessTable.svelte';
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
   import TrafficChart from './TrafficChart.svelte';
@@ -12,7 +13,7 @@
 
   type Theme = 'light' | 'dark';
   type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
-  type DetailTab = 'metrics' | 'traffic' | 'logs';
+  type DetailTab = 'metrics' | 'traffic' | 'logs' | 'processes';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
 
@@ -277,7 +278,7 @@
   $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
   $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
   $: chartData = selectedServer?.metricHistory?.ranges[chartRange] ?? null;
-  $: availableTabs = selectedServer ? (['metrics', 'traffic', 'logs'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
+  $: availableTabs = selectedServer ? (['metrics', 'traffic', 'logs', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
   $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
@@ -1005,6 +1006,7 @@
   }
 
   function hasCapability(server: PreviewServer, capability: DetailTab): boolean {
+    if (capability === 'processes') return server.role === 'standalone' || server.role === 'hub';
     if (capability === 'metrics' || capability === 'traffic') return true;
     return server.capabilities?.includes(capability) ?? false;
   }
@@ -1286,7 +1288,7 @@
     if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
-    if (state.detailTab === 'metrics' || state.detailTab === 'traffic' || state.detailTab === 'logs') detailTab = state.detailTab;
+    if (state.detailTab === 'metrics' || state.detailTab === 'traffic' || state.detailTab === 'logs' || state.detailTab === 'processes') detailTab = state.detailTab;
   }
 
   onMount(() => {
@@ -1729,6 +1731,9 @@
                 <div class="module-meta">
                   <span>Status: <strong class="capitalize">{moduleState(module.id)?.state || 'not installed'}</strong></span>
                 </div>
+                {#if module.id === 'process-monitoring' && moduleState(module.id)?.state === 'enabled'}
+                  <button class="button primary small full-width" type="button" on:click={() => { detailTab = 'processes'; navigate('server', packageServerId); }}>View processes</button>
+                {/if}
                 {#if packageSource === 'github'}<a class="button ghost small full-width" href={packageGitHubURL(module)} target="_blank" rel="noopener noreferrer">{['amd64', 'arm64'].includes(servers.find((server) => server.id === packageServerId)?.architecture || '') ? 'Download archive' : 'View release'}</a>{/if}
                 {#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}
                   {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={!!packageBusy || !packageServerId || (packageSource !== 'github' && !packageLocation.trim())} on:click={() => void installPackage(module)}>{packageBusy === `${module.id}:install` ? 'Installing…' : 'Install'}</button>{/if}
@@ -2031,7 +2036,9 @@
           </div>
         {/if}
 
-        {#if detailTab === 'metrics' && hasCapability(selectedServer, 'metrics')}
+        {#if detailTab === 'processes'}
+          {#key selectedServer.id}<ProcessTable serverId={selectedServer.id} onPackages={() => { packageServerId = selectedServer.id; navigate('packages'); }} />{/key}
+        {:else if detailTab === 'metrics' && hasCapability(selectedServer, 'metrics')}
           <div class="metric-grid">
             {#each [['CPU', 'cpu', selectedServer.metrics.cpu, 'teal'], ['Memory', 'memory', selectedServer.metrics.memory, 'purple'], ['Disk', 'disk', selectedServer.metrics.disk, 'blue']] as metric}
               <article class="metric-card">

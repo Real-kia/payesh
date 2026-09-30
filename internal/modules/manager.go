@@ -53,6 +53,7 @@ type Manager struct {
 	// LocalServerID binds direct filesystem work to this installation. An empty
 	// value fails closed; a fleet row's role label alone is not host identity.
 	LocalServerID contracts.ServerID
+	CoreVersion   string
 	HealthCheck   HealthCheckFunc
 	Executor      ModuleExecutor
 	Now           func() time.Time
@@ -126,7 +127,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 	if !found {
 		return contracts.ModuleInstallation{}, errors.New("modules: server not found")
 	}
-	if server.Role != "standalone" {
+	if server.Role != "standalone" && !(req.ModuleID == ProcessModuleID && server.Role == "hub") {
 		return contracts.ModuleInstallation{}, fmt.Errorf("%w: remote node installation is not configured", ErrModuleExecutorUnavailable)
 	}
 	if m.LocalServerID == "" || req.ServerID != m.LocalServerID {
@@ -158,6 +159,9 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 			return contracts.ModuleInstallation{}, failErr
 		}
 		return contracts.ModuleInstallation{}, fmt.Errorf("modules: manifest verification failed: %w", verifyErr)
+	}
+	if m.CoreVersion != "" {
+		server.Version = m.CoreVersion
 	}
 	if policyErr := validateManifestPolicy(req.Manifest, entry, server, m.now()); policyErr != nil {
 		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyFailed, "", req.Manifest.ModuleVersion, wireError("manifest_policy_failed", policyErr)); failErr != nil {
@@ -238,7 +242,7 @@ func (m *Manager) stageAndActivate(ctx context.Context, req InstallRequest, stag
 func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
 	unlock := m.lockLifecycle()
 	defer unlock()
-	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+	if err := m.ensureLocalServer(ctx, serverID, moduleID); err != nil {
 		return contracts.ModuleInstallation{}, err
 	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
@@ -269,7 +273,7 @@ func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, modul
 func (m *Manager) Disable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
 	unlock := m.lockLifecycle()
 	defer unlock()
-	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+	if err := m.ensureLocalServer(ctx, serverID, moduleID); err != nil {
 		return contracts.ModuleInstallation{}, err
 	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
@@ -297,7 +301,7 @@ func (m *Manager) Disable(ctx context.Context, serverID contracts.ServerID, modu
 }
 
 func (m *Manager) simpleTransition(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64, event Event) (contracts.ModuleInstallation, error) {
-	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+	if err := m.ensureLocalServer(ctx, serverID, moduleID); err != nil {
 		return contracts.ModuleInstallation{}, err
 	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
@@ -317,7 +321,7 @@ func (m *Manager) simpleTransition(ctx context.Context, serverID contracts.Serve
 func (m *Manager) Remove(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {
 	unlock := m.lockLifecycle()
 	defer unlock()
-	if err := m.ensureLocalServer(ctx, serverID); err != nil {
+	if err := m.ensureLocalServer(ctx, serverID, moduleID); err != nil {
 		return contracts.ModuleInstallation{}, err
 	}
 	current, err := m.Store.GetModuleInstallation(ctx, serverID, moduleID)
@@ -344,7 +348,7 @@ func (m *Manager) Remove(ctx context.Context, serverID contracts.ServerID, modul
 	return m.advance(ctx, serverID, moduleID, removing, EventRemoveOK, "", "", nil)
 }
 
-func (m *Manager) ensureLocalServer(ctx context.Context, serverID contracts.ServerID) error {
+func (m *Manager) ensureLocalServer(ctx context.Context, serverID contracts.ServerID, moduleID string) error {
 	server, found, err := m.Store.GetServer(ctx, serverID)
 	if err != nil {
 		return err
@@ -352,7 +356,7 @@ func (m *Manager) ensureLocalServer(ctx context.Context, serverID contracts.Serv
 	if !found {
 		return errors.New("modules: server not found")
 	}
-	if server.Role != "standalone" {
+	if server.Role != "standalone" && !(moduleID == ProcessModuleID && server.Role == "hub") {
 		return fmt.Errorf("%w: remote node execution is not configured", ErrModuleExecutorUnavailable)
 	}
 	if m.LocalServerID == "" || serverID != m.LocalServerID {

@@ -38,6 +38,7 @@ type API struct {
 	alerts              http.Handler
 	traffic             http.Handler
 	modules             http.Handler
+	processMonitoring   http.Handler
 	cpuControl          http.Handler
 	bandwidth           http.Handler
 	portTraffic         http.Handler
@@ -80,7 +81,8 @@ type Options struct {
 	// ModuleService optionally owns the catalog and the per-server
 	// install/enable/disable/remove lifecycle. Routes are unavailable (fall
 	// through to the monitoring 404) when this is nil.
-	ModuleService *modules.Service
+	ModuleService            *modules.Service
+	ProcessMonitoringService interface{ Handler() http.Handler }
 	// CPUControlService optionally owns cpu-controls preview/apply/revert.
 	// Routes are unavailable (fall through to the monitoring 404) when nil.
 	CPUControlService interface{ Handler() http.Handler }
@@ -137,6 +139,10 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.ModuleService != nil {
 		moduleHandler = sessions.Middleware(options.ModuleService.Handler())
 	}
+	var processHandler http.Handler
+	if options.ProcessMonitoringService != nil {
+		processHandler = sessions.Middleware(options.ProcessMonitoringService.Handler())
+	}
 	var cpuControlHandler http.Handler
 	if options.CPUControlService != nil {
 		cpuControlHandler = sessions.Middleware(options.CPUControlService.Handler())
@@ -182,7 +188,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.HTTPSSettings != nil {
 		httpsSettingsHandler = sessions.Middleware(options.HTTPSSettings)
 	}
-	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -251,6 +257,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.traffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && (strings.HasSuffix(trimmedPath, "/traffic") || strings.HasSuffix(trimmedPath, "/traffic/forecast")) {
 		a.traffic.ServeHTTP(w, r)
+		return
+	}
+	if a.processMonitoring != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/processes") {
+		a.processMonitoring.ServeHTTP(w, r)
 		return
 	}
 	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
