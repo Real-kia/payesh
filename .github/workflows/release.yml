@@ -25,6 +25,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: web
       - run: make web-check
+      - name: Verify process module and API
+        run: go test -race ./internal/processmonitor ./internal/modules ./internal/fleet
       - name: Build release bundle
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -32,6 +34,13 @@ jobs:
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
             go run ./scripts/release-package -version "$version"
           make release-validate RELEASE_VERSION="$version"
+      - name: Include immutable signed process package
+        if: github.ref_name != 'v0.2.11'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.2.11 --repo Real-kia/payesh \
+            --pattern 'process-monitoring-linux-*' --dir "dist/releases/$VERSION"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

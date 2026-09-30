@@ -59,7 +59,7 @@ func validateManifestPolicy(manifest contracts.ModuleManifest, entry contracts.M
 	if protocolMin > protocolMax || protocol < protocolMin || protocol > protocolMax {
 		return errors.New("modules: core protocol is outside the manifest range")
 	}
-	if manifest.CreatedAt.After(now.Add(maxManifestFuture)) || now.Sub(manifest.CreatedAt) > maxManifestAge {
+	if manifest.CreatedAt.After(now.Add(maxManifestFuture)) || (manifest.ModuleID != ProcessModuleID && now.Sub(manifest.CreatedAt) > maxManifestAge) {
 		return errors.New("modules: manifest is stale or dated too far in the future")
 	}
 	if manifest.SHA256 != strings.ToLower(manifest.SHA256) {

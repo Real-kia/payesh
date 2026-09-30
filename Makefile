@@ -14,7 +14,8 @@ build-modules:
 	mkdir -p dist/modules; \
 	go build -trimpath -o dist/modules/bandwidth-controls ./cmd/payesh-bandwidth-module; \
 	go build -trimpath -o dist/modules/cpu-controls ./cmd/payesh-cpu-module; \
-	go build -trimpath -o dist/modules/port-traffic ./cmd/payesh-port-traffic
+	go build -trimpath -o dist/modules/port-traffic ./cmd/payesh-port-traffic; \
+	go build -trimpath -o dist/modules/process-monitoring ./cmd/payesh-process-module
 
 test:
 	go test ./...
@@ -54,6 +55,7 @@ build-matrix:
 		for target in $(TARGETS); do \
 			GOOS=linux GOARCH=$$arch go build -trimpath -o dist/matrix/$$target-linux-$$arch ./cmd/$$target || exit 1; \
 		done; \
+		GOOS=linux GOARCH=$$arch go build -trimpath -o dist/matrix/process-monitoring-linux-$$arch ./cmd/payesh-process-module || exit 1; \
 		GOOS=linux GOARCH=$$arch go build -trimpath -o dist/matrix/cpu-controls-linux-$$arch ./cmd/payesh-cpu-module || exit 1; \
 		GOOS=linux GOARCH=$$arch go build -trimpath -o dist/matrix/port-traffic-linux-$$arch ./cmd/payesh-port-traffic || exit 1; \
 		GOOS=linux GOARCH=$$arch go build -trimpath -o dist/matrix/bandwidth-controls-linux-$$arch ./cmd/payesh-bandwidth-module || exit 1; \
