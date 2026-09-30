@@ -272,6 +272,7 @@ func main() {
 		}
 		moduleService := modules.NewService(moduleManager)
 		moduleService.Sources.GitHubToken = os.Getenv("GITHUB_TOKEN")
+		moduleService.Catalog = &modules.GitHubCatalog{Sources: moduleService.Sources}
 		portTrafficService := porttraffic.NewService(&porttraffic.Manager{Store: store})
 		var cpuControlService interface{ Handler() http.Handler } = unavailableCPUService{}
 		if socket := strings.TrimSpace(os.Getenv("PAYESH_CPU_SOCKET")); socket != "" {

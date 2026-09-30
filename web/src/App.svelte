@@ -477,7 +477,7 @@
   async function loadModules(force = false): Promise<void> {
     modulesError = '';
     const cacheKey = 'payesh-package-catalog-v1';
-    const cacheAge = 24 * 60 * 60 * 1000;
+
     let hasCachedCatalog = false;
     if (!force && typeof window !== 'undefined') {
       try {
@@ -487,7 +487,7 @@
           hasCachedCatalog = true;
           if (!packageServerId && servers.length) packageServerId = servers[0].id;
           if (packageServerId) void loadServerModules();
-          if (Date.now() - cached.savedAt < cacheAge) return;
+
         }
       } catch { /* corrupt cache is ignored and replaced by a fresh response */ }
     }
@@ -495,8 +495,9 @@
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     try {
-      const page = await apiClient.listModules({ signal: controller.signal });
+      const page = await apiClient.listModules({ signal: controller.signal, refresh: force });
       modules = page.items;
+      modulesError = page.warning ?? '';
       modulesState = modules.length ? 'ready' : 'empty';
       if (typeof window !== 'undefined') window.localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), items: modules }));
       if (!packageServerId && servers.length) packageServerId = servers[0].id;
@@ -531,7 +532,7 @@
 
   let packageSource: PackageSource['kind'] = 'github';
   let packageLocation = '';
-  let packageVersion = 'latest';
+  let packageVersion = '';
   let packageManifest = '';
   let packageSignature = '';
 
@@ -539,8 +540,8 @@
     if (!packageServerId || packageBusy) return;
     packageBusy = `${module.id}:install`; packageError = '';
     try {
-      const source: PackageSource = { kind: packageSource, location: packageLocation.trim() || (packageSource === 'github' ? 'Real-kia/payesh' : '') };
-      if (packageSource === 'github') source.version = packageVersion.trim() || 'latest';
+      const source: PackageSource = { kind: packageSource, location: packageLocation.trim() || (packageSource === 'github' ? module.repository || 'Real-kia/payesh' : '') };
+      if (packageSource === 'github') source.version = packageVersion.trim() || module.release || 'latest';
       if (packageSource !== 'github' && packageManifest.trim()) source.manifest_location = packageManifest.trim();
       if (packageSource !== 'github' && packageSignature.trim()) source.signature_location = packageSignature.trim();
       const result = await apiClient.installModuleSource(packageServerId, module.id, source, moduleState(module.id)?.revision ?? '0', operationKey('package-install'));
@@ -556,8 +557,8 @@
 
   function packageGitHubURL(module: Module): string {
     const arch = servers.find((server) => server.id === packageServerId)?.architecture;
-    const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(packageLocation.trim()) ? packageLocation.trim() : 'Real-kia/payesh';
-    const release = packageVersion.trim() || 'latest';
+    const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(packageLocation.trim()) ? packageLocation.trim() : module.repository || 'Real-kia/payesh';
+    const release = packageVersion.trim() || module.release || 'latest';
     const base = release === 'latest' ? `https://github.com/${repo}/releases/latest/download` : `https://github.com/${repo}/releases/download/v${release.replace(/^v/, '')}`;
     return arch === 'amd64' || arch === 'arm64' ? `${base}/${module.id}-linux-${arch}.tar.gz` : `https://github.com/${repo}/releases`;
   }
@@ -1710,13 +1711,14 @@
             <label>Source<select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}><option value="github">GitHub</option><option value="local">Local path</option><option value="url">URL</option></select></label>
             <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}<input bind:value={packageLocation} placeholder={packageSource === 'github' ? 'Real-kia/payesh' : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} /></label>
             {#if packageSource === 'github'}
-              <label>Release<input bind:value={packageVersion} placeholder="latest" /></label>
+              <label>Release<input bind:value={packageVersion} placeholder="Catalog default" /></label>
             {:else}
               <details><summary>Package metadata</summary><label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label><label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label></details>
             {/if}
           </div>
         </article>
 
+        {#if modulesError && modulesState === 'ready'}<p class="muted" role="status">{modulesError}</p>{/if}
         {#if modulesState === 'loading'}
           <div class="state-panel"><div class="loading-spinner"></div><h2>Loading modules…</h2></div>
         {:else if modulesState === 'error'}
@@ -1748,7 +1750,7 @@
                 {/if}
                 {#if packageSource === 'github'}<a class="button ghost small full-width" href={packageGitHubURL(module)} target="_blank" rel="noopener noreferrer">{['amd64', 'arm64'].includes(servers.find((server) => server.id === packageServerId)?.architecture || '') ? 'Download archive' : 'View release'}</a>{/if}
                 {#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}
-                  {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={!!packageBusy || !packageServerId || (packageSource !== 'github' && !packageLocation.trim())} on:click={() => void installPackage(module)}>{packageBusy === `${module.id}:install` ? 'Installing…' : 'Install'}</button>{/if}
+                  {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={module.install_supported === false || !!packageBusy || !packageServerId || (packageSource !== 'github' && !packageLocation.trim())} on:click={() => void installPackage(module)}>{module.install_supported === false ? 'Requires Payesh update' : packageBusy === `${module.id}:install` ? 'Installing…' : 'Install'}</button>{/if}
                 {:else if moduleState(module.id)?.state === 'installed-disabled' && myAccount?.permission !== 'read'}
                   <div class="job-actions">
                     <button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button>

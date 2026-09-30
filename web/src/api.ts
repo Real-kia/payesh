@@ -55,8 +55,8 @@ export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'ac
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
 export type UpdateStatus = { current: string; latest: string; update_available: boolean; url: string; releases?: { version: string; url: string; published_at: string }[] };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
-export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
-export type ModulePage = { items: Module[]; next_cursor?: string };
+export type Module = { repository?: string; release?: string; install_supported?: boolean; id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
+export type ModulePage = { items: Module[]; next_cursor?: string; source?: string; stale?: boolean; warning?: string };
 export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
 export type ModuleInstallationPage = { items: ModuleInstallation[]; next_cursor?: string };
 export type ModuleManifest = Record<string, unknown>;
@@ -321,8 +321,8 @@ export class ApiClient {
     return this.request<ProcessSnapshot>(`/servers/${encodeURIComponent(serverId)}/processes${queryString({ sort, search, limit: 200 })}`, { signal: options.signal });
   }
 
-  listModules(options: QueryOptions = {}): Promise<ModulePage> {
-    return this.request<ModulePage>(`/modules${queryString({ limit: 200 })}`, { signal: options.signal });
+  listModules(options: QueryOptions & { refresh?: boolean } = {}): Promise<ModulePage> {
+    return this.request<ModulePage>(`/modules${queryString({ limit: 200, refresh: options.refresh ? 'true' : undefined })}`, { signal: options.signal });
   }
 
   listServerModules(serverId: string, options: QueryOptions = {}): Promise<ModuleInstallationPage> {

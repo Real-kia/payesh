@@ -646,6 +646,9 @@ type ModuleManifest struct {
 // distinguishes a real release benchmark from an as-yet-unmeasured estimate;
 // it must never be presented to an owner as a measured cost when unmeasured.
 type ModuleCatalogEntry struct {
+	Repository               string   `json:"repository,omitempty"`
+	Release                  string   `json:"release,omitempty"`
+	InstallSupported         *bool    `json:"install_supported,omitempty"`
 	ID                       string   `json:"id"`
 	Name                     string   `json:"name"`
 	Description              string   `json:"description"`
