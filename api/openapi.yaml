@@ -512,6 +512,15 @@ paths:
                   latest: { type: string }
                   update_available: { type: boolean }
                   url: { type: string, format: uri }
+                  releases:
+                    type: array
+                    items:
+                      type: object
+                      required: [version, url, published_at]
+                      properties:
+                        version: { type: string }
+                        url: { type: string, format: uri }
+                        published_at: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '502': { description: GitHub release lookup failed }
   /installations:
@@ -562,6 +571,26 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSSettingsRequest' } } } }
       responses: { '202': { description: Certificate request started; poll GET for the result, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+    patch:
+      operationId: changeDashboardPort
+      summary: Reserve and persist a dashboard port while retaining node endpoints
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port]
+              additionalProperties: false
+              properties:
+                port: { type: integer, minimum: 1, maximum: 65535 }
+      responses:
+        '200': { description: Port changed, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
     delete:
       operationId: removeHTTPSDomain
       summary: Remove the domain and certificate; the dashboard returns to plain HTTP

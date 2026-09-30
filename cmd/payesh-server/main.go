@@ -226,7 +226,7 @@ func main() {
 			if err != nil {
 				return "", nil, fmt.Errorf("read system TLS trust: %w", err)
 			}
-			port := httpsManager.Port
+			port := httpsManager.DashboardPort()
 			host := httpsManager.Domain()
 			if port != "" && port != "443" {
 				host = net.JoinHostPort(host, port)
@@ -395,6 +395,16 @@ func main() {
 	}
 	if _, port, splitErr := net.SplitHostPort(listener.Addr().String()); splitErr == nil {
 		httpsManager.Port = port
+	}
+	if err := httpsManager.EnablePortChanges(listener.Addr().String(), func(extra net.Listener) {
+		go func() {
+			if err := server.Serve(webtls.NewListener(extra, httpsManager)); err != nil && err != http.ErrServerClosed && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "dashboard port:", err)
+			}
+		}()
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "dashboard ports:", err)
+		os.Exit(1)
 	}
 	dashboardListener := webtls.NewListener(listener, httpsManager)
 	defer dashboardListener.Close()

@@ -110,7 +110,7 @@ func (m *Manager) RedirectToHTTPS(next http.Handler) http.Handler {
 			return
 		}
 		host := m.Domain()
-		if port := m.Port; port != "" && port != "443" {
+		if port := m.DashboardPort(); port != "" && port != "443" {
 			host = net.JoinHostPort(host, port)
 		}
 		// Temporary redirects: a browser must not keep forcing HTTPS if the

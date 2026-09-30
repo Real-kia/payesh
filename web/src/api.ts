@@ -53,7 +53,7 @@ export type Server = {
 export type ServerPage = { items: Server[]; next_cursor?: string };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
-export type UpdateStatus = { current: string; latest: string; update_available: boolean; url: string };
+export type UpdateStatus = { current: string; latest: string; update_available: boolean; url: string; releases?: { version: string; url: string; published_at: string }[] };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
 export type Module = { id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string };
@@ -272,6 +272,10 @@ export class ApiClient {
 
   setHTTPSDomain(body: HTTPSSettingsRequest, options: QueryOptions = {}): Promise<HTTPSStatus> {
     return this.request<HTTPSStatus>('/settings/https', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  setDashboardPort(port: number): Promise<HTTPSStatus> {
+    return this.request<HTTPSStatus>('/settings/https', { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify({ port }) });
   }
 
   removeHTTPSDomain(options: QueryOptions = {}): Promise<void> {
