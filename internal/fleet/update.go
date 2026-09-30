@@ -76,13 +76,20 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				available = comparison < 0
 			}
 		}
+		var history []release.GitHubRelease
+		if historian, ok := checker.(interface {
+			History(context.Context) ([]release.GitHubRelease, error)
+		}); ok {
+			history, _ = historian.History(r.Context())
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
-			Current         string `json:"current"`
-			Latest          string `json:"latest"`
-			UpdateAvailable bool   `json:"update_available"`
-			URL             string `json:"url"`
-		}{version.Value, latest.Version, available, latest.URL})
+			Current         string                  `json:"current"`
+			Latest          string                  `json:"latest"`
+			UpdateAvailable bool                    `json:"update_available"`
+			URL             string                  `json:"url"`
+			Releases        []release.GitHubRelease `json:"releases"`
+		}{version.Value, latest.Version, available, latest.URL, history})
 		return
 	}
 	if r.URL.Path != "/api/v1/updates" {

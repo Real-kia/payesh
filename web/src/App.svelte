@@ -42,6 +42,12 @@
   let logEntries: PreviewLogEntry[] = [];
   let apiAbortController: AbortController | null = null;
   let httpsStatus: HTTPSStatus | null = null;
+  let settingsSection: 'users' | 'updates' | 'tls' = 'tls';
+  let addingUser = false;
+  let userSearch = '';
+  let dashboardPort = '';
+  let portBusy = false;
+  let portError = '';
   let httpsDomain = '';
   let httpsEmail = '';
   let httpsToken = '';
@@ -361,8 +367,8 @@
     accountBusy = true; accountError = '';
     try {
       await apiClient.createAccount({ username: accountUsername.trim(), password: accountPassword, role: accountRole, permission: accountPermission });
-      accountUsername = ''; accountPassword = '';
-      await loadAccounts(); showNotice('Account added.');
+      accountUsername = ''; accountPassword = ''; addingUser = false;
+      await loadAccounts(); showNotice('User added.');
     } catch (error) { accountError = error instanceof Error ? error.message : 'Could not add account.'; }
     finally { accountBusy = false; }
   }
@@ -373,27 +379,32 @@
   }
 
   async function editAccount(account: Account): Promise<void> {
+    if (accountBusy) return;
+    accountBusy = true;
     accountError = '';
     try {
       await apiClient.updateAccount(account.username, { username: editUsername.trim(), ...(editPassword ? { password: editPassword } : {}), ...(account.role === 'owner' ? {} : { role: editRole, permission: editPermission }) });
       const changedOwnPassword = account.role === 'owner' && editPassword !== '';
       editingAccount = ''; editPassword = '';
       if (changedOwnPassword) { sessionState = 'signed-out'; authExpired = true; navigate('overview'); showNotice('Password changed. Sign in again.'); }
-      else { await loadAccounts(); showNotice('Account updated.'); }
+      else { await loadAccounts(); showNotice('User updated.'); }
     } catch (error) { accountError = error instanceof Error ? error.message : 'Could not update account.'; }
+    finally { accountBusy = false; }
   }
 
-  async function removeAccount(account: Account): Promise<void> {
-    if (!window.confirm(`Remove ${account.username}? Their sessions will be revoked.`)) return;
-    accountError = '';
-    try { await apiClient.deleteAccount(account.username); await loadAccounts(); showNotice('Account removed.'); }
-    catch (error) { accountError = error instanceof Error ? error.message : 'Could not remove account.'; }
+  function removeAccount(account: Account): void {
+    openConfirmModal({ title: `Remove ${account.username}?`, description: 'Their active sessions will be revoked.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Remove user', cancelText: 'Cancel', action: async () => {
+      accountError = '';
+      try { await apiClient.deleteAccount(account.username); await loadAccounts(); showNotice('User removed.'); }
+      catch (error) { accountError = error instanceof Error ? error.message : 'Could not remove user.'; }
+    } });
   }
 
   async function loadHTTPS(): Promise<void> {
     if (httpsPoll) { clearTimeout(httpsPoll); httpsPoll = null; }
     try {
       httpsStatus = await apiClient.getHTTPSSettings();
+      if (!dashboardPort) dashboardPort = httpsStatus.https_port ?? '8787';
       if (!httpsDomain && httpsStatus.domain) httpsDomain = httpsStatus.domain;
       if (httpsStatus.state === 'pending' && activePage === 'settings') httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
       else httpsBusy = false;
@@ -420,6 +431,18 @@
       httpsBusy = false;
       httpsError = error instanceof Error ? error.message : 'Could not start the certificate request.';
     }
+  }
+
+  async function saveDashboardPort(): Promise<void> {
+    portBusy = true; portError = '';
+    try {
+      httpsStatus = await apiClient.setDashboardPort(Number(dashboardPort));
+      const target = new URL(window.location.href);
+      target.port = dashboardPort;
+      if (httpsStatus.state === 'active' && httpsStatus.domain) { target.hostname = httpsStatus.domain; target.protocol = 'https:'; }
+      window.location.assign(target.toString());
+    } catch (error) { portError = error instanceof Error ? error.message : 'Could not change port.'; }
+    finally { portBusy = false; }
   }
 
   function httpsURL(status: HTTPSStatus): string {
@@ -1732,30 +1755,22 @@
           </div>
         </div>
 
-        <div class="settings-grid">
-          <article class="panel">
-            <div class="panel-heading">
-              <div>
-                <h2>Account & Authentication</h2>
-              </div>
-            </div>
-            <div class="settings-meta-box">
-              <div class="meta-row">
-                <span>Session State</span>
-                <span class="status-pill healthy"><i class="status-dot"></i> Authenticated</span>
-              </div>
-            </div>
-            <div class="settings-actions">
-              <button class="button ghost" type="button" on:click={() => promptSignOut()}>Sign out of hub</button>
-            </div>
-          </article>
-          {#if myAccount?.role === 'owner'}
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => settingsSection = 'tls'}>SSL / TLS</button>
+            <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => settingsSection = 'updates'}>Versions & updates</button>
+            {#if myAccount?.role === 'owner'}<button type="button" aria-current={settingsSection === 'users' ? 'page' : undefined} class:chosen={settingsSection === 'users'} on:click={() => settingsSection = 'users'}>User management</button>{/if}
+          </nav>
+          <div class="settings-grid">
+          {#if settingsSection === 'users' && myAccount?.role === 'owner'}
           <article class="panel account-management">
-            <div class="panel-heading"><div><h2>Account management</h2></div></div>
+            <div class="panel-heading"><div><h2>User management</h2><span class="muted">{accounts.length} users</span></div><button class="button primary small" type="button" on:click={() => addingUser = !addingUser}>{addingUser ? 'Cancel' : 'Add user'}</button></div>
+            <label class="user-search">Search users<input bind:value={userSearch} placeholder="Search by username" /></label>
             <div class="account-list">
-              {#each accounts as account}
+              <div class="user-table-head"><span>User</span><span>Role</span><span>Access</span><span>Actions</span></div>
+              {#each accounts.filter(account => account.username.toLowerCase().includes(userSearch.toLowerCase())) as account}
                 <div class="account-row">
-                  <div><strong>{account.username}</strong><small>{account.role} · {account.permission === 'read' ? 'Read only' : 'Can edit'}</small></div>
+                  <strong>{account.username}</strong><span class="user-role">{account.role}</span><span>{account.permission === 'read' ? 'Read only' : 'Can edit'}</span>
                   <div class="settings-actions"><button class="button ghost small" type="button" on:click={() => startEditingAccount(account)}>Edit</button>{#if account.role !== 'owner'}<button class="button ghost small" type="button" on:click={() => void removeAccount(account)}>Remove</button>{/if}</div>
                 </div>
                 {#if editingAccount === account.username}
@@ -1766,39 +1781,46 @@
                       <label>Role<select bind:value={editRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
                       <label>Permission<select bind:value={editPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
                     {/if}
-                    <div class="settings-actions"><button class="button primary small" type="submit">Save changes</button><button class="button ghost small" type="button" on:click={() => editingAccount = ''}>Cancel</button></div>
+                    <div class="settings-actions"><button class="button primary small" type="submit" disabled={accountBusy}>Save changes</button><button class="button ghost small" type="button" on:click={() => editingAccount = ''}>Cancel</button></div>
                   </form>
                 {/if}
               {/each}
             </div>
-            <form class="form-grid" on:submit|preventDefault={() => void saveAccount()}>
+            {#if addingUser}<form class="form-grid account-edit-form" on:submit|preventDefault={() => void saveAccount()}>
+              <h3 class="form-wide">New user</h3>
               <label>Username<input bind:value={accountUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
               <label>Password<input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" /></label>
               <label>Role<select bind:value={accountRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
               <label>Permission<select bind:value={accountPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
-              <button class="button primary" type="submit" disabled={accountBusy}>Add account</button>
-            </form>
+              <button class="button primary" type="submit" disabled={accountBusy}>Create user</button>
+            </form>{/if}
             {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
           </article>
           {/if}
-          <article class="panel account-management">
-            <div class="panel-heading"><div><h2>Updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{updateCheckBusy ? 'Checking…' : 'Check GitHub'}</button></div>
+          {#if settingsSection === 'updates'}<article class="panel account-management">
+            <div class="panel-heading"><div><h2>Versions & updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{updateCheckBusy ? 'Checking…' : 'Check GitHub'}</button></div>
+            <div class="settings-meta-box">
+              <div class="meta-row"><span>Installed version</span><strong>{updateStatus?.current ? `v${updateStatus.current}` : servers.find(server => server.role !== 'node')?.version ?? 'Unavailable'}</strong></div>
+            </div>
             {#if updateStatus}
               <div class="settings-meta-box">
-                <div class="meta-row"><span>Installed</span><strong>v{updateStatus.current}</strong></div>
                 <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
                 <div class="meta-row"><span>Status</span><span class={`status-pill ${updateStatus.update_available ? 'pending' : 'healthy'}`}>{updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
               </div>
             {/if}
             {#if updateCheckError}<p class="form-error" role="alert">{updateCheckError}</p>{/if}
-            <p class="muted">Run the update on this server:</p>
+            <h3>Release history</h3>
+            {#if updateStatus?.releases?.length}
+              <div class="release-list">{#each updateStatus.releases as release}<a class="release-row" href={release.url} target="_blank" rel="noopener noreferrer"><strong>v{release.version}</strong><span>{release.version === updateStatus.current ? 'Installed' : new Date(release.published_at).toLocaleDateString()}</span><span>Release notes ↗</span></a>{/each}</div>
+            {:else}<p class="muted">{updateCheckBusy ? 'Loading releases…' : 'Release history unavailable.'}</p>{/if}
+            <h3>Update command</h3>
             <code class="update-command">sudo payesh update</code>
             <small class="muted">Private repository: pass a read-only GitHub token with <code>sudo --preserve-env=GITHUB_TOKEN payesh update</code>.</small>
-          </article>
-          <article class="panel">
+          </article>{/if}
+          {#if settingsSection === 'tls'}<article class="panel">
             <div class="panel-heading">
               <div>
-                <h2>Domain & HTTPS</h2>
+                <h2>SSL / TLS</h2>
               </div>
             </div>
             <div class="settings-meta-box">
@@ -1823,9 +1845,9 @@
             </div>
             {#if httpsStatus?.state === 'failed' && httpsStatus.error}<p class="form-error" role="alert">{httpsStatus.error}</p>{/if}
             <form class="form-grid" on:submit|preventDefault={() => void saveHTTPS()}>
-              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Create a DNS A record pointing to this server first.</small></label>
-              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Let's Encrypt sends expiry warnings here.</small></label>
-              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy || myAccount?.permission === 'read'} /><small>Needed when port 80 is in use. Requires Zone → DNS → Edit.</small></label>
+              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
+              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
+              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
             </form>
             {#if httpsError}<p class="form-error" role="alert">{httpsError}</p>{/if}
             <div class="settings-actions">
@@ -1833,6 +1855,17 @@
               {#if httpsStatus?.domain && !httpsBusy && myAccount?.permission !== 'read'}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
             </div>
           </article>
+          {/if}
+          {#if settingsSection === 'tls'}<article class="panel">
+            <div class="panel-heading"><h2>Dashboard port</h2></div>
+            <form class="port-form" on:submit|preventDefault={() => void saveDashboardPort()}>
+              <label>Port<input type="number" min="1" max="65535" required bind:value={dashboardPort} disabled={portBusy || myAccount?.permission === 'read'} /></label>
+              <button class="button primary" type="submit" disabled={portBusy || PREVIEW_MODE || myAccount?.permission === 'read'}>{portBusy ? 'Checking port…' : 'Change port'}</button>
+            </form>
+            {#if portError}<p class="form-error" role="alert">{portError}</p>{/if}
+            <p class="muted">Existing nodes keep their current connection address.</p>
+          </article>{/if}
+          </div>
         </div>
       </section>
 
@@ -2612,9 +2645,11 @@
   .monitoring-card > button { align-self: flex-start; margin-top: auto; }
   .account-management { grid-column: 1 / -1; }
   .account-list { margin-bottom: 20px; }
-  .account-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-  .account-row strong, .account-row small { display: block; }
-  .account-row small { color: var(--muted); margin-top: 3px; }
+  .account-row, .user-table-head { display: grid; grid-template-columns: minmax(120px, 1fr) 80px 100px 150px; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .user-table-head { color: var(--muted); font-size: 12px; }
+  .account-row .settings-actions { margin: 0; justify-content: flex-end; gap: 8px; }
+  .user-role { text-transform: capitalize; }
+  @media (max-width: 650px) { .user-table-head { display: none; } .account-row { grid-template-columns: 1fr 1fr; } .account-row .settings-actions { justify-content: flex-start; } }
   .update-command { display: block; width: fit-content; max-width: 100%; padding: 10px 14px; margin: 12px 0; border-radius: var(--radius-md); background: var(--surface-muted); overflow-wrap: anywhere; }
 
   .nav-count {
@@ -3514,7 +3549,7 @@
   }
 
   .onboarding-card {
-    max-width: 720px;
+    min-width: 0;
     padding: 32px;
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
@@ -3630,6 +3665,17 @@
     gap: 24px;
     max-width: 720px;
   }
+  .settings-layout { display: grid; grid-template-columns: 200px minmax(0, 850px); gap: 32px; align-items: start; }
+  .settings-nav { display: grid; gap: 4px; border-right: 1px solid var(--line); padding-right: 16px; }
+  .settings-nav button { text-align: left; padding: 12px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; border-radius: 4px; }
+  .settings-nav button.chosen { background: var(--surface-muted); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--accent); }
+  .user-search { display: grid; gap: 8px; margin-bottom: 20px; font-size: 13px; }
+  .release-list { border-top: 1px solid var(--line); margin: 16px 0 24px; }
+  .release-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; }
+  .port-form { display: flex; gap: 16px; align-items: end; }
+  .port-form label { display: grid; gap: 8px; }
+  .form-wide { grid-column: 1 / -1; }
+  @media (max-width: 760px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 12px; } .release-row { grid-template-columns: 70px 1fr; } .release-row span:last-child { grid-column: 2; } }
   .settings-meta-box {
     display: flex;
     flex-direction: column;

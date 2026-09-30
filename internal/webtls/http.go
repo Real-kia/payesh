@@ -15,13 +15,32 @@ type SettingsRequest struct {
 	CloudflareToken string `json:"cloudflare_api_token,omitempty"`
 }
 
-// Handler serves GET/PUT/DELETE /api/v1/settings/https. Callers must wrap it
+// Handler serves GET/PUT/PATCH/DELETE /api/v1/settings/https. Callers must wrap it
 // in the browser session and CSRF middleware. ctx bounds background issuance.
 func (m *Manager) Handler(ctx context.Context) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			writeStatus(w, http.StatusOK, m.Status())
+		case http.MethodPatch:
+			var request struct {
+				Port int `json:"port"`
+			}
+			decoder := json.NewDecoder(io.LimitReader(r.Body, 1024))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil || request.Port < 1 || request.Port > 65535 {
+				writeError(w, 400, "invalid_port", "port must be between 1 and 65535")
+				return
+			}
+			if m.portController == nil {
+				writeError(w, 503, "port_unavailable", "port changes are unavailable")
+				return
+			}
+			if err := m.portController.Change(request.Port); err != nil {
+				writeError(w, 409, "port_unavailable", err.Error())
+				return
+			}
+			writeStatus(w, 200, m.Status())
 		case http.MethodPut:
 			var request SettingsRequest
 			decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<10))
@@ -50,7 +69,7 @@ func (m *Manager) Handler(ctx context.Context) http.Handler {
 				w.WriteHeader(http.StatusNoContent)
 			}
 		default:
-			w.Header().Set("Allow", "GET, PUT, DELETE")
+			w.Header().Set("Allow", "GET, PUT, PATCH, DELETE")
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 	})

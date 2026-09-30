@@ -88,12 +88,13 @@ type Manager struct {
 	// Port is the dashboard port reported in Status.
 	Port string
 
-	cert    atomic.Pointer[tls.Certificate]
-	busy    atomic.Bool
-	mu      sync.Mutex
-	config  Config
-	state   string
-	lastErr string
+	portController *PortController
+	cert           atomic.Pointer[tls.Certificate]
+	busy           atomic.Bool
+	mu             sync.Mutex
+	config         Config
+	state          string
+	lastErr        string
 }
 
 // NewManager loads any saved configuration and certificate from dir.
