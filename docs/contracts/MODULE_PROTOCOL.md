@@ -63,8 +63,12 @@ to `latest`. Private repositories use the server's `GITHUB_TOKEN`.
 
 All sources retain pinned Ed25519 manifest verification and checksum/size/platform
 checks. A plain release archive without module metadata is not an installable
-signed module. Installation remains limited to the configured local standalone
-server with its privileged module executor; remote module execution is unchanged.
+signed module. Installation remains limited to the configured local server. Control modules
+require the privileged module executor on a standalone installation. Advanced
+Process Monitoring runs as a separate read-only executable under the server
+service account on standalone/hub installations; its public verification key is
+built into the core. Remote module execution is unchanged. See
+[Advanced Process Monitoring](../PROCESS_MONITORING.md).
 
 Network download/upload monitoring is part of the base agent and dashboard;
 it does not require the bandwidth-controls or port-traffic modules.
