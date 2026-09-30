@@ -53,7 +53,7 @@ jobs:
           - { name: fedora-42, image: 'fedora:42', manager: dnf, init: systemd }
           - { name: fedora-43, image: 'fedora:43', manager: dnf, init: systemd }
           - { name: rocky-9, image: 'rockylinux:9', manager: dnf, init: systemd }
-          - { name: rocky-10, image: 'rockylinux:10', manager: dnf, init: systemd }
+          - { name: rocky-10, image: 'rockylinux/rockylinux:10', manager: dnf, init: systemd }
           - { name: alma-9, image: 'almalinux:9', manager: dnf, init: systemd }
           - { name: alma-10, image: 'almalinux:10', manager: dnf, init: systemd }
           - { name: alpine-3.22, image: 'alpine:3.22', manager: apk, init: openrc }
