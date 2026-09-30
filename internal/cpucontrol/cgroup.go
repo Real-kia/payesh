@@ -40,7 +40,7 @@ func (g GroupPath) validate() error {
 // conventional cgroup v2 layout, so the parsing/writing logic is exercised
 // for real without requiring an actual mounted cgroupfs or root privileges.
 // What a temp-directory root cannot prove is kernel enforcement — that
-// requires a disposable Linux host (see docs/handoffs/08.md).
+// requires a disposable Linux host.
 type CgroupFS interface {
 	EnsureDedicatedGroup(group GroupPath) error
 	IsDedicatedGroup(group GroupPath) (bool, error)
@@ -111,7 +111,7 @@ func (c FSCgroup) dir(group GroupPath) (string, error) {
 // EnsureDedicatedGroup creates group (and its payesh/ parent) if absent and
 // records ownership outside cgroupfs. It refuses to "adopt" a directory that
 // already exists without that durable record — the unsafe shared-group case
-// PLAN.md section 10 requires refusing.
+// design requires refusing.
 func (c FSCgroup) EnsureDedicatedGroup(group GroupPath) error {
 	dir, err := c.dir(group)
 	if err != nil {

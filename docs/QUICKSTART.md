@@ -8,20 +8,6 @@ On your Linux server (x86_64 or arm64), run:
 curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
 ```
 
-### For a private repo
-
-Replace `YOUR_GITHUB_PAT` with a fine-grained GitHub token that has
-**Contents: Read-only** access to `Real-kia/payesh`, then run this single line:
-
-```sh
-GITHUB_TOKEN='YOUR_GITHUB_PAT' sh -c 'curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/Real-kia/payesh/contents/install.sh | sudo --preserve-env=GITHUB_TOKEN sh'
-```
-
-The token is also passed to the installer so it can download the private
-release. See [private-repository setup](#temporary-installing-while-the-repository-is-private)
-for token creation and cleanup. A token entered directly in this command may
-remain in your shell history.
-
 That's it. The installer:
 
 1. checks that the server is supported,
@@ -39,12 +25,6 @@ Run this on the server that will become a node:
 curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --role node
 ```
 
-While the repository is private, use a read-only token instead:
-
-```sh
-GITHUB_TOKEN='YOUR_GITHUB_PAT' sh -c 'curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/Real-kia/payesh/contents/install.sh | sudo --preserve-env=GITHUB_TOKEN sh -s -- --role node'
-```
-
 This installs the agent. To send data to a hub, enroll the node through the
 hub's **Add Server** flow; a node without enrollment collects locally only.
 
@@ -58,9 +38,7 @@ payesh update check
 sudo payesh update
 ```
 
-For a private repository, set a read-only `GITHUB_TOKEN` and preserve it through
-`sudo`, as in the private install command above. `payesh update` keeps the
-installed role and downloads verified release archives.
+`payesh update` keeps the installed role and downloads verified release archives.
 
 ### Convert a hub to a node
 
@@ -81,8 +59,7 @@ sudo payesh role convert node --transport-url wss://NEW_HUB:8787/node/v1 \
 
 The conversion stops the old dashboard service, preserves its database for
 recovery, installs the node role, and starts the agent with the destination
-hub credentials. If the repository is still private, pass `GITHUB_TOKEN` as
-for `payesh update`.
+hub credentials.
 
 > Want to see if your server is supported first, without changing anything?
 > Add `-s -- --check` at the end:
@@ -181,43 +158,15 @@ curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh |
 
 ```sh
 sudo payesh-install --role standalone --uninstall
+# Complete removal, including stored data and the installer itself:
+sudo payesh-install --role standalone --uninstall --remove-data --remove-installer
 ```
 
-Your data in `/var/lib/payesh` is kept. Add `--remove-data` to delete it too.
-See [UNINSTALL.md](UNINSTALL.md) for details.
+The default keeps data in `/var/lib/payesh`. The one-line `install.sh` wrapper
+also accepts `--uninstall`; add `--remove-data --remove-installer` for complete
+removal. See [UNINSTALL.md](UNINSTALL.md) for details.
 
 ---
-
-## Temporary: installing while the repository is private
-
-> **Remove this section when the repository goes public.**
-
-While `Real-kia/payesh` is private, `raw.githubusercontent.com` and release
-downloads return 404 without credentials. The installer can download through
-the GitHub API instead when `GITHUB_TOKEN` is set.
-
-1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
-   limited to the `Real-kia/payesh` repository with **Contents: Read-only**
-   and a short expiry.
-2. On the server (curl is required in this mode), use the one-line command
-   [above](#for-a-private-repo), or export the token separately:
-
-```sh
-export GITHUB_TOKEN=github_pat_xxx
-curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github.raw" \
-  https://api.github.com/repos/Real-kia/payesh/contents/install.sh \
-  | sudo --preserve-env=GITHUB_TOKEN sh
-```
-
-Installer options work the same way, e.g. `... | sudo --preserve-env=GITHUB_TOKEN sh -s -- --domain panel.example.com`.
-To also pass a Cloudflare token, list both variables:
-`sudo --preserve-env=GITHUB_TOKEN,PAYESH_CLOUDFLARE_API_TOKEN sh -s -- --domain panel.example.com`.
-To test an unmerged branch's installer, add `?ref=BRANCH` to the
-`contents/install.sh` URL.
-
-Afterwards, run `unset GITHUB_TOKEN` and revoke the token once testing is
-done. It's only used to download; the installed system never stores it.
 
 ### Publishing a release for the installer
 

@@ -64,6 +64,6 @@ git tag v0.1.1 && git push origin v0.1.1
 ```
 
 Record exact commands, environment, skipped Linux/kernel checks, resource
-measurements, and remaining blockers in `docs/handoffs/11.md`. “Ready for
+measurements, and remaining blockers in your release notes. “Ready for
 review” and “accepted” are different statuses; a successful unit test is not
 evidence of real kernel enforcement or a clean-host release install.

@@ -56,7 +56,7 @@ are synchronous, bounded `idempotency_key` + `expected_revision` operations
 that return the resulting `ModuleInstallation`/`Policy` record directly, the
 same convention as traffic configuration below — not the generic async
 `Job`-wrapped, `policyId`-addressed contract this document originally
-sketched (see `docs/handoffs/06.md`/`08.md` for that reconciliation).
+sketched.
 
 Package-05 traffic configuration is `POST /servers/{serverId}/traffic` with a
 bounded `idempotency_key` and `expected_revision`. It accepts selected interface

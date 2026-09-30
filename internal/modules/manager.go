@@ -267,7 +267,7 @@ func (m *Manager) Enable(ctx context.Context, serverID contracts.ServerID, modul
 // Disable deactivates an enabled module back to installed-disabled. If a
 // DeactivateHooks entry is registered for moduleID, it runs first and must
 // succeed: "disabling ... must first revert its active policies and verify
-// cleanup" (PLAN.md section 11). A hook failure leaves the module enabled
+// cleanup". A hook failure leaves the module enabled
 // rather than reporting a false success — the caller can retry once the
 // underlying problem (e.g. a control policy that failed to revert) is fixed.
 func (m *Manager) Disable(ctx context.Context, serverID contracts.ServerID, moduleID string, expectedRevision uint64) (contracts.ModuleInstallation, error) {

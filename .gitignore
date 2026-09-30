@@ -39,11 +39,22 @@ Thumbs.db
 tmp/
 .tmp/
 
-# Local AI/agent state and internal working notes
+# Local AI/agent state and internal working notes (keep out of the public repo)
 .agents/
 .codex/
+.claude/
+.gemini/
+.cursor/
+.aider*
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+.windsurfrules
 MEMORY.md
 PROJECT_STATE.md
+PLAN.md
+docs/ACCEPTANCE_STATUS.md
 plans/
 docs/handoffs/
 docs/reviews/

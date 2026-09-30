@@ -2,9 +2,7 @@
 
 Updated: 2026-09-18
 
-For the current verified command results and the only remaining external
-acceptance requirements, see [`ACCEPTANCE_STATUS.md`](ACCEPTANCE_STATUS.md).
-The package handoffs below are historical implementation evidence; they are not
+The per-package notes below are historical implementation evidence; they are not
 the authority for current acceptance status when they conflict with that file.
 
 This file records implementation evidence, not planning intent. The repository
@@ -112,8 +110,6 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   responses, all planned API resource families, bounded query pagination/range,
   idempotent job cancellation, explicit source-clock skew semantics, aligned
   helper targets, and CI lint enforcement.
-- Recorded the comment-by-comment resolution in
-  `docs/reviews/01-foundation-review-resolution.md`.
 - Second review fixes add bounded uint64 validation, required metric values,
   explicit rollups/traffic allowances/live logs/alert history/maintenance,
   complete module and policy safety flows, update preflight and machine
@@ -137,8 +133,8 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   validated access and optional enrollment steps, bounded log metadata, and
   explicit unavailable states. The second review pass also fixed chart data
   boundaries, retry behavior, contrast, readable time axes, and long-name
-  wrapping. Design decisions and the handoff are recorded under
-  `design-system/payesh/MASTER.md` and `docs/handoffs/02.md`.
+  wrapping. Design decisions are recorded under
+  `design-system/payesh/MASTER.md`.
 - Third foundation review fixes separate node-observed samples from hub-stamped
   receipt records; specify JCS/Ed25519 detached release signatures; validate
   module protocol/hello inventories and coverage gaps; make build loops
@@ -182,9 +178,6 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   configured operational-log directories; historical file cursors resume at
   source offsets, journald units support bounded live tails, and raw metric
   pages enforce a byte-aware continuation bound.
-  The review resolution is recorded in
-  `docs/reviews/03-local-monitoring-review-resolution.md` and the handoff in
-  `docs/handoffs/03.md`.
 - Package-04 Checkpoint A adds SQLite-backed restart-safe browser owner setup/
   login/logout with PBKDF2 password records, transport-aware session cookies
   and bounded, expiring CSRF/login throttling (with trusted reverse-proxy
@@ -204,7 +197,7 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   roles. This is not the
   package-04 acceptance gate: live enrollment bootstrap/transport wiring, authenticated
   TLS/WebSocket connection wiring, automated renewal/recovery orchestration, SSH/direct installers,
-  and Linux acceptance remain outstanding. See `docs/handoffs/04.md`.
+  and Linux acceptance remain outstanding.
 
 - Package-05 Checkpoint A adds calendar/timezone traffic allowances with
   durable period identity and restart-safe schedule transitions, selected
@@ -235,8 +228,7 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   Real Telegram and signed HTTPS webhook endpoints passed;
   an external HTTPS outage/recovery run passed two deliberate 503 responses,
   bounded retry/backoff, and third-attempt recovery. A 121-second Ubuntu retention soak
-  accepted 4,280/4,280 samples without ingest/prune/storage errors. See
-  `docs/handoffs/05.md`.
+  accepted 4,280/4,280 samples without ingest/prune/storage errors.
   Fresh collector epochs mark sequence-zero usage uncertain when prior epoch
   metadata exists; explicit period restarts close active predecessors
   atomically. Forecast reads retain a bounded newest tail and accept ordinary
@@ -264,13 +256,13 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   provisioned,
   audit-event persistence now covers module lifecycle transitions atomically,
   and only synthetic in-process archive fixtures were exercised (no real Linux host,
-  no real official module release artifact). See `docs/handoffs/06.md`.
+  no real official module release artifact).
   This session also fixed two pre-existing build-breaking regressions in
   `internal/monitoring/store.go` (a `*time.Time` dereference bug and a stale
   `RollupPage{}` return from an earlier edit) that left `go build ./...`
   failing before any package-06 work began.
 - Package-08 Checkpoint A adds CPU Controls: integer-millicore quota math
-  matching PLAN.md's worked "1 core = 25% of a 4-vCPU server" example; a real
+  matching the worked "1 core = 25% of a 4-vCPU server" example; a real
   cgroup v2 `cpu.max`/`cgroup.procs` file-format adapter (`internal/cpucontrol`,
   `FSCgroup`) that refuses to write into any directory Payesh did not create
   itself (an ownership record outside cgroupfs distinguishes a Payesh-created dedicated
@@ -291,7 +283,7 @@ reboot/full service lifecycle, and whole-process overhead evidence remain.
   been reconciled: `api/openapi.yaml` and `scripts/contract-check.mjs` now
   describe the real routes/schemas (new `/servers/{serverId}/modules/{moduleId}/install`,
   `/servers/{serverId}/cpu-policies...`; corrected `Module`/`ModuleInstallation`/`Policy`
-  schemas). See `docs/handoffs/08.md`.
+  schemas).
 
 ## Verification
 
@@ -316,8 +308,7 @@ one-controller authority switching, prevents concurrent phase execution, and
 fails closed to operator recovery after an uncertain authority switch.
 Production registry entries, cutover hook adapters, an authenticated remote
 executor, signing-anchor operations, and multi-host acceptance remain
-unimplemented. See
-`docs/handoffs/10.md`.
+unimplemented.
 
 Package 11 now has an initial local release-readiness slice: the
 `release-package` tool cross-builds reproducible Linux amd64/arm64 archives for
@@ -331,8 +322,7 @@ default bundle remains intentionally unsigned (`signing_key_id=unavailable-local
 and no official publication is claimed. Quickstart, update/recovery,
 uninstall, contributor, and known-limitations guides are recorded in `docs/`.
 Full live clean-host installation, signed publication/production rollout execution,
-measured resource benchmarks, and final v1 acceptance remain outstanding. See
-`docs/handoffs/11.md`.
+measured resource benchmarks, and final v1 acceptance remain outstanding.
 
 The 2026-09-12 Ubuntu 22 core profile now passes real collector,
 identity/epoch, SQLite ingestion/query, and authenticated populated-database
@@ -375,7 +365,7 @@ contracts, and the frontend shell build. In addition, the 2026-09-11 Ubuntu
 queries, the follow-mode agent pipeline, bounded/redacted log capture, and the
 authenticated local API; temporary state was removed. Real systemd-managed
 restart, OpenRC, journald, rotation-under-load, and disk-pressure acceptance
-still require the disposable environments described in `docs/handoffs/03.md`.
+still require the disposable environments described in the support matrix.
 
 The package-02 Svelte design system and fixture previews still build. Default
 production mode reads authenticated server/detail/metrics/traffic/log APIs and
@@ -397,10 +387,10 @@ workflow and focused security/schema review before accepting M0/M2. For
 package 06, the next inputs are a provisioned production release-signing key
 and Linux acceptance tests against real
 signed module release artifacts rather than only synthetic in-process
-fixtures — see `docs/handoffs/06.md`. For package 08, the next inputs are
+fixtures. For package 08, the next inputs are
 shared-group/parent-quota/PID-reuse/restart/OpenRC acceptance scenarios; real
 CPU-load enforcement now passes in the delegated Ubuntu 22 runner. The
-`payesh run` workflow and target discovery are implemented — see `docs/handoffs/08.md`. The
+`payesh run` workflow and target discovery are implemented. The
 `api/openapi.yaml` mismatch against packages 05/06/08 has been reconciled
 (see above); a fresh review pass should still confirm the reconciled
 document against real client usage before acceptance. Do not describe this

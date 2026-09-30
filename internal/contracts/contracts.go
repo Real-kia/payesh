@@ -748,7 +748,7 @@ const (
 )
 
 // ControlPolicy is the shared per-server, per-target control record listed
-// in PLAN.md section 13's minimum data model. Parameters is a control-kind-
+// in the minimum control-policy data model. Parameters is a control-kind-
 // specific typed payload (for example internal/cpucontrol's quota
 // parameters), versioned and validated by the owning control package rather
 // than by this shared envelope — the same pattern ModuleInvocationRequest

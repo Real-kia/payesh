@@ -3,20 +3,22 @@
 The `payesh-install --uninstall` command removes only the selected role's
 Payesh artifacts and service definitions. It stops/disables only the exact
 Payesh units for that role, and preserves `/var/lib/payesh`, `/etc/payesh`,
-and `/var/log/payesh` by default. Before removing retained history, export or
-back up data you need; deleting it is a separate, explicit decision.
+and `/var/log/payesh` by default. `install.sh` accepts the same uninstall
+options and delegates to the installed `payesh-install` binary.
 
 Preview the target first, then use an explicit role:
 
 ```sh
 sudo /usr/bin/payesh-install --role node --uninstall
 sudo /usr/bin/payesh-install --role standalone --uninstall --remove-data
+sudo /usr/bin/payesh-install --role node --uninstall --remove-data --remove-installer
 ```
 
-`--remove-data` is intentionally required to delete the database, identity,
-configuration, and logs. The command refuses symlinks and special files and
-does not use wildcard paths. The repository acceptance gate exercises both
-the data-preserving and explicit-data-removal paths in an isolated fixture:
+`--remove-data` is required to delete the database, identity, configuration,
+and logs. `--remove-installer` removes `/usr/bin/payesh-install` last, after
+service, artifact, and data cleanup. The command refuses symlinks and special
+files and does not use wildcard paths. The repository acceptance gate exercises
+data-preserving and explicit-data-removal paths in an isolated fixture:
 `scripts/install-acceptance.sh`.
 
 For a systemd host, stop and disable only the Payesh units that were enabled
@@ -44,3 +46,7 @@ to another application.
 Optional controls require module-specific teardown. If cleanup failed, keep
 the module executable and its checkpoint/journal and retry recovery; deleting
 those files can strand kernel state.
+
+The installer does not own out-of-band host administration files such as
+custom `sshd` configuration. Review those separately: removing them can change
+the server's SSH ports and login behavior.

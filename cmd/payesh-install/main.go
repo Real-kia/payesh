@@ -27,6 +27,7 @@ func main() {
 	start := flag.Bool("start", false, "enable and start installed services (requires --install)")
 	uninstall := flag.Bool("uninstall", false, "stop/remove Payesh services and owned artifacts")
 	removeData := flag.Bool("remove-data", false, "with --uninstall, also remove Payesh data/config/log directories")
+	removeInstaller := flag.Bool("remove-installer", false, "with --uninstall, also remove the payesh-install executable last")
 	convertFrom := flag.String("convert-from", "", "explicit source role for hub-to-node conversion")
 	transportURL := flag.String("transport-url", "", "destination hub wss URL")
 	nodeIdentity := flag.String("node-identity-file", "", "enrolled node identity JSON")
@@ -44,13 +45,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--remove-data requires --uninstall")
 		os.Exit(2)
 	}
+	if *removeInstaller && !*uninstall {
+		fmt.Fprintln(os.Stderr, "--remove-installer requires --uninstall")
+		os.Exit(2)
+	}
 	if *start && !*apply {
 		fmt.Fprintln(os.Stderr, "--start requires --install")
 		os.Exit(2)
 	}
 	if *uninstall {
 		result, err := install.Uninstall(context.Background(), install.UninstallOptions{
-			Root: *root, Role: *role, RemoveData: *removeData, Stop: true,
+			Root: *root, Role: *role, RemoveData: *removeData, RemoveInstaller: *removeInstaller, Stop: true,
 		})
 		if err != nil {
 			if *jsonOutput {

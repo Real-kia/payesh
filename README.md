@@ -23,8 +23,7 @@ sudo payesh domain panel.example.com
 
 Payesh then gets a free Let's Encrypt certificate and serves HTTPS on the same
 port, without using port 443 or touching nginx. See the
-[quickstart](docs/QUICKSTART.md) for details, installer options, and
-(temporarily) installing while the repository is private.
+[quickstart](docs/QUICKSTART.md) for details and installer options.
 
 Current releases are previews, not v1. Release archives are checksummed but
 intentionally unsigned until an authorized owner performs the external
@@ -33,7 +32,6 @@ Ed25519 signing step.
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — one-line install, dashboard access, and building from source
-- [Acceptance status](docs/ACCEPTANCE_STATUS.md) — current verified checks and remaining gates
 - [Update and recovery](docs/UPDATE_AND_RECOVERY.md)
 - [Uninstall and detachment](docs/UNINSTALL.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
@@ -43,5 +41,4 @@ Ed25519 signing step.
 - [Release format](docs/contracts/RELEASE_FORMAT.md)
 
 The dashboard and optional kernel controls remain subject to the acceptance
-gates and limitations recorded in the implementation status and package
-handoffs.
+gates and limitations recorded in the implementation status.

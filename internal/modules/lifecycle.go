@@ -8,7 +8,7 @@ import (
 
 // Event names one lifecycle transition attempt. Events are deliberately
 // coarse (not "extract tar entry 3") so the state machine only encodes the
-// install-sequence requirement of PLAN.md section 11: install is kept
+// install-sequence requirement: install is kept
 // separate from activation, and a failed step preserves the previous
 // working state instead of leaving the module half-installed.
 type Event string
@@ -58,7 +58,7 @@ var transitions = map[contracts.ModuleState]map[Event]contracts.ModuleState{
 		EventUpdateStart: contracts.ModuleUpdating,
 		// Remove is legal only once disabled: disabling first is what stops
 		// userspace work and tears down kernel rules before files are
-		// removed (PLAN.md section 11). Removing straight from "enabled" is
+		// removed. Removing straight from "enabled" is
 		// deliberately not a table entry.
 		EventRemoveStart: contracts.ModuleRemoving,
 	},

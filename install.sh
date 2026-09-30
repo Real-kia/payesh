@@ -18,6 +18,9 @@
 #   --transport-url URL destination hub wss URL for conversion
 #   --node-identity-file PATH enrolled node identity for conversion
 #   --hub-ca-file PATH destination hub CA certificate for conversion
+#   --uninstall        stop services and remove the selected role
+#   --remove-data      with --uninstall, also delete Payesh data/config/logs
+#   --remove-installer with --uninstall, remove payesh-install after cleanup
 #
 # The dashboard is reachable at http://SERVER_IP:8787 right away, without
 # encryption. With --domain (or later: sudo payesh domain NAME) the same port
@@ -40,6 +43,9 @@ CONVERT_FROM=""
 TRANSPORT_URL=""
 NODE_IDENTITY_FILE=""
 HUB_CA_FILE=""
+UNINSTALL=0
+REMOVE_DATA=0
+REMOVE_INSTALLER=0
 TOKEN="${GITHUB_TOKEN:-}"
 
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -63,8 +69,11 @@ while [ $# -gt 0 ]; do
 	--transport-url) TRANSPORT_URL="${2:?--transport-url needs a value}"; shift 2 ;;
 	--node-identity-file) NODE_IDENTITY_FILE="${2:?--node-identity-file needs a value}"; shift 2 ;;
 	--hub-ca-file) HUB_CA_FILE="${2:?--hub-ca-file needs a value}"; shift 2 ;;
+	--uninstall) UNINSTALL=1; shift ;;
+	--remove-data) REMOVE_DATA=1; shift ;;
+	--remove-installer) REMOVE_INSTALLER=1; shift ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
@@ -93,6 +102,23 @@ case "$ROLE" in
 standalone | hub | node | cli-only) ;;
 *) die "unsupported role '$ROLE' (use standalone, hub, node, or cli-only)" ;;
 esac
+
+if [ "$REMOVE_DATA" = 1 ] && [ "$UNINSTALL" != 1 ]; then
+	die "--remove-data requires --uninstall"
+fi
+if [ "$REMOVE_INSTALLER" = 1 ] && [ "$UNINSTALL" != 1 ]; then
+	die "--remove-installer requires --uninstall"
+fi
+
+if [ "$UNINSTALL" = 1 ]; then
+	[ "$(id -u)" -eq 0 ] || die "please run as root, e.g. sudo ./install.sh --uninstall"
+	UNINSTALLER="${PAYESH_INSTALLER:-/usr/bin/payesh-install}"
+	[ -x "$UNINSTALLER" ] || die "installed payesh-install not found at $UNINSTALLER; run it directly or set PAYESH_INSTALLER"
+	set -- --role "$ROLE" --uninstall
+	[ "$REMOVE_DATA" = 0 ] || set -- "$@" --remove-data
+	[ "$REMOVE_INSTALLER" = 0 ] || set -- "$@" --remove-installer
+	exec "$UNINSTALLER" "$@"
+fi
 
 VERSION="${VERSION#v}"
 

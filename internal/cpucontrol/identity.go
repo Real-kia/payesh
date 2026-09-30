@@ -18,7 +18,7 @@ import (
 // boot) — the portable, no-special-privilege signal this package checks.
 // Linux also offers pidfd_open, which pins identity via a stable file
 // descriptor instead of a re-read comparison; that is a real-Linux-only
-// enhancement left for the next integration pass (see docs/handoffs/08.md)
+// enhancement left for the next integration pass
 // rather than something a plain /proc read can exercise or this development
 // host can validate.
 type ProcessIdentity struct {

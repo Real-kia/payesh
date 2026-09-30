@@ -21,7 +21,7 @@ const MaxMillicores uint64 = 1_000_000
 
 // MillicoresPerCore is the API convention: 1000 millicores equal one core,
 // matching Kubernetes' widely understood unit so "500m" reads the same way
-// it does elsewhere. See PLAN.md section 10: "API values use integer
+// it does elsewhere. The design rule: "API values use integer
 // millicores. Never confuse 100% of one core with 100% of the whole machine."
 const MillicoresPerCore uint64 = 1000
 
@@ -56,7 +56,7 @@ func MillicoresFromQuota(quotaMicros, periodMicros uint64) uint64 {
 
 // Describe renders a human-readable explanation of a quota relative to the
 // server's total core count, e.g. "1 core (1000m) — about 25% of this
-// 4-vCPU server", matching the worked example in PLAN.md section 10.
+// 4-vCPU server", matching the worked example in the design notes.
 func Describe(millicores uint64, totalCores int) string {
 	cores := float64(millicores) / float64(MillicoresPerCore)
 	if totalCores <= 0 {

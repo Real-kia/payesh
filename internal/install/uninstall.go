@@ -19,12 +19,13 @@ type ServiceRemover interface {
 // UninstallOptions controls removal of only Payesh-owned paths.  Data is
 // retained by default; removing it is a separate, explicit opt-in.
 type UninstallOptions struct {
-	Root           string
-	Role           string
-	RemoveData     bool
-	Stop           bool
-	ServiceRemover ServiceRemover
-	CommandRunner  CommandRunner
+	Root            string
+	Role            string
+	RemoveData      bool
+	RemoveInstaller bool
+	Stop            bool
+	ServiceRemover  ServiceRemover
+	CommandRunner   CommandRunner
 }
 
 type UninstallResult struct {
@@ -47,16 +48,16 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 		root = "/"
 	}
 	role := strings.TrimSpace(opts.Role)
-	if role != "standalone" && role != "hub" && role != "node" {
-		return UninstallResult{}, errors.New("role must be standalone, hub, or node")
+	if role != "standalone" && role != "hub" && role != "node" && role != "cli-only" {
+		return UninstallResult{}, errors.New("role must be standalone, hub, node, or cli-only")
 	}
 	init := detectInit(root)
-	if init == "unknown" {
+	if init == "unknown" && role != "cli-only" {
 		return UninstallResult{}, &UnsupportedError{Reason: "no supported init system was detected"}
 	}
 	services := serviceNames(role)
 	result := UninstallResult{Role: role, Init: init, DataPreserved: !opts.RemoveData}
-	if opts.Stop {
+	if opts.Stop && len(services) > 0 {
 		remover := opts.ServiceRemover
 		if remover == nil {
 			remover = commandServiceRemover{runner: chooseRunner(opts.CommandRunner)}
@@ -67,7 +68,7 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 		result.Stopped = true
 	}
 
-	paths := make([]string, 0, len(services)+4)
+	paths := make([]string, 0, len(services)+6)
 	for _, service := range services {
 		paths = append(paths, servicePath(root, init, service))
 	}
@@ -76,6 +77,11 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 	}
 	if opts.RemoveData {
 		paths = append(paths, rooted(root, dataDir), rooted(root, configDir), rooted(root, logDir))
+	}
+	if opts.RemoveInstaller {
+		// Remove the running installer last so a partial cleanup can still be
+		// retried with the installed CLI.
+		paths = append(paths, artifactDestination(root, "payesh-install"))
 	}
 	for _, path := range paths {
 		removed, err := removeOwnedPath(path, root)
@@ -95,6 +101,8 @@ func pArtifacts(role string) []string {
 		return []string{"payesh-agent", "payesh-privd", "payesh", "payesh-server", "web-assets"}
 	case "node":
 		return []string{"payesh-agent", "payesh-privd", "payesh"}
+	case "cli-only":
+		return []string{"payesh"}
 	default:
 		return nil
 	}

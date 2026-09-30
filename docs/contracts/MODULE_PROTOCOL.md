@@ -44,8 +44,7 @@ routes: `GET /api/v1/modules` (catalog), `GET /api/v1/servers/{id}/modules`
 (idempotency-key + expected-revision, mirroring the package-05 traffic
 configuration endpoint). `Enable`/`Disable` do not yet drive a real
 `payesh-privd module.invoke` call — that wiring, plus a provisioned
-production signing key, is the next integration step. See
-`docs/handoffs/06.md`.
+production signing key, is the next integration step.
 
 ## Package sources
 

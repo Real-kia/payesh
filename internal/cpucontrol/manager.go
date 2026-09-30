@@ -27,7 +27,7 @@ type QuotaParameters struct {
 }
 
 // Preview is the read-only "show existing state and expected effect" step
-// PLAN.md section 10 requires before any Apply.
+// design requires before any Apply.
 type Preview struct {
 	CurrentMillicores  uint64 `json:"current_millicores"`
 	CurrentUnlimited   bool   `json:"current_unlimited"`
