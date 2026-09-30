@@ -67,9 +67,10 @@ type InstallService struct {
 	MatrixDir          string
 	ReleaseVersion     string
 
-	Authority    *transport.CertificateAuthority
-	TransportURL string
-	HubTrustPEM  []byte
+	Authority        *transport.CertificateAuthority
+	TransportURL     string
+	ResolveTransport func() (string, []byte, error)
+	HubTrustPEM      []byte
 
 	mu      sync.Mutex
 	pending map[string]install.SSHInstallOptions
@@ -104,6 +105,8 @@ func (s *InstallService) Handler() http.Handler { return http.HandlerFunc(s.serv
 
 type installRequest struct {
 	downloadBaseURL            string
+	transportURL               string
+	hubTrustPEM                []byte
 	ServerID                   string     `json:"server_id,omitempty"`
 	Mode                       string     `json:"mode,omitempty"`
 	Host                       string     `json:"host"`
@@ -194,6 +197,14 @@ func (s *InstallService) Enqueue(ctx context.Context, request installRequest) (c
 	if (request.Password == "") == (request.PrivateKey == "") {
 		return contracts.Job{}, errors.New("exactly one SSH authentication method is required")
 	}
+	if s.ResolveTransport != nil {
+		var err error
+		request.transportURL, request.hubTrustPEM, err = s.ResolveTransport()
+		if err != nil {
+			return contracts.Job{}, err
+		}
+	}
+
 	now := s.now()
 	expires := now.Add(defaultInstallTTL)
 	if request.ExpiresAt != nil {
@@ -295,12 +306,17 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 			return s.Downloads.Publish(ctx, baseURL, role, paths)
 		}
 	}
+	transportURL, hubTrustPEM := s.TransportURL, s.HubTrustPEM
+	if request.transportURL != "" {
+		transportURL, hubTrustPEM = request.transportURL, request.hubTrustPEM
+	}
+	verificationStart := s.now()
 	return install.SSHInstallOptions{
 		ServerID:          string(serverID),
 		DownloadArtifacts: download, ReleaseVersion: s.ReleaseVersion,
-		TransportURL:     s.TransportURL,
+		TransportURL:     transportURL,
 		NodeIdentityJSON: nodeIdentityJSON,
-		HubTrustPEM:      s.HubTrustPEM,
+		HubTrustPEM:      hubTrustPEM,
 		Endpoint:         install.SSHEndpoint{Host: request.Host, Port: request.Port, User: request.User},
 		KnownHostsPath:   s.KnownHostsPath, ExpectedHostKeyFingerprint: request.ExpectedHostKeyFingerprint,
 		ConfirmHostKey: confirm,
@@ -311,23 +327,14 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 			if s.Enroll != nil {
 				return s.Enroll(ctx, contracts.ServerID(request.ServerID))
 			}
-			if s.Store != nil {
-				server, found, err := s.Store.GetServer(ctx, contracts.ServerID(request.ServerID))
-				if err == nil && found {
-					server.ConnectionState = "connected"
-					server.FreshnessState = "fresh"
-					nowTime := s.now()
-					server.LastHeartbeat = &nowTime
-					_ = s.Store.UpsertServer(ctx, server)
-				}
-			}
+
 			return nil
 		},
 		VerifyMeasurements: func(ctx context.Context) error {
 			if s.VerifyMeasurements != nil {
 				return s.VerifyMeasurements(ctx, contracts.ServerID(request.ServerID))
 			}
-			return nil
+			return s.waitForMeasurements(ctx, serverID, verificationStart)
 		},
 	}
 }
@@ -555,4 +562,28 @@ func newInstallJobID() (string, error) {
 		return "", err
 	}
 	return "install-" + hex.EncodeToString(raw[:]), nil
+}
+
+// Completion requires newly received durable telemetry, not a synthetic heartbeat.
+func (s *InstallService) waitForMeasurements(ctx context.Context, id contracts.ServerID, since time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		samples, _, err := s.Store.QueryMetricSamplesRange(ctx, id, s.now().Add(-5*time.Minute), s.now().Add(time.Minute), 20)
+		if err != nil {
+			return err
+		}
+		for _, sample := range samples {
+			if !sample.ReceivedAt.Before(since) && len(sample.Values) > 0 {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("node telemetry did not arrive; check agent service and hub transport connectivity: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }

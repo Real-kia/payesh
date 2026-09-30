@@ -428,7 +428,9 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	scriptBody := fmt.Sprintf(githubBootstrapScriptTemplate,
 		remoteDir, arch, opts.Role, startFlag, opts.Listen, artifactsArg)
 
-	stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts)
+	if err := stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts); err != nil {
+		return result, sshStage("node configuration staging", err)
+	}
 	if opts.DownloadArtifacts == nil {
 		deployKey := loadGitHubDeployKey()
 		if len(deployKey) > 0 {
@@ -588,7 +590,9 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 			return result, sshStage("remote install", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out))))
 		}
 		result.Installed = append([]string(nil), result.Preflight.Artifacts...)
-		applyNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix, sudoInput, remoteDir, opts)
+		if err := applyNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix, sudoInput, remoteDir, opts); err != nil {
+			return result, sshStage("node configuration", err)
+		}
 	}
 	report("enrolling", 85)
 	if opts.Enroll == nil {
@@ -603,7 +607,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("measurement verification", ErrSSHMeasurementsRequired)
 	}
 	if err := opts.VerifyMeasurements(ctx); err != nil {
-		return result, sshStage("measurement verification", errors.New("measurements did not arrive"))
+		return result, sshStage("measurement verification", fmt.Errorf("measurements did not arrive: %w", err))
 	}
 	result.MeasurementsVerified = true
 	result.Stage = "complete"
@@ -1398,34 +1402,44 @@ set_status "SUCCESS:0"
 exit 0
 `
 
-func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, remoteDir string, opts SSHInstallOptions) {
+func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, remoteDir string, opts SSHInstallOptions) error {
 	if opts.Role != "node" {
-		return
+		return nil
 	}
 	if opts.ServerID != "" {
 		cmd := fmt.Sprintf("cat << 'EOF' > %s/server-id\n%s\nEOF\nchmod 640 %s/server-id", remoteDir, strings.TrimSpace(opts.ServerID), remoteDir)
-		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+			return err
+		}
 	}
 	if len(opts.NodeIdentityJSON) > 0 {
 		cmd := fmt.Sprintf("cat << 'EOF' > %s/node-identity.json\n%s\nEOF\nchmod 600 %s/node-identity.json", remoteDir, string(opts.NodeIdentityJSON), remoteDir)
-		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+			return err
+		}
 	}
 	if len(opts.HubTrustPEM) > 0 {
 		cmd := fmt.Sprintf("cat << 'EOF' > %s/hub-ca.pem\n%s\nEOF\nchmod 644 %s/hub-ca.pem", remoteDir, string(opts.HubTrustPEM), remoteDir)
-		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+			return err
+		}
 	}
 	if opts.TransportURL != "" {
 		envBody := fmt.Sprintf("PAYESH_TRANSPORT_URL=%s\nPAYESH_HUB_TRUST_FILE=/var/lib/payesh/hub-ca.pem\nPAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n", strings.TrimSpace(opts.TransportURL))
 		cmd := fmt.Sprintf("cat << 'EOF' > %s/payesh.env\n%s\nEOF\nchmod 640 %s/payesh.env", remoteDir, envBody, remoteDir)
-		_, _ = transport.Run(ctx, endpoint, knownHosts, auth, cmd, nil)
+		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func applyNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, sudoPrefix string, sudoInput []byte, remoteDir string, opts SSHInstallOptions) {
+func applyNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, sudoPrefix string, sudoInput []byte, remoteDir string, opts SSHInstallOptions) error {
 	if opts.Role != "node" {
-		return
+		return nil
 	}
-	cmd := fmt.Sprintf(`mkdir -p /var/lib/payesh /etc/payesh
+	cmd := fmt.Sprintf(`set -eu
+mkdir -p /var/lib/payesh /etc/payesh
 if [ -s %s/server-id ]; then cp -f %s/server-id /var/lib/payesh/server-id; fi
 if [ -s %s/node-identity.json ]; then cp -f %s/node-identity.json /var/lib/payesh/node-identity.json && chmod 600 /var/lib/payesh/node-identity.json; fi
 if [ -s %s/hub-ca.pem ]; then cp -f %s/hub-ca.pem /var/lib/payesh/hub-ca.pem && chmod 644 /var/lib/payesh/hub-ca.pem; fi
@@ -1438,9 +1452,10 @@ if id payesh >/dev/null 2>&1; then
 	if [ -f /var/lib/payesh/hub-ca.pem ]; then chmod 644 /var/lib/payesh/hub-ca.pem; fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
-	systemctl daemon-reload 2>/dev/null || true
-	systemctl restart payesh-agent 2>/dev/null || true
+	systemctl daemon-reload
+	systemctl restart payesh-agent
 fi`,
 		remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir)
-	_, _ = transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+cmd, sudoInput)
+	_, err := transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+cmd, sudoInput)
+	return err
 }
