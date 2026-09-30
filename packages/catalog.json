@@ -1,0 +1,67 @@
+{
+  "format": "payesh.package-catalog.v1",
+  "items": [
+    {
+      "id": "process-monitoring",
+      "name": "Advanced Process Monitoring",
+      "description": "Per-process CPU, memory, disk I/O rates, and socket counts.",
+      "latest_version": "0.1.0",
+      "repository": "Real-kia/payesh",
+      "release": "latest",
+      "required_privileges": [],
+      "dependencies": [],
+      "estimated_compressed_bytes": "1",
+      "estimated_unpacked_bytes": "1",
+      "resource_estimate_source": "unmeasured"
+    },
+    {
+      "id": "port-traffic",
+      "name": "Port Traffic",
+      "description": "Per-port TCP/UDP byte totals and rates using kernel counters.",
+      "latest_version": "0.1.0",
+      "repository": "Real-kia/payesh",
+      "release": "latest",
+      "required_privileges": [
+        "nftables-counters"
+      ],
+      "dependencies": [],
+      "estimated_compressed_bytes": "1",
+      "estimated_unpacked_bytes": "1",
+      "resource_estimate_source": "unmeasured"
+    },
+    {
+      "id": "cpu-controls",
+      "name": "CPU Controls",
+      "description": "cgroup v2 CPU quotas for selected services and process groups.",
+      "latest_version": "0.1.0",
+      "repository": "Real-kia/payesh",
+      "release": "latest",
+      "required_privileges": [
+        "cgroup-v2"
+      ],
+      "dependencies": [],
+      "estimated_compressed_bytes": "1",
+      "estimated_unpacked_bytes": "1",
+      "resource_estimate_source": "unmeasured"
+    },
+    {
+      "id": "bandwidth-controls",
+      "name": "Bandwidth Controls",
+      "description": "Interface/port speed caps and quota actions using Linux traffic control.",
+      "latest_version": "0.1.0",
+      "repository": "Real-kia/payesh",
+      "release": "latest",
+      "required_privileges": [
+        "cgroup-v2",
+        "tc",
+        "nftables-counters"
+      ],
+      "dependencies": [
+        "traffic-accounting"
+      ],
+      "estimated_compressed_bytes": "1",
+      "estimated_unpacked_bytes": "1",
+      "resource_estimate_source": "unmeasured"
+    }
+  ]
+}

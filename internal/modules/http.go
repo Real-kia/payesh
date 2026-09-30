@@ -29,6 +29,7 @@ type Service struct {
 	Store   *monitoring.Store
 	Manager *Manager
 	Sources SourceLoader
+	Catalog *GitHubCatalog
 }
 
 func NewService(manager *Manager) *Service {
@@ -43,9 +44,12 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeModulesError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not supported for the module catalog", false)
 			return
 		}
-		writeModulesJSON(w, http.StatusOK, struct {
-			Items []contracts.ModuleCatalogEntry `json:"items"`
-		}{Catalog})
+		w.Header().Set("Cache-Control", "no-store")
+		if s.Catalog != nil {
+			writeModulesJSON(w, http.StatusOK, s.Catalog.Fetch(r.Context(), r.URL.Query().Get("refresh") == "true"))
+		} else {
+			writeModulesJSON(w, http.StatusOK, CatalogResult{Items: Catalog, Source: "bundled"})
+		}
 		return
 	}
 	const prefix = "/api/v1/servers/"

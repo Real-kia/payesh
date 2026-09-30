@@ -374,8 +374,8 @@ paths:
     get:
       operationId: listModules
       security: [{ SessionCookie: [] }]
-      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
-      responses: { '200': { description: Signed module catalog, content: { application/json: { schema: { $ref: '#/components/schemas/ModulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+      parameters: [{ name: refresh, in: query, schema: { type: boolean, default: false } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
+      responses: { '200': { description: GitHub package catalog with cached fallback, content: { application/json: { schema: { $ref: '#/components/schemas/ModulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /servers/{serverId}/modules:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
@@ -1059,11 +1059,11 @@ components:
       description: A curated catalog entry (internal/modules.Catalog), not yet installed on any particular server.
       type: object
       required: [id, name, latest_version, resource_estimate_source]
-      properties: { id: { type: string, maxLength: 128 }, name: { type: string, maxLength: 128 }, description: { type: string, maxLength: 1024 }, latest_version: { type: string, maxLength: 64 }, dependencies: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, required_privileges: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, estimated_compressed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, estimated_unpacked_bytes: { $ref: '#/components/schemas/DecimalUint64' }, resource_estimate_source: { type: string, enum: [unmeasured, release-benchmark] } }
+      properties: { repository: { type: string }, release: { type: string }, install_supported: { type: boolean }, id: { type: string, maxLength: 128 }, name: { type: string, maxLength: 128 }, description: { type: string, maxLength: 1024 }, latest_version: { type: string, maxLength: 64 }, dependencies: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, required_privileges: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }, estimated_compressed_bytes: { $ref: '#/components/schemas/DecimalUint64' }, estimated_unpacked_bytes: { $ref: '#/components/schemas/DecimalUint64' }, resource_estimate_source: { type: string, enum: [unmeasured, release-benchmark] } }
     ModulePage:
       type: object
       required: [items]
-      properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Module' } }, next_cursor: { type: string, maxLength: 256 } }
+      properties: { source: { type: string, enum: [github, bundled] }, stale: { type: boolean }, warning: { type: string }, items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Module' } }, next_cursor: { type: string, maxLength: 256 } }
     ModuleManifest:
       description: Signed catalog artifact description, verified (JCS/Ed25519) before any byte is staged. See docs/contracts/RELEASE_FORMAT.md.
       type: object
