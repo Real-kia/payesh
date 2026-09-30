@@ -830,6 +830,7 @@
         ...(installKey ? { private_key: installKey } : {}),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
         role: 'node',
+        start: true,
         idempotency_key: operationKey('install')
       });
       installPassword = ''; installKey = '';
@@ -1961,7 +1962,7 @@
             onRetry={() => { saveActiveInstall(null); }}
             onAddAnother={() => { saveActiveInstall(null); navigate('add-server'); }}
           />
-        {:else if !PREVIEW_MODE && selectedServer.connectionState === 'never-connected'}
+        {:else if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState !== 'connected'}
           <article class="panel server-actions">
             <div class="panel-heading">
               <div>
