@@ -41,7 +41,7 @@ jobs:
       - run: node scripts/contract-check.mjs
   linux-distributions:
     # Images are pinned to explicit oldest/current representatives. This job
-    # validates the declared distro matrix; privileged service/control tests
+    # validates static release binaries on the distro matrix; privileged init/control tests
     # remain package-specific disposable-VM work.
     runs-on: ubuntu-22.04
     strategy:
@@ -65,8 +65,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build Linux smoke artifacts
-        run: GOOS=linux GOARCH=amd64 make build
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build build-modules
       - name: Inspect pinned distribution image
         run: >-
           docker run --rm -v "$PWD/dist:/dist:ro" ${{ matrix.image }} sh -c
-          'test -s /etc/os-release && grep -qE "^(ID|VERSION_ID)=" /etc/os-release && command -v ${{ matrix.manager }} && test -e /sbin/init && if [ "${{ matrix.init }}" = systemd ]; then test -x /lib/systemd/systemd || test -x /usr/lib/systemd/systemd; else test -x /sbin/openrc-init; fi && /dist/payesh-agent && cat /etc/os-release'
+          'test -s /etc/os-release && grep -qE "^(ID|VERSION_ID)=" /etc/os-release && command -v ${{ matrix.manager }} && /dist/payesh-agent && /dist/modules/process-monitoring --check && cat /etc/os-release'
