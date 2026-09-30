@@ -254,6 +254,12 @@ export class ApiClient {
     });
   }
 
+  controlNode(serverId: string, body: { action: 'restart' | 'disable' | 'enable'; port: number; user: string; password?: string; private_key?: string; expected_host_key_fingerprint: string }): Promise<void> {
+    return this.request<void>(`/servers/${encodeURIComponent(serverId)}/control`, {
+      method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body)
+    });
+  }
+
   enrollServer(serverId: string, body: EnrollmentRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>(`/servers/${encodeURIComponent(serverId)}/enrollment`, {
       method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal

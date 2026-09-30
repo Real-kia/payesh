@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -260,8 +261,34 @@ func TestSSHInstallFailureDetail(t *testing.T) {
 		t.Fatalf("unexpected stage: %s", stage)
 	}
 	detail := SSHInstallFailureDetail(err)
-	if !strings.Contains(detail, "connection refused") || !strings.Contains(detail, "target port is closed") {
+	if detail != "host key scan failed for 89.58.29.206:22 (connection refused)" {
 		t.Fatalf("unexpected detail: got %q", detail)
+	}
+}
+
+type stagingTransport struct {
+	command string
+	stdin   []byte
+}
+
+func (s *stagingTransport) Scan(context.Context, SSHEndpoint) ([]SSHHostKey, error) { return nil, nil }
+func (s *stagingTransport) Upload(context.Context, SSHEndpoint, string, SSHAuth, string, string, bool) error {
+	return nil
+}
+func (s *stagingTransport) Run(_ context.Context, _ SSHEndpoint, _ string, _ SSHAuth, command string, stdin []byte) ([]byte, error) {
+	s.command, s.stdin = command, append([]byte(nil), stdin...)
+	return nil, nil
+}
+
+func TestStageNodeConfigStreamsLargeIdentityThroughStdin(t *testing.T) {
+	transport := &stagingTransport{}
+	identity := []byte(strings.Repeat("certificate-data", 20000))
+	opts := SSHInstallOptions{Role: "node", NodeIdentityJSON: identity}
+	if err := stageNodeConfig(context.Background(), transport, SSHEndpoint{}, "", SSHAuth{}, "/tmp/payesh-stage", opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(transport.command, "node-identity.json") || len(transport.command) > 200 || !bytes.Equal(transport.stdin, identity) {
+		t.Fatal("identity was not streamed through SSH stdin")
 	}
 }
 

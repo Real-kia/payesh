@@ -222,6 +222,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.sessions.Middleware(http.HandlerFunc(a.accountHTTP)).ServeHTTP(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") && strings.HasSuffix(r.URL.Path, "/control") {
+		a.sessions.Middleware(http.HandlerFunc(a.controlNode)).ServeHTTP(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 		a.sessions.Middleware(http.HandlerFunc(a.deleteServer)).ServeHTTP(w, r)
 		return

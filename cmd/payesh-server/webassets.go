@@ -32,7 +32,7 @@ func withWebAssets(dir string, api http.Handler) http.Handler {
 	}
 	files := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/node/") || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 			api.ServeHTTP(w, r)
 			return
 		}

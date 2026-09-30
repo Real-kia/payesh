@@ -206,23 +206,6 @@ func sshFormatError(stageErr *sshInstallError) string {
 	if idx := strings.IndexAny(raw, "\r\n"); idx != -1 {
 		raw = strings.TrimSpace(raw[:idx])
 	}
-	lower := strings.ToLower(raw)
-	switch {
-	case strings.Contains(lower, "could not connect") || strings.Contains(lower, "unreachable"):
-		raw = fmt.Sprintf("Server is unreachable: %s. Please verify the IP address, SSH port, and firewall rules.", raw)
-	case strings.Contains(lower, "connection reset") || strings.Contains(lower, "reset by peer"):
-		raw += " (TCP connection reset detected: intermediate network middlebox or ISP firewall actively intercepted and reset the connection; try an alternate SSH port like 2222)"
-	case strings.Contains(lower, "connection refused"):
-		raw += " (Connection refused: target port is closed or SSH daemon is not listening on this port)"
-	case strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout"):
-		raw += " (Connection timed out: packets were dropped; verify firewall/security groups and test alternate ports)"
-	case strings.Contains(lower, "permission denied"):
-		raw += " (SSH authentication rejected: verify username, password, or SSH private key)"
-	case strings.Contains(lower, "no route to host"):
-		raw += " (Network routing failure: target IP address is unreachable)"
-	case strings.Contains(lower, "connection closed"):
-		raw += " (Connection dropped by remote SSH server before handshake finished; check sshd MaxStartups)"
-	}
 	if len(raw) > 280 {
 		raw = raw[:280] + "..."
 	}
@@ -1407,31 +1390,35 @@ func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEn
 		return nil
 	}
 	if opts.ServerID != "" {
-		cmd := fmt.Sprintf("cat << 'EOF' > %s/server-id\n%s\nEOF\nchmod 640 %s/server-id", remoteDir, strings.TrimSpace(opts.ServerID), remoteDir)
-		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+		if err := stageNodeFile(ctx, transport, endpoint, knownHosts, auth, remoteDir+"/server-id", 0o640, []byte(strings.TrimSpace(opts.ServerID)+"\n")); err != nil {
 			return err
 		}
 	}
 	if len(opts.NodeIdentityJSON) > 0 {
-		cmd := fmt.Sprintf("cat << 'EOF' > %s/node-identity.json\n%s\nEOF\nchmod 600 %s/node-identity.json", remoteDir, string(opts.NodeIdentityJSON), remoteDir)
-		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+		if err := stageNodeFile(ctx, transport, endpoint, knownHosts, auth, remoteDir+"/node-identity.json", 0o600, opts.NodeIdentityJSON); err != nil {
 			return err
 		}
 	}
 	if len(opts.HubTrustPEM) > 0 {
-		cmd := fmt.Sprintf("cat << 'EOF' > %s/hub-ca.pem\n%s\nEOF\nchmod 644 %s/hub-ca.pem", remoteDir, string(opts.HubTrustPEM), remoteDir)
-		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+		if err := stageNodeFile(ctx, transport, endpoint, knownHosts, auth, remoteDir+"/hub-ca.pem", 0o644, opts.HubTrustPEM); err != nil {
 			return err
 		}
 	}
 	if opts.TransportURL != "" {
 		envBody := fmt.Sprintf("PAYESH_TRANSPORT_URL=%s\nPAYESH_HUB_TRUST_FILE=/var/lib/payesh/hub-ca.pem\nPAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n", strings.TrimSpace(opts.TransportURL))
-		cmd := fmt.Sprintf("cat << 'EOF' > %s/payesh.env\n%s\nEOF\nchmod 640 %s/payesh.env", remoteDir, envBody, remoteDir)
-		if _, err := transport.Run(ctx, endpoint, knownHosts, auth, "set -eu\n"+cmd, nil); err != nil {
+		if err := stageNodeFile(ctx, transport, endpoint, knownHosts, auth, remoteDir+"/payesh.env", 0o640, []byte(envBody)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func stageNodeFile(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, path string, mode os.FileMode, body []byte) error {
+	// Pass configuration over SSH stdin. Certificates and PEM bundles can exceed
+	// the operating system's per-argument limit when embedded in ssh's argv.
+	command := fmt.Sprintf("umask 077; cat > %s && chmod %04o %s", shellQuote(path), mode.Perm(), shellQuote(path))
+	_, err := transport.Run(ctx, endpoint, knownHosts, auth, command, body)
+	return err
 }
 
 func applyNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, sudoPrefix string, sudoInput []byte, remoteDir string, opts SSHInstallOptions) error {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,80 @@ import (
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/updater"
 )
+
+func TestInstallInternalVerificationTimeoutSettlesJob(t *testing.T) {
+	ctx := context.Background()
+	store, err := monitoring.OpenStore(ctx, ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	server := contracts.Server{ID: "server-timeout-test-01", Name: "node", Role: "node", Platform: "linux", Architecture: "amd64", ConnectionState: "never-connected", FreshnessState: "unknown"}
+	if err := store.EnsureServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Now = func() time.Time { return now }
+	svc.Executor = SSHInstallerFunc(func(context.Context, install.SSHInstallOptions) (install.SSHInstallResult, error) {
+		return install.SSHInstallResult{}, fmt.Errorf("measurements did not arrive: %w", context.DeadlineExceeded)
+	})
+	job, err := svc.Enqueue(ctx, installRequest{ServerID: string(server.ID), Host: "192.0.2.1", Port: 22, User: "root", Password: "secret", IdempotencyKey: "timeout-test-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled, err := svc.RunOnce(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.State != contracts.JobFailed || settled.Error == nil || settled.Error.Code != "install_failed" {
+		t.Fatalf("job not settled with real error: %+v", settled)
+	}
+}
+
+func TestInstallProgressDoesNotRegress(t *testing.T) {
+	ctx := context.Background()
+	store, err := monitoring.OpenStore(ctx, ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := contracts.Server{ID: "server-progress-test-01", Name: "node", Role: "node", Platform: "linux", Architecture: "amd64", ConnectionState: "never-connected", FreshnessState: "unknown"}
+	if err := store.EnsureServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []uint8
+	var jobID string
+	svc.Executor = SSHInstallerFunc(func(ctx context.Context, opts install.SSHInstallOptions) (install.SSHInstallResult, error) {
+		for _, progress := range []uint8{30, 25, 70} {
+			opts.OnProgress("test", progress)
+			job, _, err := store.GetJob(ctx, jobID)
+			if err != nil {
+				return install.SSHInstallResult{}, err
+			}
+			seen = append(seen, job.Progress)
+		}
+		return install.SSHInstallResult{}, nil
+	})
+	job, err := svc.Enqueue(ctx, installRequest{ServerID: string(server.ID), Host: "192.0.2.1", Port: 22, User: "root", Password: "secret", IdempotencyKey: "progress-test-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID = job.ID
+	if _, err := svc.RunOnce(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 3 || seen[0] != 30 || seen[1] != 30 || seen[2] != 70 {
+		t.Fatalf("progress regressed: %v", seen)
+	}
+}
 
 func TestUpdateProducerIsAuthenticatedCSRFProtectedAndIdempotent(t *testing.T) {
 	ctx := context.Background()

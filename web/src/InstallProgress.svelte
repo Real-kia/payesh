@@ -37,9 +37,6 @@
   $: isCancelled = install.currentStage === 'cancelled';
 
   $: lastErrorLog = install.logs.slice().reverse().find(l => l.level === 'error')?.text || install.logs.slice(-1)[0]?.text || '';
-  $: isHostKeyOrNetworkError = /scan host key|host key|reset by peer|connection reset|timed out|timeout|unreachable/i.test(lastErrorLog);
-  $: isAuthError = /permission denied|authentication|password|private key/i.test(lastErrorLog);
-  $: isPortError = /connection refused|port/i.test(lastErrorLog);
 
   onMount(() => {
     elapsedSeconds = Math.max(0, Math.floor((Date.now() - install.startedAt) / 1000));
@@ -67,51 +64,6 @@
     return `${m}:${s}s`;
   }
 
-  type StepConfig = {
-    id: InstallStage;
-    label: string;
-    desc: string;
-    isDone: (stage: InstallStage) => boolean;
-    isActive: (stage: InstallStage) => boolean;
-  };
-
-  const steps: StepConfig[] = [
-    {
-      id: 'connecting',
-      label: 'Connecting',
-      desc: 'SSH handshake',
-      isDone: (s) => ['connected', 'preflight', 'installing', 'enrolling', 'verifying', 'succeeded'].includes(s),
-      isActive: (s) => s === 'connecting'
-    },
-    {
-      id: 'connected',
-      label: 'Host Verified',
-      desc: 'Host key trusted',
-      isDone: (s) => ['preflight', 'installing', 'enrolling', 'verifying', 'succeeded'].includes(s),
-      isActive: (s) => s === 'connected'
-    },
-    {
-      id: 'preflight',
-      label: 'Preflight',
-      desc: 'Detecting OS & arch',
-      isDone: (s) => ['installing', 'enrolling', 'verifying', 'succeeded'].includes(s),
-      isActive: (s) => s === 'preflight'
-    },
-    {
-      id: 'installing',
-      label: 'Installing Agent',
-      desc: 'systemd service setup',
-      isDone: (s) => ['enrolling', 'verifying', 'succeeded'].includes(s),
-      isActive: (s) => s === 'installing'
-    },
-    {
-      id: 'verifying',
-      label: 'Live Telemetry',
-      desc: 'Heartbeat stream',
-      isDone: (s) => s === 'succeeded',
-      isActive: (s) => ['enrolling', 'verifying'].includes(s)
-    }
-  ];
 </script>
 
 <article class={`panel install-progress-panel ${compact ? 'compact' : ''}`} aria-live="polite">
@@ -174,36 +126,6 @@
     </div>
   </div>
 
-  <!-- STEPPER -->
-  <div class="stepper-grid">
-    {#each steps as step, i}
-      {@const done = step.isDone(install.currentStage)}
-      {@const active = step.isActive(install.currentStage)}
-      {@const failed = isFailed && active}
-
-      <div class={`step-node ${done ? 'done' : ''} ${active ? 'active' : ''} ${failed ? 'failed' : ''}`}>
-        <div class="step-indicator">
-          {#if done}
-            <span class="step-icon done"><Icon name="check" size={13} /></span>
-          {:else if failed}
-            <span class="step-icon failed"><Icon name="alert-triangle" size={13} /></span>
-          {:else if active}
-            <span class="step-icon active"><Icon name="loader" size={13} class="spin" /></span>
-          {:else}
-            <span class="step-icon pending">{i + 1}</span>
-          {/if}
-          {#if i < steps.length - 1}
-            <div class={`step-connector ${done ? 'connector-done' : ''}`}></div>
-          {/if}
-        </div>
-        <div class="step-content">
-          <strong class="step-label">{step.label}</strong>
-          <small class="step-desc">{step.desc}</small>
-        </div>
-      </div>
-    {/each}
-  </div>
-
   <!-- TERMINAL LOGS -->
   <div class="terminal-window">
     <div class="terminal-bar">
@@ -214,7 +136,7 @@
       </div>
       <div class="terminal-title">
         <Icon name="terminal" size={13} />
-        <span>Payesh Deployment Stream · {install.host}</span>
+        <span>Installation job status · {install.host}</span>
       </div>
       <span class="terminal-timer mono faint">{formatElapsed(elapsedSeconds)}</span>
     </div>
@@ -234,7 +156,7 @@
       {#if isRunning}
         <div class="log-line running-cursor">
           <span class="cursor-dot"></span>
-          <span class="faint">Waiting for remote host…</span>
+          <span class="faint">Waiting for the next job update…</span>
         </div>
       {/if}
     </div>
@@ -278,45 +200,10 @@
             <Icon name="alert-triangle" size={15} />
             <span>Deployment Halted</span>
           </div>
-          <span class="diagnostic-tag">Automated Root Cause Diagnosis</span>
         </div>
 
         <div class="diagnostic-error-summary">
-          <p class="error-primary-text">{lastErrorLog || 'Installation failed. Verify SSH credentials and network accessibility.'}</p>
-        </div>
-
-        <div class="diagnostic-grid">
-          <div class="diagnostic-box analysis">
-            <h4><Icon name="info" size={14} /> Diagnostic Analysis</h4>
-            <p>
-              {#if isHostKeyOrNetworkError}
-                SSH key exchange handshake could not complete on port <strong>{install.port}</strong>. This commonly occurs when network middleboxes or cloud ISP firewalls detect and reset or drop SSH handshake packets, or when the remote SSH daemon is unresponsive.
-              {:else if isAuthError}
-                Remote SSH authentication failed for <strong>{install.user}@{install.host}</strong>. The credentials provided were rejected by the remote server.
-              {:else if isPortError}
-                Port <strong>{install.port}</strong> refused the connection. The target host is reachable, but sshd is not listening on this port.
-              {:else}
-                The agent installation process encountered an error while configuring system services on the remote machine.
-              {/if}
-            </p>
-          </div>
-
-          <div class="diagnostic-box solution">
-            <h4><Icon name="check" size={14} /> Recommended Fix</h4>
-            <ul class="solution-list">
-              {#if isHostKeyOrNetworkError}
-                <li><strong>Try an alternate port:</strong> If using port 22, try port <code>2222</code> or another high port to bypass middlebox SSH DPI inspection.</li>
-                <li><strong>Firewall check:</strong> Ensure port <code>{install.port}</code> is allowed through <code>ufw</code> or <code>iptables</code> on the server.</li>
-                <li><strong>sshd MaxStartups:</strong> If the server receives background brute-force scans, raise <code>MaxStartups 100:30:200</code> in <code>/etc/ssh/sshd_config</code>.</li>
-              {:else if isAuthError}
-                <li>Verify the SSH password or ensure the public key is in <code>~/.ssh/authorized_keys</code>.</li>
-                <li>Ensure user has root privileges or sudo access.</li>
-              {:else}
-                <li>Inspect the deployment stream logs above for the specific exit code.</li>
-                <li>Verify disk space and permissions on the remote host.</li>
-              {/if}
-            </ul>
-          </div>
+          <p class="error-primary-text">{lastErrorLog || 'Installation failed.'}</p>
         </div>
 
         <div class="diagnostic-footer">
@@ -851,69 +738,6 @@
     color: #ef4444;
     font-weight: 500;
     word-break: break-word;
-  }
-
-  .diagnostic-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-  }
-
-  @media (max-width: 840px) {
-    .diagnostic-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .diagnostic-box {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .diagnostic-box h4 {
-    margin: 0;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink);
-  }
-
-  .diagnostic-box p {
-    margin: 0;
-    font-size: 0.8125rem;
-    line-height: 1.5;
-    color: var(--ink-secondary);
-  }
-
-  .diagnostic-box code {
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    padding: 0.1rem 0.35rem;
-    border-radius: 4px;
-    font-size: 0.8em;
-    color: #06b6d4;
-  }
-
-  .solution-list {
-    margin: 0;
-    padding-left: 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    font-size: 0.8125rem;
-    line-height: 1.45;
-    color: var(--ink-secondary);
-  }
-
-  .solution-list li strong {
-    color: var(--ink);
   }
 
   .diagnostic-footer {

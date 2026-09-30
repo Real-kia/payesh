@@ -31,6 +31,8 @@ func TestWithWebAssets(t *testing.T) {
 		{http.MethodGet, "/assets/app-abc.js", "console.log(1)", "immutable"},
 		{http.MethodGet, "/../../etc/passwd", "invalid URL path", ""},
 		{http.MethodGet, "/api/v1/servers", "api", ""},
+		{http.MethodGet, "/node/v1", "api", ""},
+		{http.MethodGet, "/node/bootstrap/v1", "api", ""},
 		{http.MethodGet, "/healthz", "api", ""},
 		{http.MethodPost, "/anything", "api", ""},
 	} {
