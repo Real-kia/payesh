@@ -28,6 +28,15 @@ func (m *Manager) EnablePortChanges(address string, start func(net.Listener)) er
 		return err
 	}
 	c := &PortController{manager: m, host: host, ports: []string{original}, start: start}
+	var restored []net.Listener
+	ready := false
+	defer func() {
+		if !ready {
+			for _, l := range restored {
+				_ = l.Close()
+			}
+		}
+	}()
 	data, err := os.ReadFile(m.path("ports.json"))
 	if err == nil {
 		var saved []string
@@ -44,7 +53,7 @@ func (m *Manager) EnablePortChanges(address string, start func(net.Listener)) er
 					return fmt.Errorf("restore dashboard port %s: %w", port, err)
 				}
 				c.ports = append(c.ports, port)
-				start(l)
+				restored = append(restored, l)
 			}
 		}
 		if len(saved) > 0 {
@@ -56,6 +65,10 @@ func (m *Manager) EnablePortChanges(address string, start func(net.Listener)) er
 		return err
 	}
 	m.portController = c
+	ready = true
+	for _, l := range restored {
+		start(l)
+	}
 	return nil
 }
 func validPort(port string) error {
