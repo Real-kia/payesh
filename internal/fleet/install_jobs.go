@@ -401,13 +401,16 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 	opts.OnProgress = func(stage string, progress uint8) {
 		progressMu.Lock()
 		defer progressMu.Unlock()
+		if progress < currentJob.Progress {
+			progress = currentJob.Progress
+		}
 		if updated, err := s.Store.TransitionJob(ctx, id, currentJob.Revision, contracts.JobRunning, progress, nil, s.now()); err == nil {
 			currentJob = updated
 		}
 	}
 	defer clearInstallAuth(&opts.Auth)
 	result, execErr := s.Executor.Install(ctx, opts)
-	if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
+	if ctx.Err() != nil && (errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded)) {
 		progressMu.Lock()
 		latest := currentJob
 		progressMu.Unlock()

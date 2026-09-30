@@ -107,6 +107,13 @@
   let installKey = '';
   let installFingerprint = '';
   let installBusy = false;
+  let nodeControlPort = '22';
+  let nodeControlUser = 'root';
+  let nodeControlPassword = '';
+  let nodeControlKey = '';
+  let nodeControlFingerprint = '';
+  let nodeControlBusy = false;
+  let nodeControlError = '';
   let labelDraft = '';
   let labelBusy = false;
   let newServerName = '';
@@ -590,7 +597,7 @@
 
     if (job.state === 'failed') {
       activeInstall.currentStage = 'failed';
-      activeInstall.simulatedProgress = 100;
+      activeInstall.simulatedProgress = job.progress;
       const errMsg = job.error?.message || 'Error occurred during SSH installation.';
       if (!activeInstall.logs.some((l) => l.text.includes(errMsg))) {
         activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: `Installation failed: ${errMsg}`, level: 'error' }];
@@ -615,7 +622,6 @@
       return;
     }
 
-    const elapsed = (Date.now() - activeInstall.startedAt) / 1000;
     let targetStage: InstallStage = 'connecting';
 
     if (p >= 90) {
@@ -632,29 +638,11 @@
       targetStage = 'connecting';
     }
 
-    activeInstall.simulatedProgress = Math.max(activeInstall.simulatedProgress, Math.max(p, 12));
-
-    if (p >= 20 && !activeInstall.logs.some((l) => l.text.includes('Checking installation files'))) {
-      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Checking installation files.', level: 'info' }];
+    if (job.state === 'running' && p > activeInstall.simulatedProgress) {
+      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: `Hub reported installation progress: ${p}%`, level: 'info' }];
     }
-    if (p === 35 && !activeInstall.logs.some((l) => l.text.includes('Downloading from hub'))) {
-      activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Downloading from hub.', level: 'info' }];
-    }
-
-    if (targetStage !== activeInstall.currentStage) {
-      activeInstall.currentStage = targetStage;
-      if (targetStage === 'connected' && !activeInstall.logs.some((l) => l.text.includes('Connected via SSH'))) {
-        activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Connected via SSH. Host key verified & trusted.', level: 'success' }];
-      } else if (targetStage === 'preflight' && !activeInstall.logs.some((l) => l.text.includes('Preflight inspection'))) {
-        activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Running preflight inspection: Linux OS detected.', level: 'info' }];
-      } else if (targetStage === 'installing' && !activeInstall.logs.some((l) => l.text.includes('Executing payesh-install'))) {
-        activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Executing payesh-install and configuring systemd service in background...', level: 'info' }];
-      } else if (targetStage === 'enrolling' && !activeInstall.logs.some((l) => l.text.includes('Enrolling'))) {
-        activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Service started. Enrolling node TLS certificate with hub...', level: 'info' }];
-      } else if (targetStage === 'verifying' && !activeInstall.logs.some((l) => l.text.includes('Awaiting'))) {
-        activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Awaiting initial telemetry heartbeat...', level: 'info' }];
-      }
-    }
+    activeInstall.simulatedProgress = p;
+    activeInstall.currentStage = targetStage;
     saveActiveInstall(activeInstall);
   }
 
@@ -696,10 +684,9 @@
         jobId: job.id,
         startedAt: Date.now(),
         currentStage: 'connecting',
-        simulatedProgress: 12,
+        simulatedProgress: job.progress,
         logs: [
-          { time: timeStr, text: `Created server '${serverName}' · Job ${job.id}`, level: 'info' },
-          { time: timeStr, text: `Connecting over SSH to ${user}@${host}:${port}...`, level: 'info' }
+          { time: timeStr, text: `Installation job queued for '${serverName}' · Job ${job.id}`, level: 'info' }
         ]
       });
 
@@ -869,10 +856,9 @@
         jobId: job.id,
         startedAt: Date.now(),
         currentStage: 'connecting',
-        simulatedProgress: 12,
+        simulatedProgress: job.progress,
         logs: [
-          { time: timeStr, text: `Queued SSH installation for '${serverName}' · Job ${job.id}`, level: 'info' },
-          { time: timeStr, text: `Connecting over SSH to ${user}@${host}:${port}...`, level: 'info' }
+          { time: timeStr, text: `Installation job queued for '${serverName}' · Job ${job.id}`, level: 'info' }
         ]
       });
 
@@ -883,6 +869,27 @@
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       installBusy = false;
+    }
+  }
+
+  async function controlSelectedNode(action: 'restart' | 'disable' | 'enable'): Promise<void> {
+    if (!selectedServer || selectedServer.role !== 'node' || nodeControlBusy) return;
+    nodeControlBusy = true; nodeControlError = '';
+    try {
+      await apiClient.controlNode(selectedServer.id, {
+        action, port: Number(nodeControlPort), user: nodeControlUser.trim(),
+        ...(nodeControlPassword ? { password: nodeControlPassword } : {}),
+        ...(nodeControlKey ? { private_key: nodeControlKey } : {}),
+        expected_host_key_fingerprint: nodeControlFingerprint.trim()
+      });
+      nodeControlPassword = ''; nodeControlKey = '';
+      showNotice(`Node service ${action} command completed on ${selectedServer.name}.`);
+      await refreshSelectedServer();
+    } catch (error) {
+      nodeControlError = error instanceof Error ? error.message : 'Node service action failed.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally {
+      nodeControlBusy = false;
     }
   }
 
@@ -1032,8 +1039,8 @@
 
   function displayState(server: ApiServer): DisplayState {
     if (activeInstall && activeInstall.serverId === server.id) {
-      if (activeInstall.currentStage === 'failed') return 'failed';
-      if (activeInstall.currentStage !== 'succeeded') return 'installing';
+      if (activeInstall.currentStage === 'failed' && server.connection_state !== 'connected') return 'failed';
+      if (activeInstall.currentStage !== 'succeeded' && activeInstall.currentStage !== 'failed') return 'installing';
     }
     if (server.connection_state === 'revoked') return 'disabled';
     if (server.connection_state === 'never-connected') return 'pending';
@@ -1150,6 +1157,7 @@
     const id = selectedServerId;
     try {
       const result = await enrichApiServer(emptyApiServer(await apiClient.getServer(id)), new AbortController().signal);
+      if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && result.server.connectionState === 'connected') saveActiveInstall(null);
       if (activePage === 'server' && selectedServerId === id) servers = servers.map((server) => server.id === id ? result.server : server);
     } catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
@@ -1236,6 +1244,7 @@
     try {
       const page = await apiClient.listServers({ signal: controller.signal });
       if (controller.signal.aborted) return;
+      if (activeInstall?.currentStage === 'failed' && page.items.some((server) => server.id === activeInstall?.serverId && server.connection_state === 'connected')) saveActiveInstall(null);
       sessionState = 'authenticated';
       servers = page.items.map(emptyApiServer);
       void loadAccounts();
@@ -1302,6 +1311,9 @@
       const savedInstall = window.localStorage.getItem(ACTIVE_INSTALL_STORAGE_KEY);
       if (savedInstall) {
         const parsed = JSON.parse(savedInstall) as InstallProgressData;
+        if (Array.isArray(parsed?.logs)) {
+          parsed.logs = parsed.logs.filter((log) => !/^(Connecting over SSH to |Checking installation files\.|Downloading from hub\.|Connected via SSH\. Host key verified & trusted\.|Running preflight inspection: Linux OS detected\.|Executing payesh-install and configuring systemd service in background\.\.\.|Service started\. Enrolling node TLS certificate with hub\.\.\.|Awaiting initial telemetry heartbeat\.\.\.)/.test(log.text));
+        }
         if (parsed?.currentStage === 'succeeded') {
           completedInstallServerId = parsed.serverId;
           saveActiveInstall(null);
@@ -1460,14 +1472,14 @@
           {#each displayServers as server}
             <article class="panel monitoring-card">
               <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
-              <div class="monitoring-metrics">
+              {#if server.connectionState === 'connected'}<div class="monitoring-metrics">
                 <div><span>CPU</span><strong>{metricValue(server.metrics.cpu)}</strong></div>
                 <div><span>Memory</span><strong>{metricValue(server.metrics.memory)}</strong></div>
                 <div><span>Disk</span><strong>{metricValue(server.metrics.disk)}</strong></div>
                 <div><span>Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
                 <div><span>Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
-              </div>
-              <div class="monitoring-bottom"><span>Traffic: {formatBytes(server.traffic.countedBytes)}</span><span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
+              </div>{/if}
+              <div class="monitoring-bottom">{#if server.connectionState === 'connected'}<span>Traffic: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
               <button class="button ghost small" type="button" on:click={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
             </article>
           {/each}
@@ -1512,10 +1524,10 @@
                   <small class="faint">{server.freshnessReason || (server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.connectionState)}</small>
                 </div>
                 <div class="col-metric server-metric">
-                  <strong>{metricValue(server.metrics.cpu)}</strong>
+                  {#if server.connectionState === 'connected'}<strong>{metricValue(server.metrics.cpu)}</strong>
                   <div class="metric-microbar">
                     <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                  </div>
+                  </div>{/if}
                 </div>
                 <div class="col-action">
                   <span class="server-arrow"><Icon name="chevron-right" size={16} /></span>
@@ -1991,6 +2003,26 @@
           {/if}
         </div>
 
+        {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
+          <article class="panel server-actions">
+            <div class="panel-heading"><h2>Node service</h2></div>
+            <p class="muted">Connect over SSH to {displayAddress(selectedServer)} to restart, enable, or disable payesh-agent. Restart also makes the agent reconnect to the hub.</p>
+            <div class="form-grid">
+              <label>SSH port<input type="number" min="1" max="65535" bind:value={nodeControlPort} /></label>
+              <label>SSH user<input bind:value={nodeControlUser} /></label>
+              <label>Password<input type="password" bind:value={nodeControlPassword} autocomplete="off" /></label>
+              <label>Private key<textarea bind:value={nodeControlKey} rows="2" autocomplete="off"></textarea></label>
+              <label>Host-key fingerprint<input bind:value={nodeControlFingerprint} placeholder="SHA256:…" /></label>
+            </div>
+            <div class="server-heading-actions">
+              <button class="button primary small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('restart')}>{nodeControlBusy ? 'Working…' : 'Restart and reconnect'}</button>
+              <button class="button ghost small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('enable')}>Enable node service</button>
+              <button class="button ghost small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('disable')}>Disable node service</button>
+            </div>
+            {#if nodeControlError}<p class="form-error" role="alert">{nodeControlError}</p>{/if}
+          </article>
+        {/if}
+
         {#if activeInstall && activeInstall.serverId === selectedServer.id}
           <InstallProgress
             install={activeInstall}
@@ -2022,7 +2054,7 @@
           </article>
         {/if}
 
-        {#if availableTabs.length > 0}
+        {#if selectedServer.connectionState === 'connected' && availableTabs.length > 0}
           <div class="tabs" role="tablist" aria-label="Server detail sections">
             {#each availableTabs as tab}
               <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); if (tab === 'logs') void loadLogs(selectedServer.id); }}>
@@ -2030,13 +2062,11 @@
               </button>
             {/each}
           </div>
-        {:else if !activeInstall || activeInstall.serverId !== selectedServer.id}
-          <div class="panel pending-telemetry-notice">
-            <span class="muted tab-empty">Telemetry views will activate once the server completes installation and streams its first heartbeat.</span>
-          </div>
         {/if}
 
-        {#if detailTab === 'processes'}
+        {#if selectedServer.connectionState !== 'connected'}
+          <div class="unavailable-panel large"><strong>Node is not connected</strong><span>Metrics and telemetry will appear after the node reconnects.</span></div>
+        {:else if detailTab === 'processes'}
           {#key selectedServer.id}<ProcessTable serverId={selectedServer.id} onPackages={() => { packageServerId = selectedServer.id; navigate('packages'); }} />{/key}
         {:else if detailTab === 'metrics' && hasCapability(selectedServer, 'metrics')}
           <div class="metric-grid">
@@ -2353,10 +2383,10 @@
                     <small class="faint">{server.freshnessState === 'unknown' ? server.freshnessReason : `Heartbeat ${server.lastHeartbeat?.slice(11, 16)} UTC`}</small>
                   </div>
                   <div class="col-metric server-metric">
-                    <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
+                    {#if server.connectionState === 'connected'}<strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
                     <div class="metric-microbar">
                       <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                    </div>
+                    </div>{/if}
                   </div>
                   <div class="col-action">
                     <span class="server-arrow" aria-hidden="true"><Icon name="chevron-right" size={16} /></span>
