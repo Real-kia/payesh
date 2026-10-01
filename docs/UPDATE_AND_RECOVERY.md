@@ -57,7 +57,10 @@ validated release version to `update-request.json` in the data directory; the
 worker re-validates it, refuses downgrades, and runs the same release installer
 as `sudo payesh update`. Progress is reported through `update-status.json`, and
 the page reloads once the new version is running. The worker reads
-`GITHUB_TOKEN` from `/etc/payesh/payesh.env` for private repositories.
+`GITHUB_TOKEN` from the optional root-managed `/etc/payesh-update.env` on
+systemd, or an exported variable in `/etc/conf.d/payesh-update` on OpenRC, for
+private repositories. Keep these files owned by root with mode `0600`. The worker
+does not source the unprivileged dashboard's configuration.
 
 Servers installed before this feature need one `sudo payesh update` to add the
 worker; until then the page shows the command instead of an Update button. After

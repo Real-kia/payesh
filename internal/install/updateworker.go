@@ -18,9 +18,9 @@ func updateWorkerRole(role string) bool { return role == "standalone" || role ==
 func updateWorkerDefinition(init string) (string, bool) {
 	switch init {
 	case "systemd":
-		return "[Unit]\nDescription=Payesh web update worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nEnvironmentFile=-/etc/payesh/payesh.env\nExecStart=/usr/bin/payesh update-worker\nRestart=always\nRestartSec=5s\n\n[Install]\nWantedBy=multi-user.target\n", true
+		return "[Unit]\nDescription=Payesh web update worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nEnvironmentFile=-/etc/payesh-update.env\nExecStart=/usr/bin/payesh update-worker\nRestart=always\nRestartSec=5s\n\n[Install]\nWantedBy=multi-user.target\n", true
 	case "openrc":
-		return "#!/sbin/openrc-run\nname=\"payesh-update\"\ndescription=\"Payesh web update worker\"\ncommand=\"/bin/sh\"\ncommand_args=\"-c 'if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; exec /usr/bin/payesh update-worker'\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/update.log\"\nerror_log=\"/var/log/payesh/update.err\"\n\ndepend() {\n\tneed net\n}\n", true
+		return "#!/sbin/openrc-run\nname=\"payesh-update\"\ndescription=\"Payesh web update worker\"\ncommand=\"/usr/bin/payesh\"\ncommand_args=\"update-worker\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/update.log\"\nerror_log=\"/var/log/payesh/update.err\"\n\ndepend() {\n\tneed net\n}\n", true
 	}
 	return "", false
 }
