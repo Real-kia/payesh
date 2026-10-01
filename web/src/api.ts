@@ -100,6 +100,7 @@ export type TrafficPeriod = {
   continuity: 'complete' | 'gap' | 'uncertain';
 };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
+export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
 
 export type LogEntry = {
   source_id: string;
@@ -363,6 +364,10 @@ export class ApiClient {
 
   queryTraffic(serverId: string, params: { from: string; to: string; scope?: string; limit?: number } & QueryOptions): Promise<TrafficQuery> {
     return this.request<TrafficQuery>(`/servers/${encodeURIComponent(serverId)}/traffic${queryString({ from: params.from, to: params.to, scope: params.scope, limit: params.limit ?? 200 })}`, { signal: params.signal });
+  }
+
+  queryTrafficUsage(serverId: string, params: { from: string; to: string } & QueryOptions): Promise<TrafficUsage> {
+    return this.request<TrafficUsage>(`/servers/${encodeURIComponent(serverId)}/traffic/usage${queryString({ from: params.from, to: params.to })}`, { signal: params.signal });
   }
 
   listLogSources(serverId: string, options: QueryOptions = {}): Promise<LogSourcePage> {

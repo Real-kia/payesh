@@ -260,7 +260,7 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.enrollmentToken.ServeHTTP(w, r)
 		return
 	}
-	if a.traffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && (strings.HasSuffix(trimmedPath, "/traffic") || strings.HasSuffix(trimmedPath, "/traffic/forecast")) {
+	if a.traffic != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && (strings.HasSuffix(trimmedPath, "/traffic") || strings.HasSuffix(trimmedPath, "/traffic/forecast") || strings.HasSuffix(trimmedPath, "/traffic/usage")) {
 		a.traffic.ServeHTTP(w, r)
 		return
 	}

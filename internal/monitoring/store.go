@@ -2438,6 +2438,9 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 	if len(orderedTargets) > maxTargetsPerMaterialize {
 		orderedTargets = orderedTargets[:maxTargetsPerMaterialize]
 	}
+	if len(orderedTargets) == 0 {
+		return nil
+	}
 	gaps, gapsTruncated, err := s.queryRollupGaps(ctx, serverID)
 	if err != nil {
 		_ = s.enqueueRollupTargets(ctx, serverID, orderedTargets)
@@ -3549,6 +3552,12 @@ func (s *Store) PutRollups(ctx context.Context, rollups []Rollup) error {
 	if err != nil {
 		return err
 	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO metric_rollups(server_id,metric,bucket_start,bucket_seconds,sample_count,observed_seconds,minimum,maximum,weighted_mean,counter_delta,coverage) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(server_id,metric,bucket_start,bucket_seconds) DO UPDATE SET sample_count=excluded.sample_count,observed_seconds=excluded.observed_seconds,minimum=excluded.minimum,maximum=excluded.maximum,weighted_mean=excluded.weighted_mean,counter_delta=excluded.counter_delta,coverage=excluded.coverage`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
 	for _, rollup := range rollups {
 		if rollup.ObservedSeconds > float64(rollup.BucketSeconds) {
 			rollup.ObservedSeconds = float64(rollup.BucketSeconds)
@@ -3557,7 +3566,7 @@ func (s *Store) PutRollups(ctx context.Context, rollups []Rollup) error {
 			_ = tx.Rollback()
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO metric_rollups(server_id,metric,bucket_start,bucket_seconds,sample_count,observed_seconds,minimum,maximum,weighted_mean,counter_delta,coverage) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(server_id,metric,bucket_start,bucket_seconds) DO UPDATE SET sample_count=excluded.sample_count,observed_seconds=excluded.observed_seconds,minimum=excluded.minimum,maximum=excluded.maximum,weighted_mean=excluded.weighted_mean,counter_delta=excluded.counter_delta,coverage=excluded.coverage`, string(rollup.ServerID), rollup.Metric, FormatPersistedTime(rollup.BucketStart), rollup.BucketSeconds, rollup.SampleCount, rollup.ObservedSeconds, nullableFloat(rollup.Minimum), nullableFloat(rollup.Maximum), nullableFloat(rollup.WeightedMean), rollup.CounterDelta, rollup.Coverage)
+		_, err := stmt.ExecContext(ctx, string(rollup.ServerID), rollup.Metric, FormatPersistedTime(rollup.BucketStart), rollup.BucketSeconds, rollup.SampleCount, rollup.ObservedSeconds, nullableFloat(rollup.Minimum), nullableFloat(rollup.Maximum), nullableFloat(rollup.WeightedMean), rollup.CounterDelta, rollup.Coverage)
 		if err != nil {
 			_ = tx.Rollback()
 			return err

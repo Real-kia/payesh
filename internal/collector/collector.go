@@ -451,6 +451,11 @@ func collectNetworkWithRootAndSelection(root string, data []byte, counters map[s
 				billingOverflow = true
 			}
 		}
+		// Keep routine telemetry bounded on container hosts. Virtual links are
+		// collected only when explicitly selected; billing still scans all links.
+		if !explicitlySelected && isVirtualInterfaceWithRoot(root, name) {
+			continue
+		}
 		if interfaces >= maxNetworkInterfaces && !explicitlySelected {
 			continue
 		}

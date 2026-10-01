@@ -36,6 +36,7 @@ Ed25519 signing step.
 - [Uninstall and detachment](docs/UNINSTALL.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
 - [Provider billing comparison](docs/BILLING_COMPARISON.md)
+- [Traffic usage by date range](docs/TRAFFIC_USAGE.md)
 - [Contributing and release preparation](docs/CONTRIBUTING.md)
 - [Linux support matrix](docs/support/LINUX_MATRIX.md)
 - [Release format](docs/contracts/RELEASE_FORMAT.md)

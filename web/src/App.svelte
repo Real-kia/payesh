@@ -8,7 +8,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -32,6 +32,48 @@
   let selectedServerId = '';
   let detailTab: DetailTab = 'metrics';
   let chartRange: ChartRange = '15m';
+  const trafficDefaultEnd = new Date(Math.floor(Date.now() / 3600000) * 3600000);
+  let trafficFrom = new Date(trafficDefaultEnd.getTime() - 86400000).toISOString().slice(0, 16);
+  let trafficTo = trafficDefaultEnd.toISOString().slice(0, 16);
+  let trafficUsage: TrafficUsage | null = null;
+  let trafficUsageBusy = false;
+  let trafficUsageError = '';
+  let trafficUsageServerId = '';
+  let trafficUsageController: AbortController | null = null;
+  $: if (selectedServerId !== trafficUsageServerId) {
+    trafficUsageController?.abort();
+    trafficUsageServerId = selectedServerId;
+    trafficUsage = null;
+    trafficUsageError = '';
+  }
+
+  async function loadTrafficUsage(): Promise<void> {
+    trafficUsage = null;
+    trafficUsageError = '';
+    const from = new Date(trafficFrom + 'Z');
+    const to = new Date(trafficTo + 'Z');
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || to <= from || to.getTime() - from.getTime() > 90 * 86400000 || from.getTime() % 3600000 || to.getTime() % 3600000 || to.getTime() > Math.floor(Date.now() / 3600000) * 3600000) {
+      trafficUsageError = 'Choose completed UTC hours, from before to, spanning at most 90 days.';
+      return;
+    }
+    const id = selectedServer.id;
+    const controller = new AbortController();
+    trafficUsageController?.abort();
+    trafficUsageController = controller;
+    trafficUsageBusy = true;
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const result = await apiClient.queryTrafficUsage(id, { from: from.toISOString(), to: to.toISOString(), signal: controller.signal });
+      if (trafficUsageController === controller && !controller.signal.aborted && selectedServer.id === id) trafficUsage = result;
+    } catch (error) {
+      if (trafficUsageController === controller && selectedServer.id === id) trafficUsageError = error instanceof ApiError ? error.message : 'Traffic history could not be loaded. Please retry.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally {
+      window.clearTimeout(timeout);
+      if (trafficUsageController === controller) trafficUsageBusy = false;
+    }
+  }
+
   let theme: Theme = initialTheme();
   let previewState: PreviewState = 'loading';
   let previewLoadFailed = false;
@@ -1247,15 +1289,39 @@
     finally { window.clearTimeout(timeout); liveRefreshBusy = false; }
   }
 
+  let selectedRefreshBusy = false;
   async function refreshSelectedServer(): Promise<void> {
-    if (PREVIEW_MODE || activePage !== 'server' || !selectedServerId || document.hidden) return;
+    if (selectedRefreshBusy || PREVIEW_MODE || activePage !== 'server' || !selectedServerId || document.hidden) return;
     const id = selectedServerId;
+    const range = chartRange;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    selectedRefreshBusy = true;
     try {
-      const result = await enrichApiServer(emptyApiServer(await apiClient.getServer(id)), new AbortController().signal);
-      if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && result.server.connectionState === 'connected') saveActiveInstall(null);
-      if (activePage === 'server' && selectedServerId === id) servers = servers.map((server) => server.id === id ? result.server : server);
+      const [item, query, latestQuery, trafficQuery] = await Promise.all([
+        apiClient.getServer(id, { signal: controller.signal }),
+        apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '15m' ? 'raw' : range === '1h' ? 'minute' : 'hour', signal: controller.signal }),
+        range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { from: new Date(Date.now() - 120000).toISOString(), to: new Date().toISOString(), resolution: 'raw', signal: controller.signal }),
+        apiClient.queryTraffic(id, { ...rangeWindow('24h'), signal: controller.signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
+      ]);
+      if (activePage !== 'server' || selectedServerId !== id || controller.signal.aborted) return;
+      if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && item.connection_state === 'connected') saveActiveInstall(null);
+      servers = servers.map((previous) => {
+        if (previous.id !== id) return previous;
+        const updated = { ...previous, ...emptyApiServer(item), metrics: previous.metrics, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory };
+        applyMetric(latestQuery ?? query, updated);
+        const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' };
+        const ranges = updated.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
+        updated.metricHistory = { ranges: { ...ranges, [range]: metricChart(query), ...(latestQuery ? { '15m': metricChart(latestQuery) } : {}) } };
+        const period = trafficQuery?.periods[0];
+        if (period) updated.traffic = { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity };
+        return updated;
+      });
     } catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally {
+      window.clearTimeout(timeout);
+      selectedRefreshBusy = false;
     }
   }
 
@@ -1441,12 +1507,13 @@
       saveUiState();
     };
     window.addEventListener('popstate', onPopState);
-    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); }, 5000);
+    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); }, 15000);
     return () => {
       window.clearInterval(liveRefresh);
       window.clearTimeout(updatePollTimer);
       if (httpsPoll) clearTimeout(httpsPoll);
       window.removeEventListener('popstate', onPopState);
+      trafficUsageController?.abort();
       apiAbortController?.abort();
       logAbortController?.abort();
       jobPollController?.abort();
@@ -2264,6 +2331,28 @@
           </article>
 
         {:else if detailTab === 'traffic' && hasCapability(selectedServer, 'traffic')}
+          <article class="panel traffic-panel">
+            <div class="panel-heading"><div><h2>Traffic used in a date range</h2><p class="muted">Choose a start and end time in UTC. Up to 90 days of retained hourly history.</p></div></div>
+            <form class="traffic-range-form" on:submit|preventDefault={() => void loadTrafficUsage()}>
+              <label>From (UTC)<input type="datetime-local" step="3600" required bind:value={trafficFrom} disabled={trafficUsageBusy} /></label>
+              <label>To (UTC, excluded)<input type="datetime-local" step="3600" required bind:value={trafficTo} disabled={trafficUsageBusy} /></label>
+              <button class="button primary" type="submit" disabled={trafficUsageBusy || PREVIEW_MODE}>{#if trafficUsageBusy}<span class="version-spinner" aria-hidden="true"></span>Calculating…{:else}Calculate usage{/if}</button>
+            </form>
+            {#if trafficUsageError}<p class="error-text" role="alert">{trafficUsageError}</p>{/if}
+            {#if trafficUsage}
+              <p class="muted">{trafficUsage.from.slice(0, 16).replace('T', ' ')} → {trafficUsage.to.slice(0, 16).replace('T', ' ')} UTC</p>
+              <div class="network-rates traffic-usage-results" aria-live="polite">
+                <div><span class="muted">Download</span><strong class="tabular usage-download">{trafficUsage.download_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.download_bytes)}</strong><small class="muted">{trafficUsage.download_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
+                <div><span class="muted">Upload</span><strong class="tabular usage-upload">{trafficUsage.upload_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.upload_bytes)}</strong><small class="muted">{trafficUsage.upload_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
+                <div><span class="muted">Total recorded</span><strong class="tabular">{trafficUsage.total_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.total_bytes)}</strong></div>
+              </div>
+              {#if trafficUsage.download_hours < trafficUsage.requested_hours || trafficUsage.upload_hours < trafficUsage.requested_hours}
+                <p class="warning-text" role="status">History is incomplete. These are available totals; missing hours and uncertain counters are excluded.</p>
+              {/if}
+            {/if}
+            <p class="muted">Counts external-interface traffic from hourly measurements. Traffic crossing an hour boundary is counted with its next measurement; start and end hours may be partial. This report does not estimate missing traffic.</p>
+          </article>
+
           <article class="panel chart-panel">
             <div class="panel-heading">
               <div>
@@ -3454,6 +3543,14 @@
     font-weight: 600;
   }
 
+  .traffic-range-form { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin-bottom: 20px; }
+  .traffic-range-form label { display: grid; gap: 8px; flex: 1 1 200px; min-width: 0; }
+  .traffic-range-form input { min-width: 0; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+  .error-text { color: var(--danger); }
+  .warning-text { color: var(--warning); }
+  .traffic-usage-results { margin-top: 24px; }
+  .usage-download { color: var(--teal); }
+  .usage-upload { color: var(--blue); }
   .network-rates { display: flex; flex-wrap: wrap; gap: 32px; margin-bottom: 20px; }
   .network-rates > div { display: grid; gap: 6px; }
   .network-rates strong { font-size: 24px; }

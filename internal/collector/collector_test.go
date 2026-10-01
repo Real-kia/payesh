@@ -85,8 +85,8 @@ func TestNetworkBillingScansBeyondInterfaceDisplayCap(t *testing.T) {
 	if counters["net.billing.rx_bytes"] != "123" || validity["net.billing.rx_bytes"] != "valid" {
 		t.Fatalf("billing total ignored an interface after the display cap: counters=%#v validity=%#v", counters, validity)
 	}
-	if _, displayed := counters["net.eth0.rx_bytes"]; displayed {
-		t.Fatal("interface beyond the display cap was unexpectedly emitted")
+	if _, displayed := counters["net.eth0.rx_bytes"]; !displayed {
+		t.Fatal("virtual links hid the external interface")
 	}
 }
 
@@ -99,6 +99,13 @@ func TestNetworkBillingExcludesLogicalInterfaces(t *testing.T) {
 	collectNetwork([]byte(data), counters, units, validity)
 	if counters["net.billing.rx_bytes"] != "7" || counters["net.billing.tx_bytes"] != "11" {
 		t.Fatalf("logical interfaces inflated billing baseline: %#v", counters)
+	}
+	if _, present := counters["net.br0.rx_bytes"]; present {
+		t.Fatal("default telemetry includes a virtual interface")
+	}
+	collectNetworkWithRootAndSelection("", []byte(data), counters, units, validity, []string{"br0"})
+	if counters["net.br0.rx_bytes"] != "100" || counters["net.billing.rx_bytes"] != "100" {
+		t.Fatal("explicit virtual-interface selection was ignored")
 	}
 }
 
@@ -115,7 +122,7 @@ func TestNetworkBillingHonorsAuthoritativeInterfaceSelection(t *testing.T) {
 func TestSelectedInterfaceBeyondDisplayCapIsEmitted(t *testing.T) {
 	var data strings.Builder
 	for index := 0; index < maxNetworkInterfaces; index++ {
-		fmt.Fprintf(&data, "veth%d: 1 2 3 4 5 6 7 8 9 10 11 12\n", index)
+		fmt.Fprintf(&data, "eth%d: 1 2 3 4 5 6 7 8 9 10 11 12\n", index)
 	}
 	data.WriteString("wan0: 321 2 3 4 5 6 7 8 654 10 11 12\n")
 	counters := map[string]string{}

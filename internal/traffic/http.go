@@ -68,6 +68,10 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	serverID := contracts.ServerID(parts[0])
 	if len(parts) == 3 {
+		if parts[2] == "usage" && r.Method == http.MethodGet {
+			s.rangeUsage(w, r, serverID)
+			return
+		}
 		if parts[2] != "forecast" || r.Method != http.MethodGet {
 			writeTrafficError(w, http.StatusNotFound, "not_found", "resource not found", false)
 			return
@@ -83,6 +87,25 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeTrafficError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not supported for traffic", false)
 	}
+}
+
+func (s *Service) rangeUsage(w http.ResponseWriter, r *http.Request, id contracts.ServerID) {
+	from, fromErr := time.Parse(time.RFC3339, r.URL.Query().Get("from"))
+	to, toErr := time.Parse(time.RFC3339, r.URL.Query().Get("to"))
+	if fromErr != nil || toErr != nil || from.IsZero() || !to.After(from) || to.Sub(from) > 90*24*time.Hour || !from.Equal(from.Truncate(time.Hour)) || !to.Equal(to.Truncate(time.Hour)) || to.After(s.Now().UTC().Truncate(time.Hour)) {
+		writeTrafficError(w, http.StatusBadRequest, "invalid_range", "choose completed whole UTC hours spanning at most 90 days", false)
+		return
+	}
+	result, err := s.Store.QueryTrafficRange(r.Context(), id, from, to)
+	if errors.Is(err, monitoring.ErrRollupsPending) {
+		writeTrafficError(w, http.StatusServiceUnavailable, "history_pending", "traffic history is being rebuilt; retry shortly", true)
+		return
+	}
+	if err != nil {
+		writeTrafficError(w, http.StatusServiceUnavailable, "history_unavailable", "traffic history could not be loaded; retry shortly", true)
+		return
+	}
+	writeTrafficJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) forecast(w http.ResponseWriter, r *http.Request, serverID contracts.ServerID) {
