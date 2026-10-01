@@ -53,7 +53,9 @@ export type Server = {
 export type ServerPage = { items: Server[]; next_cursor?: string };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
-export type UpdateStatus = { current: string; latest: string; update_available: boolean; url: string; releases?: { version: string; url: string; published_at: string }[] };
+export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'failed'; target?: string; message?: string; updated_at: string };
+export type UpdateStatus = { current: string; latest: string; update_available: boolean; installed_ahead?: boolean; url: string; releases?: { version: string; url: string; published_at: string }[]; web_update_supported?: boolean; web_update?: WebUpdateState | null };
+export type UpdateProgress = { current: string; web_update_supported: boolean; web_update: WebUpdateState | null };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
 export type Module = { repository?: string; release?: string; install_supported?: boolean; id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string; source?: string; stale?: boolean; warning?: string };
@@ -304,6 +306,12 @@ export class ApiClient {
   }
 
   checkLatestUpdate(): Promise<UpdateStatus> { return this.request<UpdateStatus>('/updates/latest'); }
+
+  applyWebUpdate(version: string): Promise<WebUpdateState> {
+    return this.request<WebUpdateState>('/updates/apply', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ version }) });
+  }
+
+  getUpdateProgress(): Promise<UpdateProgress> { return this.request<UpdateProgress>('/updates/status'); }
 
   enqueueInstall(body: InstallRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>('/installations', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });

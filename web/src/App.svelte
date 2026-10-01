@@ -8,7 +8,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -43,6 +43,8 @@
   let logEntries: PreviewLogEntry[] = [];
   let apiAbortController: AbortController | null = null;
   let httpsStatus: HTTPSStatus | null = null;
+  let httpsStatusLoading = false;
+  const browserHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:';
   let settingsSection: 'users' | 'updates' | 'tls' = 'tls';
   let addingUser = false;
   let userSearch = '';
@@ -100,6 +102,22 @@
   let updateStatus: UpdateStatus | null = null;
   let updateCheckBusy = false;
   let updateCheckError = '';
+  const RELEASES_PER_PAGE = 5;
+  let releasePage = 0;
+  let updateApplyBusy = false;
+  let updateApplyError = '';
+  let updateProgress: UpdateProgress | null = null;
+  let updatePollTimer: number | undefined;
+  let dismissedUpdate = '';
+  try { dismissedUpdate = window.localStorage.getItem('payesh-dismissed-update') ?? ''; } catch { /* non-critical */ }
+  $: installedAhead = !!updateStatus && (updateStatus.installed_ahead ?? isNewerVersion(updateStatus.current, updateStatus.latest));
+  $: releaseList = updateStatus?.releases ?? [];
+  $: releasePageCount = Math.max(1, Math.ceil(releaseList.length / RELEASES_PER_PAGE));
+  $: if (releasePage > releasePageCount - 1) releasePage = releasePageCount - 1;
+  $: visibleReleases = releaseList.slice(releasePage * RELEASES_PER_PAGE, (releasePage + 1) * RELEASES_PER_PAGE);
+  $: webUpdate = updateProgress?.web_update ?? updateStatus?.web_update ?? null;
+  $: webUpdateActive = webUpdate?.state === 'queued' || webUpdate?.state === 'running';
+  $: showUpdateBanner = !PREVIEW_MODE && sessionState === 'authenticated' && !!updateStatus?.update_available && dismissedUpdate !== updateStatus.latest && !webUpdateActive;
   let installHost = '';
   let installPort = '22';
   let installUser = 'root';
@@ -366,6 +384,65 @@
     finally { updateCheckBusy = false; }
   }
 
+  function versionParts(value: string): number[] {
+    return value.replace(/^v/, '').split(/[-+]/)[0].split('.').map((part) => Number.parseInt(part, 10) || 0);
+  }
+
+  function isNewerVersion(candidate: string, installed: string): boolean {
+    if (!/^v?\d+\.\d+\.\d+/.test(installed) || !/^v?\d+\.\d+\.\d+/.test(candidate)) return false;
+    const a = versionParts(candidate), b = versionParts(installed);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+    }
+    return false;
+  }
+
+  function dismissUpdateBanner(): void {
+    if (!updateStatus) return;
+    dismissedUpdate = updateStatus.latest;
+    try { window.localStorage.setItem('payesh-dismissed-update', dismissedUpdate); } catch { /* non-critical */ }
+  }
+
+  function openUpdateSettings(): void {
+    settingsSection = 'updates';
+    navigate('settings');
+  }
+
+  async function startWebUpdate(target: string): Promise<void> {
+    if (updateApplyBusy || webUpdateActive) return;
+    if (!window.confirm(`Update Payesh to v${target}? The dashboard will restart and be unavailable for a short time.`)) return;
+    updateApplyBusy = true; updateApplyError = '';
+    try {
+      const state = await apiClient.applyWebUpdate(target);
+      updateProgress = { current: updateStatus?.current ?? '', web_update_supported: true, web_update: state };
+      pollUpdateProgress(target);
+    } catch (error) { updateApplyError = error instanceof Error ? error.message : 'Could not start the update.'; }
+    finally { updateApplyBusy = false; }
+  }
+
+  function pollUpdateProgress(target: string): void {
+    window.clearTimeout(updatePollTimer);
+    const deadline = Date.now() + 30 * 60_000;
+    const tick = async () => {
+      if (Date.now() >= deadline) { updateApplyError = 'Update status timed out. Check the server before trying again.'; return; }
+      try {
+        const progress = await apiClient.getUpdateProgress();
+        updateProgress = progress;
+        const state = progress.web_update;
+        if (progress.current === target) {
+          showNotice(`Updated to v${target}. Reloading…`);
+          window.setTimeout(() => window.location.reload(), 1500);
+          return;
+        }
+        if (state?.state === 'failed') { updateApplyError = state.message || 'The update failed.'; return; }
+      } catch {
+        // The dashboard restarts during an update; keep polling until it returns.
+      }
+      updatePollTimer = window.setTimeout(tick, 3000);
+    };
+    updatePollTimer = window.setTimeout(tick, 3000);
+  }
+
   async function loadAccounts(): Promise<void> {
     try {
       myAccount = await apiClient.getMyAccount();
@@ -414,6 +491,7 @@
 
   async function loadHTTPS(): Promise<void> {
     if (httpsPoll) { clearTimeout(httpsPoll); httpsPoll = null; }
+    httpsStatusLoading = true; httpsError = '';
     try {
       httpsStatus = await apiClient.getHTTPSSettings();
       if (!dashboardPort) dashboardPort = httpsStatus.https_port ?? '8787';
@@ -429,7 +507,7 @@
     } catch (error) {
       httpsBusy = false;
       httpsError = error instanceof Error ? error.message : 'Could not read HTTPS settings.';
-    }
+    } finally { httpsStatusLoading = false; }
   }
 
   async function saveHTTPS(): Promise<void> {
@@ -1265,11 +1343,13 @@
       sessionState = 'authenticated';
       servers = page.items.map(emptyApiServer);
       void loadAccounts();
+      void checkLatestUpdate().then(() => { if (updateStatus?.web_update && ['queued', 'running'].includes(updateStatus.web_update.state) && updateStatus.web_update.target) pollUpdateProgress(updateStatus.web_update.target); });
       selectedServerId = servers[0]?.id ?? '';
       restoreState(savedUiState);
       previewState = servers.length ? 'ready' : 'empty';
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
+      if (activePage === 'settings') void loadHTTPS();
       const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
       if (!controller.signal.aborted) {
         servers = enriched.map((result) => result.server);
@@ -1364,6 +1444,8 @@
     const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); }, 5000);
     return () => {
       window.clearInterval(liveRefresh);
+      window.clearTimeout(updatePollTimer);
+      if (httpsPoll) clearTimeout(httpsPoll);
       window.removeEventListener('popstate', onPopState);
       apiAbortController?.abort();
       logAbortController?.abort();
@@ -1468,6 +1550,9 @@
     </header>
 
     {#if notice}<div class="notice" role="status"><Icon name="check" size={14} /><span>{notice}</span></div>{/if}
+    {#if showUpdateBanner && updateStatus}
+      <div class="partial-warning update-banner" role="status"><Icon name="alert-triangle" size={15} /><span>Payesh v{updateStatus.latest} is available{updateStatus.current && updateStatus.current !== 'dev' ? ` (installed: v${updateStatus.current})` : ''}. <button class="link-button" type="button" on:click={openUpdateSettings}>View update</button></span><button class="link-button" type="button" aria-label="Dismiss update notice" on:click={dismissUpdateBanner}>Dismiss</button></div>
+    {/if}
     {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span></div>{/if}
     {#if insecureConnection && !PREVIEW_MODE && sessionState === 'authenticated'}
       <div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => navigate('settings')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
@@ -1791,8 +1876,8 @@
 
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="Settings sections">
-            <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => settingsSection = 'tls'}>SSL / TLS</button>
-            <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => settingsSection = 'updates'}>Versions & updates</button>
+            <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => { settingsSection = 'tls'; if (!PREVIEW_MODE) void loadHTTPS(); }}>SSL / TLS</button>
+            <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => { settingsSection = 'updates'; if (!PREVIEW_MODE) void checkLatestUpdate(); }}>Versions & updates</button>
             {#if myAccount?.role === 'owner'}<button type="button" aria-current={settingsSection === 'users' ? 'page' : undefined} class:chosen={settingsSection === 'users'} on:click={() => settingsSection = 'users'}>User management</button>{/if}
           </nav>
           <div class="settings-grid">
@@ -1840,13 +1925,26 @@
             {#if updateStatus && !updateCheckBusy && !updateCheckError}
               <div class="settings-meta-box">
                 <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
-                <div class="meta-row"><span>Status</span><span class={`status-pill ${updateStatus.update_available ? 'pending' : 'healthy'}`} role="status"><Icon name={updateStatus.update_available ? 'refresh' : 'check'} size={14} />{updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
+                <div class="meta-row"><span>Status</span><span class={`status-pill ${installedAhead || updateStatus.update_available ? 'pending' : 'healthy'}`} role="status"><Icon name={updateStatus.update_available ? 'refresh' : 'check'} size={14} />{installedAhead ? 'Beta · ahead of latest release' : updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
               </div>
+              {#if webUpdateActive}
+                <p class="update-progress" role="status">Updating to v{webUpdate?.target}… {webUpdate?.state === 'queued' ? 'Waiting for the update service.' : 'Installing. The dashboard will restart and reload automatically.'}</p>
+              {:else if updateStatus.update_available && myAccount?.role === 'owner'}
+                {#if updateStatus.web_update_supported}
+                  <button class="button primary small" type="button" disabled={updateApplyBusy} on:click={() => void startWebUpdate(updateStatus?.latest ?? '')}>{updateApplyBusy ? 'Starting…' : `Update to v${updateStatus.latest}`}</button>
+                {:else}
+                  <p class="muted">Updating from the browser is not set up on this server yet. Run the command below once; later updates can be done here.</p>
+                {/if}
+              {/if}
             {/if}
             {#if updateCheckError}<p class="form-error" role="alert">{updateCheckError}</p>{/if}
+            {#if updateApplyError}<p class="form-error" role="alert">{updateApplyError}</p>{/if}
             <h3>Release history</h3>
-            {#if updateStatus?.releases?.length}
-              <div class="release-list">{#each updateStatus.releases as release}<a class="release-row" href={release.url} target="_blank" rel="noopener noreferrer"><strong>v{release.version}</strong><span>{release.version === updateStatus.current ? 'Installed' : new Date(release.published_at).toLocaleDateString()}</span><span>Release notes ↗</span></a>{/each}</div>
+            {#if releaseList.length}
+              <div class="release-list">{#each visibleReleases as release (release.version)}<div class="release-row"><strong>v{release.version}</strong><span>{release.version === updateStatus?.current ? 'Installed' : new Date(release.published_at).toLocaleDateString()}</span><span class="release-actions"><a href={release.url} target="_blank" rel="noopener noreferrer">Release notes ↗</a>{#if myAccount?.role === 'owner' && updateStatus?.web_update_supported && !webUpdateActive && isNewerVersion(release.version, updateStatus.current)}<button class="button ghost small" type="button" disabled={updateApplyBusy} on:click={() => void startWebUpdate(release.version)}>Install</button>{/if}</span></div>{/each}</div>
+              {#if releasePageCount > 1}
+                <div class="release-pager"><button class="button ghost small" type="button" disabled={releasePage === 0} on:click={() => releasePage -= 1}>Newer</button><span class="muted">Page {releasePage + 1} of {releasePageCount} · {releaseList.length} releases</span><button class="button ghost small" type="button" disabled={releasePage >= releasePageCount - 1} on:click={() => releasePage += 1}>Older</button></div>
+              {/if}
             {:else}<p class="muted">{updateCheckBusy ? 'Loading releases…' : 'Release history unavailable.'}</p>{/if}
             <h3>Update command</h3>
             <code class="update-command">sudo payesh update</code>
@@ -1861,16 +1959,21 @@
             <div class="settings-meta-box">
               <div class="meta-row">
                 <span>Status</span>
-                {#if httpsStatus?.state === 'active'}
+                {#if browserHTTPS || httpsStatus?.state === 'active'}
                   <span class="status-pill healthy"><i class="status-dot"></i> HTTPS active</span>
                 {:else if httpsStatus?.state === 'pending'}
                   <span class="status-pill pending"><i class="status-dot"></i> Requesting certificate…</span>
                 {:else if httpsStatus?.state === 'failed'}
                   <span class="status-pill failed"><i class="status-dot"></i> Certificate request failed</span>
+                {:else if httpsStatusLoading || (!httpsStatus && !httpsError)}
+                  <span class="status-pill pending">Checking HTTPS status…</span>
+                {:else if httpsError}
+                  <span class="status-pill pending">HTTPS settings unavailable</span>
                 {:else}
                   <span class="status-pill pending"><i class="status-dot"></i> Not encrypted (HTTP)</span>
                 {/if}
               </div>
+              {#if browserHTTPS && httpsStatus?.state !== 'active'}<div class="meta-row"><span>Connection</span><span>This browser connection uses HTTPS.</span></div>{/if}
               {#if httpsStatus?.domain}
                 <div class="meta-row"><span>Address</span><span class="mono">{#if httpsStatus.state === 'active'}<a href={httpsURL(httpsStatus)}>{httpsURL(httpsStatus)}</a>{:else}{httpsStatus.domain}{/if}</span></div>
               {/if}
@@ -3742,18 +3845,26 @@
     flex-direction: column;
     gap: 24px;
     max-width: 720px;
+    min-width: 0;
   }
   .settings-layout { display: grid; grid-template-columns: 200px minmax(0, 850px); gap: 32px; align-items: start; }
   .settings-nav { display: grid; gap: 4px; border-right: 1px solid var(--line); padding-right: 16px; }
   .settings-nav button { text-align: left; padding: 12px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; border-radius: 4px; }
   .settings-nav button.chosen { background: var(--surface-muted); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--accent); }
   .user-search { display: grid; gap: 8px; margin-bottom: 20px; font-size: 13px; }
-  .release-list { border-top: 1px solid var(--line); margin: 16px 0 24px; }
+  .release-list { border-top: 1px solid var(--line); margin: 16px 0 12px; }
+  .release-row { align-items: center; }
+  .release-row { padding: 10px 0; }
+  .release-actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
+  .release-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; font-size: 13px; }
+  .update-progress { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); font-size: 13px; }
+  .update-banner { justify-content: space-between; }
+  .update-banner span { flex: 1; }
   .release-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; }
   .port-form { display: flex; gap: 16px; align-items: end; }
   .port-form label { display: grid; gap: 8px; }
   .form-wide { grid-column: 1 / -1; }
-  @media (max-width: 760px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 12px; } .release-row { grid-template-columns: 70px 1fr; } .release-row span:last-child { grid-column: 2; } }
+  @media (max-width: 760px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 12px; } .release-row { grid-template-columns: 70px 1fr; } .release-row .release-actions { grid-column: 1 / -1; justify-content: space-between; } }
   .settings-meta-box {
     display: flex;
     flex-direction: column;
@@ -3921,7 +4032,7 @@
      RESPONSIVE BREAKPOINTS
      -------------------------------------------------------------------------- */
   @media (max-width: 960px) {
-    .app-shell { grid-template-columns: 1fr; }
+    .app-shell { grid-template-columns: minmax(0, 1fr); }
     .sidebar {
       position: sticky;
       top: 0;
@@ -3934,7 +4045,7 @@
       gap: 16px;
     }
     .brand-lockup { padding: 0; }
-    .nav-list { flex-direction: row; overflow-x: auto; flex: 1; }
+    .nav-list { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; }
     .nav-item { padding: 8px 12px; white-space: nowrap; }
     .sidebar-footer { display: none; }
     .summary-grid { grid-template-columns: 1fr 1fr; }
@@ -3946,7 +4057,9 @@
 
   @media (max-width: 640px) {
     .page { padding: 20px 16px 32px; }
-    .topbar { padding: 0 16px; }
+    .topbar { padding: 12px 16px; height: auto; min-height: 58px; flex-wrap: wrap; gap: 10px; }
+    .settings-grid .panel-heading, .settings-actions { flex-wrap: wrap; }
+    .meta-row { flex-wrap: wrap; gap: 8px; overflow-wrap: anywhere; }
     .summary-grid, .lower-grid, .metric-grid, .form-grid, .package-source-fields { grid-template-columns: 1fr; }
     .package-source-fields details { grid-column: auto; }
     .table-header { display: none; }

@@ -18,6 +18,7 @@ import (
 	"github.com/Real-kia/payesh/internal/release"
 	"github.com/Real-kia/payesh/internal/updater"
 	"github.com/Real-kia/payesh/internal/version"
+	"github.com/Real-kia/payesh/internal/webupdate"
 )
 
 func updateCommand(ctx context.Context, args []string) error {
@@ -80,6 +81,12 @@ func updateCommand(ctx context.Context, args []string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("run the update as root: sudo payesh update (for a private repo, preserve GITHUB_TOKEN)")
 	}
+	return installRelease(ctx, target, token, comparable, comparison)
+}
+
+// installRelease runs the release installer for target. comparison is the
+// result of comparing the installed version with target when comparable.
+func installRelease(ctx context.Context, target, token string, comparable bool, comparison int) error {
 	if comparable && comparison == 0 {
 		fmt.Printf("Payesh %s is already installed.\n", version.Value)
 		return nil
@@ -92,6 +99,72 @@ func updateCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	return runReleaseInstaller(ctx, target, token, "--role", role, "--version", target)
+}
+
+// updateWorker is the root service that applies updates requested from the
+// web UI. It accepts only a validated release version from the request file.
+func updateWorker(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("update-worker", flag.ContinueOnError)
+	dir := flags.String("dir", webupdate.DefaultDir, "directory holding update request and status files")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("update-worker must run as root")
+	}
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		req, found, err := webupdate.Take(*dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "update-worker: ignoring request:", err)
+		}
+		if found {
+			done, err := runWebUpdate(ctx, *dir, req.Version)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "update-worker:", err)
+			}
+			if done {
+				// Exit so the service manager restarts the freshly installed binary.
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func runWebUpdate(ctx context.Context, dir, target string) (bool, error) {
+	set := func(state, message string) {
+		if err := webupdate.WriteStatus(dir, webupdate.Status{State: state, Target: target, Message: message, UpdatedAt: time.Now().UTC()}); err != nil {
+			fmt.Fprintln(os.Stderr, "update-worker: write status:", err)
+		}
+	}
+	set(webupdate.StateRunning, "")
+	comparable, comparison := false, 0
+	if updater.ValidRelease(version.Value) {
+		var err error
+		if comparison, err = updater.CompareReleases(version.Value, target); err != nil {
+			set(webupdate.StateFailed, err.Error())
+			return false, err
+		}
+		comparable = true
+	}
+	if comparable && comparison >= 0 {
+		set(webupdate.StateFailed, "requested version is not newer than the installed version")
+		return false, nil
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, 25*time.Minute)
+	defer cancel()
+	if err := installRelease(updateCtx, target, os.Getenv("GITHUB_TOKEN"), comparable, comparison); err != nil {
+		set(webupdate.StateFailed, err.Error())
+		return false, err
+	}
+	set(webupdate.StateSucceeded, "")
+	return true, nil
 }
 
 func runReleaseInstaller(ctx context.Context, target, token string, args ...string) error {

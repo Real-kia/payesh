@@ -98,7 +98,7 @@ func (g GitHubClient) History(ctx context.Context) ([]GitHubRelease, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/repos/"+repo+"/releases?per_page=20", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/repos/"+repo+"/releases?per_page=50", nil)
 	if err != nil {
 		return nil, err
 	}

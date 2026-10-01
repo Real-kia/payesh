@@ -5,7 +5,7 @@ User management is visible to the owner, who can search, add, edit, and remove
 users and set their role and read/edit access. Sign out remains in the profile menu.
 
 Versions & updates shows the installed version, latest stable release, and the
-20 most recent GitHub releases with dates and links to release notes. Drafts,
+50 most recent GitHub releases, shown five per page, with dates and links to release notes. Drafts,
 prereleases, and tags that are not application versions are excluded. Private
 repositories use the hub's GITHUB_TOKEN; an unavailable release history does not
 hide the installed version.
@@ -21,3 +21,13 @@ from domain and certificate state, so certificate removal and renewal preserve i
 
 Mutations retain session, CSRF, and read/edit permission checks. The hub does not
 change firewall rules when selecting a port.
+
+Opening Settings directly loads the TLS settings after authentication. The SSL / TLS
+panel reports browser HTTPS separately from the managed certificate state; loading
+and failed settings requests are never shown as an unencrypted connection.
+
+The update panel checks releases automatically and offers an owner-only Update
+button when the update service is installed. An installed version newer than the
+latest public release is labeled **Beta · ahead of latest release**, and is never
+automatically downgraded. Older installations need one command-line update to
+install the browser update service.

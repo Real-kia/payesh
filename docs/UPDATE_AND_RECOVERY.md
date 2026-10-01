@@ -47,3 +47,18 @@ command is accepted. Fleet nodes still require an authenticated transport
 executor, and schema-migration orchestration, role cutover, and full fleet
 rollout remain unsupported. Do not treat a local unsigned bundle as a
 production update.
+
+## Updating from the dashboard
+
+Installs of the `standalone` and `hub` roles include a root `payesh-update`
+service (systemd or OpenRC). The owner can choose **Update** under
+Settings → Versions & updates. The hub, which runs unprivileged, only writes a
+validated release version to `update-request.json` in the data directory; the
+worker re-validates it, refuses downgrades, and runs the same release installer
+as `sudo payesh update`. Progress is reported through `update-status.json`, and
+the page reloads once the new version is running. The worker reads
+`GITHUB_TOKEN` from `/etc/payesh/payesh.env` for private repositories.
+
+Servers installed before this feature need one `sudo payesh update` to add the
+worker; until then the page shows the command instead of an Update button. After
+login, every user sees a dismissible notice when GitHub has a newer release.

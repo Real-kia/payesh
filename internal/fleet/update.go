@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/release"
 	"github.com/Real-kia/payesh/internal/updater"
 	"github.com/Real-kia/payesh/internal/version"
+	"github.com/Real-kia/payesh/internal/webupdate"
 )
 
 const defaultUpdateAuthorizationTTL = 30 * time.Minute
@@ -22,9 +24,15 @@ const defaultUpdateAuthorizationTTL = 30 * time.Minute
 // loop: workers call Scheduler.RunOnce/Run against the durable job ID. This
 // keeps owner intent and execution separate and makes a process restart safe.
 type UpdateService struct {
-	Store          *monitoring.Store
-	Scheduler      *updater.Scheduler
-	Now            func() time.Time
+	Store     *monitoring.Store
+	Scheduler *updater.Scheduler
+	Now       func() time.Time
+	// Sessions identifies the owner for browser-triggered self-updates.
+	Sessions *auth.Manager
+	// WebUpdateDir and WebUpdateRoot locate the root worker's handoff files and
+	// service definition; empty values use the installed defaults.
+	WebUpdateDir   string
+	WebUpdateRoot  string
 	ReleaseChecker interface {
 		Latest(context.Context) (release.GitHubRelease, error)
 	}
@@ -44,6 +52,89 @@ func (s *UpdateService) now() time.Time {
 	return time.Now().UTC()
 }
 
+func (s *UpdateService) webUpdateDir() string {
+	if s.WebUpdateDir != "" {
+		return s.WebUpdateDir
+	}
+	return webupdate.DefaultDir
+}
+
+func (s *UpdateService) webUpdateRoot() string {
+	if s.WebUpdateRoot != "" {
+		return s.WebUpdateRoot
+	}
+	return "/"
+}
+
+// webUpdateStatus returns the current worker state, hiding abandoned work.
+func (s *UpdateService) webUpdateStatus() *webupdate.Status {
+	status, err := webupdate.ReadStatus(s.webUpdateDir())
+	if err != nil {
+		return nil
+	}
+	if (status.State == webupdate.StateQueued || status.State == webupdate.StateRunning) && !status.Active(s.now()) {
+		status.State, status.Message = webupdate.StateFailed, "update did not finish"
+	}
+	return &status
+}
+
+func (s *UpdateService) serveApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+		return
+	}
+	if s.Sessions == nil {
+		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
+		return
+	}
+	cookie, err := r.Cookie(s.Sessions.SessionCookieName())
+	account, ok := auth.Account{}, false
+	if err == nil {
+		account, ok = s.Sessions.SessionAccount(cookie.Value)
+	}
+	if !ok {
+		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
+		return
+	}
+	if account.Role != "owner" {
+		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
+		return
+	}
+	if !webupdate.Supported(s.webUpdateRoot()) {
+		writeFleetError(w, http.StatusConflict, "web_update_unavailable", "web updates are not set up on this server; run sudo payesh update once from the command line", false)
+		return
+	}
+	var request struct {
+		Version string `json:"version"`
+	}
+	if !decode(w, r, &request) {
+		return
+	}
+	target := strings.TrimPrefix(strings.TrimSpace(request.Version), "v")
+	if len(target) > 64 || !updater.ValidRelease(target) {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "version is invalid", false)
+		return
+	}
+	if updater.ValidRelease(version.Value) {
+		if cmp, err := updater.CompareReleases(version.Value, target); err == nil && cmp >= 0 {
+			writeFleetError(w, http.StatusConflict, "not_newer", "the requested version is not newer than the installed version", false)
+			return
+		}
+	}
+	if err := webupdate.Submit(s.webUpdateDir(), webupdate.Request{Version: target, RequestedBy: account.Username}, s.now()); err != nil {
+		if errors.Is(err, webupdate.ErrBusy) {
+			writeFleetError(w, http.StatusConflict, "update_in_progress", "an update is already in progress", true)
+		} else {
+			writeFleetError(w, http.StatusServiceUnavailable, "update_unavailable", "could not queue the update", true)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(s.webUpdateStatus())
+}
+
 func (s *UpdateService) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
 
 type updateRequest struct {
@@ -55,6 +146,24 @@ type updateRequest struct {
 }
 
 func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v1/updates/apply" {
+		s.serveApply(w, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/updates/status" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Current            string            `json:"current"`
+			WebUpdateSupported bool              `json:"web_update_supported"`
+			WebUpdate          *webupdate.Status `json:"web_update"`
+		}{version.Value, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
+		return
+	}
 	if r.URL.Path == "/api/v1/updates/latest" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -70,10 +179,11 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeFleetError(w, http.StatusBadGateway, "release_check_failed", "could not check GitHub Releases; for a private repository configure GITHUB_TOKEN", true)
 			return
 		}
-		available := true
+		available, ahead := true, false
 		if updater.ValidRelease(version.Value) {
 			if comparison, err := updater.CompareReleases(version.Value, latest.Version); err == nil {
 				available = comparison < 0
+				ahead = comparison > 0
 			}
 		}
 		var history []release.GitHubRelease
@@ -84,12 +194,15 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
-			Current         string                  `json:"current"`
-			Latest          string                  `json:"latest"`
-			UpdateAvailable bool                    `json:"update_available"`
-			URL             string                  `json:"url"`
-			Releases        []release.GitHubRelease `json:"releases"`
-		}{version.Value, latest.Version, available, latest.URL, history})
+			Current            string                  `json:"current"`
+			Latest             string                  `json:"latest"`
+			InstalledAhead     bool                    `json:"installed_ahead"`
+			UpdateAvailable    bool                    `json:"update_available"`
+			URL                string                  `json:"url"`
+			Releases           []release.GitHubRelease `json:"releases"`
+			WebUpdateSupported bool                    `json:"web_update_supported"`
+			WebUpdate          *webupdate.Status       `json:"web_update"`
+		}{version.Value, latest.Version, ahead, available, latest.URL, history, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
 		return
 	}
 	if r.URL.Path != "/api/v1/updates" {

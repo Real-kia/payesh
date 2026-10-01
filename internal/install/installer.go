@@ -330,6 +330,14 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 			}
 			result.Started = true
 		}
+		if updateWorkerRole(role) {
+			// Not fatal: the dashboard still works and reports web updates as
+			// unavailable if the worker cannot be set up.
+			live := opts.Start && opts.ServiceManager == nil
+			if err := installUpdateWorker(ctx, root, p.Init, live, chooseRunner(opts.CommandRunner)); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: web update worker not installed:", err)
+			}
+		}
 	}
 	return result, nil
 }

@@ -68,6 +68,12 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 		result.Stopped = true
 	}
 
+	if updateWorkerRole(role) {
+		if err := removeUpdateWorker(ctx, root, init, chooseRunner(opts.CommandRunner)); err != nil {
+			return result, fmt.Errorf("remove update worker: %w", err)
+		}
+	}
+
 	paths := make([]string, 0, len(services)+6)
 	for _, service := range services {
 		paths = append(paths, servicePath(root, init, service))

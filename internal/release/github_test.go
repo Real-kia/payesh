@@ -36,7 +36,7 @@ func TestGitHubLatestPublicAndPrivate(t *testing.T) {
 
 func TestGitHubHistoryFiltersDraftPrereleaseAndInvalidTags(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/repos/Real-kia/payesh/releases" || r.URL.Query().Get("per_page") != "20" {
+		if r.URL.Path != "/repos/Real-kia/payesh/releases" || r.URL.Query().Get("per_page") != "50" {
 			t.Errorf("url=%s", r.URL)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-token" {

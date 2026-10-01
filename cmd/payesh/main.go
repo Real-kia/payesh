@@ -66,6 +66,8 @@ func main() {
 		err = domain(ctx, os.Args[2:])
 	case "update":
 		err = updateCommand(ctx, os.Args[2:])
+	case "update-worker":
+		err = updateWorker(ctx, os.Args[2:])
 	case "role":
 		err = roleCommand(ctx, os.Args[2:])
 	case "version":
@@ -104,6 +106,7 @@ commands:
   verify-backup    run PRAGMA integrity_check against a SQLite backup file
   domain           set the dashboard domain and get an automatic HTTPS certificate
   update           check GitHub Releases or install the latest local release
+  update-worker    root service that applies updates requested from the web UI
   version          print this binary's release version`)
 }
 

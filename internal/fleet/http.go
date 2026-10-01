@@ -171,6 +171,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		if updateErr != nil {
 			return nil, updateErr
 		}
+		updateService.Sessions = sessions
 		updateHandler = sessions.Middleware(updateService.Handler())
 	}
 	var installHandler http.Handler
@@ -239,7 +240,7 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.httpsSettings.ServeHTTP(w, r)
 		return
 	}
-	if a.updates != nil && (trimmedPath == "/api/v1/updates" || trimmedPath == "/api/v1/updates/latest") {
+	if a.updates != nil && (trimmedPath == "/api/v1/updates" || trimmedPath == "/api/v1/updates/latest" || trimmedPath == "/api/v1/updates/apply" || trimmedPath == "/api/v1/updates/status") {
 		a.updates.ServeHTTP(w, r)
 		return
 	}
