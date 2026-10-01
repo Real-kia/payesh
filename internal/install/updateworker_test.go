@@ -42,7 +42,7 @@ func TestWebRolesInstallAndRemoveUpdateWorker(t *testing.T) {
 				if !strings.Contains(string(body), "/usr/bin/payesh") || !strings.Contains(string(body), "update-worker") {
 					t.Fatalf("wrong worker command: %s", body)
 				}
-				if strings.Contains(string(body), "/etc/payesh/payesh.env") || strings.Contains(string(body), "command=\"/bin/sh\"") {
+				if strings.Contains(string(body), "/etc/payesh/payesh.env") || strings.Contains(string(body), "command=\"/bin/sh\"") || strings.Contains(string(body), "/var/log/payesh") {
 					t.Fatal("root worker must not source the service-account configuration")
 				}
 				if init == "systemd" && !strings.Contains(string(body), "EnvironmentFile=-/etc/payesh-update.env") {

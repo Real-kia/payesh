@@ -20,7 +20,7 @@ func updateWorkerDefinition(init string) (string, bool) {
 	case "systemd":
 		return "[Unit]\nDescription=Payesh web update worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nEnvironmentFile=-/etc/payesh-update.env\nExecStart=/usr/bin/payesh update-worker\nRestart=always\nRestartSec=5s\n\n[Install]\nWantedBy=multi-user.target\n", true
 	case "openrc":
-		return "#!/sbin/openrc-run\nname=\"payesh-update\"\ndescription=\"Payesh web update worker\"\ncommand=\"/usr/bin/payesh\"\ncommand_args=\"update-worker\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/update.log\"\nerror_log=\"/var/log/payesh/update.err\"\n\ndepend() {\n\tneed net\n}\n", true
+		return "#!/sbin/openrc-run\nname=\"payesh-update\"\ndescription=\"Payesh web update worker\"\ncommand=\"/usr/bin/payesh\"\ncommand_args=\"update-worker\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\n\ndepend() {\n\tneed net\n}\n", true
 	}
 	return "", false
 }
