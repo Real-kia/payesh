@@ -31,3 +31,10 @@ button when the update service is installed. An installed version newer than the
 latest public release is labeled **Beta · ahead of latest release**, and is never
 automatically downgraded. Older installations need one command-line update to
 install the browser update service.
+
+## Storage and notifications
+
+The owner can configure the database limit (default 1 GB), normal sampling
+(default 15 seconds), automatic storage-saving sampling (default 60 seconds),
+and in-app notifications. See [storage and notifications](STORAGE_AND_NOTIFICATIONS.md)
+for cleanup thresholds, node compatibility, and retention behavior.

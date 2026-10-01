@@ -63,3 +63,13 @@ streams are bounded.
 Jobs carry target identity, expiry, idempotency key, and expected configuration
 revision. Expired or conflicting jobs fail explicitly on reconnect; old commands
 are not silently applied.
+
+## Sampling policy extension
+
+Nodes advertising the `sampling-policy` capability can receive optional
+`sampling_interval_seconds` (5–3600) in authenticated sample acknowledgements.
+It controls future collection without changing sequence numbers or dropping
+already collected samples. Heartbeats remain independent. The hub omits this
+field for older nodes, whose strict decoders reject unknown fields. Policy can
+be included on a retryable rejected batch so storage pressure also slows
+future collection while the existing batch remains in the spool.

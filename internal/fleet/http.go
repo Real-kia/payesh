@@ -236,6 +236,14 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trimmedPath := strings.TrimRight(r.URL.Path, "/")
+	if trimmedPath == "/api/v1/settings/storage" {
+		a.sessions.Middleware(http.HandlerFunc(a.storageSettings)).ServeHTTP(w, r)
+		return
+	}
+	if trimmedPath == "/api/v1/notifications" {
+		a.sessions.Middleware(http.HandlerFunc(a.storageNotifications)).ServeHTTP(w, r)
+		return
+	}
 	if a.httpsSettings != nil && trimmedPath == "/api/v1/settings/https" {
 		a.httpsSettings.ServeHTTP(w, r)
 		return

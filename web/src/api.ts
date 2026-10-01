@@ -99,6 +99,9 @@ export type TrafficPeriod = {
   counted_bytes: string;
   continuity: 'complete' | 'gap' | 'uncertain';
 };
+export type StorageSettings = { max_database_bytes: number; sample_seconds: number; pressure_sample_seconds: number; adaptive_sampling: boolean; notifications_enabled: boolean; revision: string; pressure_state: string };
+export type StorageStatus = { settings: StorageSettings; database_bytes: number; effective_sample_seconds: number };
+export type StorageNotification = { id: string; kind: string; message: string; created_at: string; read: boolean };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
 export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
 
@@ -365,6 +368,11 @@ export class ApiClient {
   queryTraffic(serverId: string, params: { from: string; to: string; scope?: string; limit?: number } & QueryOptions): Promise<TrafficQuery> {
     return this.request<TrafficQuery>(`/servers/${encodeURIComponent(serverId)}/traffic${queryString({ from: params.from, to: params.to, scope: params.scope, limit: params.limit ?? 200 })}`, { signal: params.signal });
   }
+
+  getStorageSettings(): Promise<StorageStatus> { return this.request<StorageStatus>('/settings/storage'); }
+  saveStorageSettings(settings: StorageSettings): Promise<StorageStatus> { return this.request<StorageStatus>('/settings/storage', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(settings) }); }
+  getNotifications(): Promise<{items: StorageNotification[]}> { return this.request<{items: StorageNotification[]}>('/notifications'); }
+  markNotificationsRead(): Promise<void> { return this.request<void>('/notifications', { method: 'POST', headers: this.mutationHeaders() }); }
 
   queryTrafficUsage(serverId: string, params: { from: string; to: string } & QueryOptions): Promise<TrafficUsage> {
     return this.request<TrafficUsage>(`/servers/${encodeURIComponent(serverId)}/traffic/usage${queryString({ from: params.from, to: params.to })}`, { signal: params.signal });

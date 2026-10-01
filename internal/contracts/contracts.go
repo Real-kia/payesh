@@ -86,10 +86,11 @@ type SampleBatch struct {
 }
 
 type Acknowledgement struct {
-	RequestID       string `json:"request_id"`
-	Accepted        bool   `json:"accepted"`
-	ThroughSequence uint64 `json:"through_sequence,string"`
-	Error           *Error `json:"error,omitempty"`
+	SamplingIntervalSeconds int    `json:"sampling_interval_seconds,omitempty"`
+	RequestID               string `json:"request_id"`
+	Accepted                bool   `json:"accepted"`
+	ThroughSequence         uint64 `json:"through_sequence,string"`
+	Error                   *Error `json:"error,omitempty"`
 }
 
 type Cancellation struct {

@@ -8,7 +8,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type StorageStatus, type StorageNotification, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -87,7 +87,64 @@
   let httpsStatus: HTTPSStatus | null = null;
   let httpsStatusLoading = false;
   const browserHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:';
-  let settingsSection: 'users' | 'updates' | 'tls' = 'tls';
+  let storageStatus: StorageStatus | null = null;
+  let databaseLimitGB = 1;
+  let samplingSeconds = 15;
+  let pressureSamplingSeconds = 60;
+  let adaptiveSampling = true;
+  let storageNotificationsEnabled = true;
+  let storageBusy = false;
+  let storageError = '';
+  let storageSaved = '';
+  let notificationItems: StorageNotification[] = [];
+  let notificationError = '';
+  let notificationBusy = false;
+  $: unreadNotifications = notificationItems.filter(item => !item.read).length;
+
+  async function loadStorageSettings(): Promise<void> {
+    storageBusy = true; storageError = ''; storageSaved = '';
+    try {
+      storageStatus = await apiClient.getStorageSettings();
+      databaseLimitGB = storageStatus.settings.max_database_bytes / 1000000000;
+      samplingSeconds = storageStatus.settings.sample_seconds;
+      pressureSamplingSeconds = storageStatus.settings.pressure_sample_seconds;
+      adaptiveSampling = storageStatus.settings.adaptive_sampling;
+      storageNotificationsEnabled = storageStatus.settings.notifications_enabled;
+    } catch (error) { storageError = error instanceof ApiError ? error.message : 'Storage settings could not be loaded.'; }
+    finally { storageBusy = false; }
+  }
+  async function saveStorageSettings(): Promise<void> {
+    if (!storageStatus) return;
+    storageBusy = true; storageError = ''; storageSaved = '';
+    try {
+      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: storageNotificationsEnabled });
+      storageSaved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
+      await loadNotifications();
+    } catch (error) { storageError = error instanceof ApiError ? error.message : 'Storage settings could not be saved.'; }
+    finally { storageBusy = false; }
+  }
+  async function loadNotifications(): Promise<void> {
+    if (notificationBusy || PREVIEW_MODE || sessionState !== 'authenticated' || document.hidden) return;
+    notificationBusy = true; notificationError = '';
+    try { notificationItems = (await apiClient.getNotifications()).items; }
+    catch (error) { notificationError = error instanceof ApiError ? error.message : 'Notifications could not be loaded.'; }
+    finally { notificationBusy = false; }
+  }
+  let storageRefreshBusy = false;
+  async function refreshStorageUsage(): Promise<void> {
+    if (PREVIEW_MODE || activePage !== 'settings' || settingsSection !== 'storage' || storageBusy || storageRefreshBusy || !storageStatus || document.hidden) return;
+    storageRefreshBusy = true;
+    try {
+      const result = await apiClient.getStorageSettings();
+      if (storageStatus && result.settings.revision === storageStatus.settings.revision) storageStatus = { ...storageStatus, database_bytes: result.database_bytes, effective_sample_seconds: result.effective_sample_seconds, settings: { ...storageStatus.settings, pressure_state: result.settings.pressure_state } };
+    } catch { /* Keep the last measurement; Refresh reports any API error. */ }
+    finally { storageRefreshBusy = false; }
+  }
+  async function markNotificationsRead(): Promise<void> {
+    try { await apiClient.markNotificationsRead(); await loadNotifications(); }
+    catch (error) { notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.'; }
+  }
+  let settingsSection: 'users' | 'updates' | 'tls' | 'storage' | 'notifications' = 'tls';
   let addingUser = false;
   let userSearch = '';
   let dashboardPort = '';
@@ -103,11 +160,9 @@
   let notice = '';
   let setupStep = 1;
   let workspaceName = PREVIEW_MODE ? "Kia's workspace" : '';
-  let retention = '30';
   let setupSecret = '';
   let ownerPassword = '';
   let ownerUsername = '';
-  let notifications = 'none';
   let enrollmentMode: 'skip' | 'connect' = 'skip';
   let pairingToken = '';
   let setupError = '';
@@ -415,7 +470,7 @@
     if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
-    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); }
+    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); if (settingsSection === 'storage') void loadStorageSettings(); void loadNotifications(); }
   }
 
   async function checkLatestUpdate(): Promise<void> {
@@ -1416,6 +1471,7 @@
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
       if (activePage === 'settings') void loadHTTPS();
+      void loadNotifications();
       const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
       if (!controller.signal.aborted) {
         servers = enriched.map((result) => result.server);
@@ -1507,9 +1563,11 @@
       saveUiState();
     };
     window.addEventListener('popstate', onPopState);
-    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); }, 15000);
+    const notificationRefresh = window.setInterval(() => void loadNotifications(), 60000);
+    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); void refreshStorageUsage(); }, 15000);
     return () => {
       window.clearInterval(liveRefresh);
+      window.clearInterval(notificationRefresh);
       window.clearTimeout(updatePollTimer);
       if (httpsPoll) clearTimeout(httpsPoll);
       window.removeEventListener('popstate', onPopState);
@@ -1607,6 +1665,7 @@
           <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
         </button>
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}
+          <button class="button ghost small" type="button" on:click={() => { settingsSection = 'notifications'; navigate('settings'); void loadNotifications(); }}>Notifications{unreadNotifications ? ` (${unreadNotifications})` : ''}</button>
           <button class="button ghost small" type="button" on:click={() => promptSignOut()}>Sign out</button>
         {/if}
         {#if myAccount?.permission !== 'read'}<button class="button primary small" type="button" on:click={() => openAddServer()}>
@@ -1945,10 +2004,37 @@
           <nav class="settings-nav" aria-label="Settings sections">
             <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => { settingsSection = 'tls'; if (!PREVIEW_MODE) void loadHTTPS(); }}>SSL / TLS</button>
             <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => { settingsSection = 'updates'; if (!PREVIEW_MODE) void checkLatestUpdate(); }}>Versions & updates</button>
+            <button type="button" aria-current={settingsSection === 'storage' ? 'page' : undefined} class:chosen={settingsSection === 'storage'} on:click={() => { settingsSection = 'storage'; if (!PREVIEW_MODE) void loadStorageSettings(); }}>Storage & sampling</button>
+            <button type="button" aria-current={settingsSection === 'notifications' ? 'page' : undefined} class:chosen={settingsSection === 'notifications'} on:click={() => { settingsSection = 'notifications'; void loadNotifications(); }}>Notifications{unreadNotifications ? ` (${unreadNotifications})` : ''}</button>
             {#if myAccount?.role === 'owner'}<button type="button" aria-current={settingsSection === 'users' ? 'page' : undefined} class:chosen={settingsSection === 'users'} on:click={() => settingsSection = 'users'}>User management</button>{/if}
           </nav>
           <div class="settings-grid">
-          {#if settingsSection === 'users' && myAccount?.role === 'owner'}
+          {#if settingsSection === 'storage'}
+          <article class="panel account-management storage-settings-panel">
+            <div class="panel-heading"><div><h2>Storage & sampling</h2><p class="muted">Keep monitoring lightweight and control how much history is stored.</p></div><button class="button ghost small" disabled={storageBusy || PREVIEW_MODE} on:click={() => void loadStorageSettings()}>Refresh</button></div>
+            {#if storageStatus}
+              <div class="settings-meta-box"><div class="meta-row"><span>Database usage</span><strong>{formatBytes(String(storageStatus.database_bytes))} / {formatBytes(String(storageStatus.settings.max_database_bytes))}</strong></div><div class="progress"><span style={`width:${Math.min(100, storageStatus.database_bytes / storageStatus.settings.max_database_bytes * 100)}%`}></span></div><div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div></div>
+              <form class="form-grid" on:submit|preventDefault={() => void saveStorageSettings()}>
+                <label>Maximum database size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 1 GB. Includes the database and its journal files. Lowering the limit can remove old history.</small></label>
+                <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 15 seconds. Larger intervals produce fewer new samples.</small></label>
+                <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 60 seconds. Applies automatically under storage pressure.</small></label>
+                <label>Automatic sampling reduction<select bind:value={adaptiveSampling} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
+                <label>Storage notifications<select bind:value={storageNotificationsEnabled} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
+                {#if myAccount?.role === 'owner'}<button class="button primary" type="submit" disabled={storageBusy || PREVIEW_MODE}>{storageBusy ? 'Saving…' : 'Save settings'}</button>{/if}
+              </form>
+              <p class="muted">Oldest history is removed near 90% of the limit to leave room for new data. Server identities, credentials, and billing totals are preserved. Minute and hourly summaries keep older history compact.</p>
+              <p class="muted">Sampling settings apply to this master and updated nodes. Older nodes keep their existing interval until updated. Heartbeats continue independently.</p>
+            {:else if storageBusy}<p role="status">Loading storage settings…</p>{/if}
+            {#if storageError}<p class="form-error" role="alert">{storageError}</p>{/if}
+            {#if storageSaved}<p class="success-text" role="status">{storageSaved}</p>{/if}
+          </article>
+          {:else if settingsSection === 'notifications'}
+          <article class="panel account-management">
+            <div class="panel-heading"><div><h2>Notifications</h2><p class="muted">Storage pressure, automatic sampling changes, and history cleanup. Latest 100 workspace notifications.</p></div><div class="settings-actions"><button class="button ghost small" type="button" disabled={notificationBusy} on:click={() => void loadNotifications()}>Refresh</button>{#if myAccount?.permission === 'edit'}<button class="button ghost small" type="button" disabled={!unreadNotifications || notificationBusy} on:click={() => void markNotificationsRead()}>Mark all read</button>{/if}</div></div>
+            {#if notificationError}<p class="form-error" role="alert">{notificationError}</p>{/if}
+            <div class="notification-list">{#each notificationItems as item (item.id)}<article class:unread={!item.read}><div><strong>{item.kind === 'storage_full' ? 'Database limit reached' : item.kind === 'storage_cleanup' ? 'Old history removed' : item.kind === 'storage_saving' ? 'Database storage pressure' : item.kind === 'storage_warning' ? 'Database nearly full' : 'Storage recovered'}</strong><time datetime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></div><p>{item.message}</p></article>{:else}<p class="muted">{notificationBusy ? 'Loading notifications…' : 'No storage notifications yet.'}</p>{/each}</div>
+          </article>
+          {:else if settingsSection === 'users' && myAccount?.role === 'owner'}
           <article class="panel account-management">
             <div class="panel-heading"><div><h2>User management</h2><span class="muted">{accounts.length} users</span></div><button class="button primary small" type="button" on:click={() => addingUser = !addingUser}>{addingUser ? 'Cancel' : 'Add user'}</button></div>
             <label class="user-search">Search users<input bind:value={userSearch} placeholder="Search by username" /></label>
@@ -2101,12 +2187,10 @@
               <label>Owner password<input type="password" bind:value={ownerPassword} minlength="12" autocomplete="new-password" placeholder="At least 12 characters" aria-invalid={setupError ? 'true' : undefined} /><small>At least 12 characters.</small></label>
             </div>
           {:else if setupStep === 2}
-            <h2>Retention & notifications</h2>
-            <p class="muted">Configurable metric sampling and alert routing options.</p>
-            <div class="form-grid">
-              <label>Metric retention<select bind:value={retention}><option value="7">7 days (low storage)</option><option value="30">30 days (recommended)</option><option value="90">90 days (extended)</option></select></label>
-              <label>Notifications<select bind:value={notifications}><option value="none">Disabled</option><option value="email">Email summary</option><option value="webhook">Webhook endpoint</option></select></label>
-            </div>
+            <h2>Storage & notifications</h2>
+            <p class="muted">Monitoring starts with a 1 GB database limit, 15-second sampling, and in-app storage notifications enabled. Old history is cleaned up automatically when space runs low.</p>
+            <p class="muted">After setup, open Settings → Storage & sampling to change the limit, sampling intervals, or notifications.</p>
+
           {:else}
             <h2>Enroll first server</h2>
             <p class="muted">You can pair an existing server immediately or configure one later.</p>
@@ -2126,7 +2210,7 @@
             {/if}
             <div class="review-box">
               <span>Workspace: <strong>{workspaceName || 'Default'}</strong></span>
-              <span>Retention: <strong>{retention} days ({notifications})</strong></span>
+              <span>Storage defaults: <strong>1 GB · 15-second samples · notifications enabled</strong></span>
               <span>Enrollment: <strong>{enrollmentMode === 'skip' ? 'Skipped' : 'Pairing token ready'}</strong></span>
             </div>
           {/if}
@@ -3543,6 +3627,13 @@
     font-weight: 600;
   }
 
+  .success-text { color: var(--success); }
+  .notification-list { display: grid; gap: 12px; }
+  .notification-list article { border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .notification-list article.unread { border-left: 3px solid var(--warning); }
+  .notification-list article > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .notification-list time { color: var(--muted); font-size: 12px; }
+  .notification-list p { overflow-wrap: anywhere; }
   .traffic-range-form { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin-bottom: 20px; }
   .traffic-range-form label { display: grid; gap: 8px; flex: 1 1 200px; min-width: 0; }
   .traffic-range-form input { min-width: 0; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }

@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/collector"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/privd"
 	"github.com/Real-kia/payesh/internal/transport"
 )
@@ -28,6 +30,8 @@ func main() {
 	epoch := flag.String("epoch", "", "collector epoch override; omitted values get a fresh epoch per start")
 	billingInterfaces := flag.String("billing-interfaces", "", "comma-separated authoritative billing interfaces; empty uses safe discovery")
 	interval := flag.Duration("interval", 0, "repeat collection interval; zero emits one sample")
+	settingsDB := flag.String("settings-db", "/var/lib/payesh/payesh.db", "read-only local storage sampling settings")
+	var hubSampleSeconds atomic.Int64
 	transportURL := flag.String("transport-url", os.Getenv("PAYESH_TRANSPORT_URL"), "optional wss:// node transport endpoint; empty keeps stdout mode")
 	bootstrapURL := flag.String("bootstrap-url", os.Getenv("PAYESH_BOOTSTRAP_URL"), "optional wss:// protected bootstrap endpoint; used only when node identity is absent")
 	bootstrapJob := flag.String("bootstrap-job", os.Getenv("PAYESH_BOOTSTRAP_JOB"), "durable enrollment job id for protected bootstrap")
@@ -125,7 +129,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "open sample spool:", err)
 			os.Exit(1)
 		}
-		capabilities := []string{"metrics", "traffic"}
+		capabilities := []string{"metrics", "traffic", "sampling-policy"}
 		var actionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 		if socket := strings.TrimSpace(*privdSocket); socket != "" {
 			capabilities = append(capabilities, "actions")
@@ -134,8 +138,9 @@ func main() {
 		}
 		client := &transport.AgentClient{
 			URL: configuredTransport.URL, Identity: configuredNodeIdentity, IdentityPath: configuredTransport.IdentityFile, TrustPEM: trustPEM, Spool: spool,
-			Hello:         contracts.Hello{Version: "dev", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
-			ActionHandler: actionHandler,
+			Hello:          contracts.Hello{Version: "dev", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
+			ActionHandler:  actionHandler,
+			SamplingPolicy: func(seconds int) { hubSampleSeconds.Store(int64(seconds)) },
 		}
 		transportBatches = make(chan contracts.SampleBatch, 1)
 		done := make(chan error, 1)
@@ -179,7 +184,20 @@ func main() {
 			}
 			return
 		}
-		timer := time.NewTimer(*interval)
+		effectiveInterval := *interval
+		if transportBatches != nil {
+			if seconds := hubSampleSeconds.Load(); seconds > 0 {
+				effectiveInterval = time.Duration(seconds) * time.Second
+			}
+		} else {
+			policyCtx, cancel := context.WithTimeout(ctx, time.Second)
+			seconds := monitoring.ReadLocalSamplingSeconds(policyCtx, *settingsDB)
+			cancel()
+			if seconds > 0 {
+				effectiveInterval = time.Duration(seconds) * time.Second
+			}
+		}
+		timer := time.NewTimer(effectiveInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

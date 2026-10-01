@@ -653,6 +653,12 @@ func OpenStore(ctx context.Context, path string, options StoreOptions) (*Store, 
 			return nil, fmt.Errorf("restrict database permissions: %w", err)
 		}
 	}
+	if options.MaxBytes == DefaultDatabaseLimit {
+		if err := store.initStorageSettings(ctx); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
@@ -682,6 +688,16 @@ INSERT INTO schema_meta(version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema
 UPDATE schema_meta SET version=2 WHERE version < 2;
 UPDATE schema_meta SET version=3 WHERE version < 3;
 UPDATE schema_meta SET version=4 WHERE version < 4;
+CREATE TABLE IF NOT EXISTS storage_settings (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), max_bytes INTEGER NOT NULL,
+ sample_seconds INTEGER NOT NULL, pressure_seconds INTEGER NOT NULL,
+ adaptive INTEGER NOT NULL, notifications INTEGER NOT NULL, revision INTEGER NOT NULL,
+ pressure_state TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS storage_notifications (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, message TEXT NOT NULL,
+ created_at TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0, event_key TEXT UNIQUE NOT NULL
+);
 CREATE TABLE IF NOT EXISTS browser_auth_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state_json BLOB NOT NULL
@@ -1485,34 +1501,42 @@ func collectorEpochAuthorityStatusTx(ctx context.Context, tx *sql.Tx, serverID c
 }
 
 func (s *Store) ensureWritable(ctx context.Context) error {
-	if s.maxBytes <= 0 || s.path == ":memory:" {
-		return nil
-	}
-	usage, err := s.StorageBytes()
+	maxBytes, databaseOnly, err := s.storageBudget(ctx)
 	if err != nil {
 		return err
 	}
-	threshold := s.maxBytes
+	if maxBytes <= 0 || s.path == ":memory:" {
+		return nil
+	}
+	usage, err := s.budgetUsage(databaseOnly)
+	if err != nil {
+		return err
+	}
+	if err := s.updateStoragePressure(ctx, usage); err != nil {
+		return err
+	}
+	threshold := maxBytes
 	// Begin bounded eviction before the hard ceiling for normal installations.
 	// Tiny test budgets are intentionally treated as hard ceilings so callers
 	// can exercise derived-write pressure without deleting their fixture data.
-	if s.maxBytes >= 8<<20 {
-		threshold = s.maxBytes * 9 / 10
+	if maxBytes >= 8<<20 {
+		threshold = maxBytes * 9 / 10
 	}
 	if usage < threshold {
 		return nil
 	}
-	if s.maxBytes < 8<<20 {
+	if maxBytes < 8<<20 {
 		return ErrStoragePressure
 	}
-	if err := s.evictForStorage(ctx); err != nil {
+	if err := s.evictForStorage(ctx, maxBytes, databaseOnly); err != nil {
 		return err
 	}
-	usage, err = s.StorageBytes()
+	usage, err = s.budgetUsage(databaseOnly)
 	if err != nil {
 		return err
 	}
-	if usage >= s.maxBytes {
+	if usage >= maxBytes {
+		_ = s.notifyStorageLimitReached(ctx)
 		return ErrStoragePressure
 	}
 	return nil
@@ -1522,13 +1546,24 @@ func (s *Store) ensureWritable(ctx context.Context) error {
 // never deletes server identity or traffic-period state. SQLite pages are
 // reclaimed through WAL checkpointing and incremental vacuum; no full VACUUM
 // is run on the write path.
-func (s *Store) evictForStorage(ctx context.Context) error {
+func (s *Store) evictForStorage(ctx context.Context, maxBytes int64, databaseOnly bool) error {
+	before, err := s.budgetUsage(databaseOnly)
+	if err != nil {
+		return err
+	}
+	var removed int64
+	defer func() {
+		after, err := s.budgetUsage(databaseOnly)
+		if err == nil {
+			_ = s.notifyStorageCleanup(ctx, removed, before, after)
+		}
+	}()
 	for attempt := 0; attempt < 20; attempt++ {
-		usage, err := s.StorageBytes()
+		usage, err := s.budgetUsage(databaseOnly)
 		if err != nil {
 			return err
 		}
-		if usage < s.maxBytes*85/100 {
+		if usage < maxBytes*85/100 {
 			return nil
 		}
 		cutoff := FormatPersistedTime(time.Now().Add(time.Minute))
@@ -1576,7 +1611,11 @@ func (s *Store) evictForStorage(ctx context.Context) error {
 			// history and logs before giving up. Protected traffic periods are not
 			// part of this fallback.
 			for _, table := range []string{"metric_rollups", "log_entries"} {
-				result, execErr := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` ORDER BY rowid ASC LIMIT ?)`, MaxPageItems)
+				timeColumn := "bucket_start"
+				if table == "log_entries" {
+					timeColumn = "timestamp"
+				}
+				result, execErr := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` ORDER BY `+timeColumn+` ASC, rowid ASC LIMIT ?)`, MaxPageItems)
 				if execErr != nil {
 					_ = tx.Rollback()
 					return execErr
@@ -1591,6 +1630,7 @@ func (s *Store) evictForStorage(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		removed += deleted
 		if deleted == 0 {
 			return nil
 		}
@@ -1605,14 +1645,18 @@ func (s *Store) evictForStorage(ctx context.Context) error {
 // ingestion transaction; a derived retry must never make that raw commit
 // disappear.
 func (s *Store) ensureDerivedWritable(ctx context.Context) error {
-	if s.maxBytes <= 0 || s.path == ":memory:" {
-		return nil
-	}
-	usage, err := s.StorageBytes()
+	maxBytes, databaseOnly, err := s.storageBudget(ctx)
 	if err != nil {
 		return err
 	}
-	if usage >= s.maxBytes-4096 {
+	if maxBytes <= 0 || s.path == ":memory:" {
+		return nil
+	}
+	usage, err := s.budgetUsage(databaseOnly)
+	if err != nil {
+		return err
+	}
+	if usage >= maxBytes-4096 {
 		return ErrStoragePressure
 	}
 	return nil

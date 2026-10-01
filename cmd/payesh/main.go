@@ -217,7 +217,7 @@ func cpuServices(ctx context.Context, args []string) error {
 }
 
 func localStoreOptions() monitoring.StoreOptions {
-	return monitoring.StoreOptions{MaxBytes: 512 << 20, ManagedPaths: []string{"/var/log/payesh"}}
+	return monitoring.StoreOptions{MaxBytes: monitoring.DefaultDatabaseLimit, ManagedPaths: []string{"/var/log/payesh"}}
 }
 
 func collect(ctx context.Context, args []string) error {

@@ -116,6 +116,15 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 		identities[i] = identity
 	}
 
+	policy, _, err := store.StorageSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.SampleSeconds = 10
+	if err := store.SaveStorageSettings(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	var samplingPolicies [2]atomic.Int64
 	clients := make([]*AgentClient, len(ids))
 	for i := range ids {
 		spool, spoolErr := OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), MaxSpoolBytes)
@@ -123,6 +132,13 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 			t.Fatal(spoolErr)
 		}
 		clients[i] = &AgentClient{URL: endpoint + "/node/v1", Identity: identities[i], TrustPEM: serverTrust, Spool: spool, Hello: contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}}}
+	}
+	// One legacy peer and one upgraded peer share the same hub. Legacy peers
+	// receive no extension field; upgraded peers receive the configured cadence.
+	clients[1].Hello.Capabilities = append(clients[1].Hello.Capabilities, "sampling-policy")
+	for i, client := range clients {
+		index := i
+		client.SamplingPolicy = func(seconds int) { samplingPolicies[index].Store(int64(seconds)) }
 	}
 
 	var wg sync.WaitGroup
@@ -143,6 +159,9 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 		if runErr != nil {
 			t.Fatalf("agent run: %v", runErr)
 		}
+	}
+	if samplingPolicies[0].Load() != 0 || samplingPolicies[1].Load() != 10 {
+		t.Fatalf("sampling negotiation: legacy=%d upgraded=%d", samplingPolicies[0].Load(), samplingPolicies[1].Load())
 	}
 
 	for i, id := range ids {

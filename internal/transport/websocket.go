@@ -256,6 +256,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 					ack.Error = &contracts.Error{Code: "batch_rejected", Message: receiveErr.Error(), Retryable: true}
 				}
 			}
+			ack.SamplingIntervalSeconds = connection.samplingPolicySeconds(ctx)
 			body, _ := json.Marshal(ack)
 			if ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "acknowledgement", Request: envelope.Request, SentAt: time.Now().UTC(), Body: body}) != nil {
 				return
@@ -471,9 +472,28 @@ type AgentClient struct {
 	RenewBefore  time.Duration
 	// ActionHandler executes authenticated typed jobs locally. The transport
 	// does not interpret action arguments as shell commands.
-	ActionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse
-	actionMu      sync.Mutex
-	actionResult  map[string]contracts.ActionResponse
+	ActionHandler  func(context.Context, contracts.ActionRequest) contracts.ActionResponse
+	SamplingPolicy func(int)
+	actionMu       sync.Mutex
+	actionResult   map[string]contracts.ActionResponse
+}
+
+// Only advertise an extension to peers that explicitly support it. Older
+// agents reject unknown acknowledgement fields rather than ignoring them.
+func (c *Connection) samplingPolicySeconds(ctx context.Context) int {
+	c.stateMu.RLock()
+	supported := false
+	for _, capability := range c.hello.Capabilities {
+		if capability == "sampling-policy" {
+			supported = true
+			break
+		}
+	}
+	c.stateMu.RUnlock()
+	if !supported {
+		return 0
+	}
+	return c.hub.Store.SamplingSeconds(ctx)
 }
 
 type inboundEnvelope struct {
@@ -882,6 +902,9 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 				var ack contracts.Acknowledgement
 				if err := decodeBody(envelope.Body, &ack); err != nil {
 					return err
+				}
+				if a.SamplingPolicy != nil && ack.SamplingIntervalSeconds >= 5 && ack.SamplingIntervalSeconds <= 3600 {
+					a.SamplingPolicy(ack.SamplingIntervalSeconds)
 				}
 				if !ack.Accepted {
 					if ack.Error != nil && ack.Error.Retryable {

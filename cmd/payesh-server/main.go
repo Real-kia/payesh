@@ -79,7 +79,7 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	store, err := monitoring.OpenStore(ctx, *dbPath, monitoring.StoreOptions{MaxBytes: 512 << 20, ManagedPaths: []string{"/var/log/payesh"}})
+	store, err := monitoring.OpenStore(ctx, *dbPath, monitoring.StoreOptions{MaxBytes: monitoring.DefaultDatabaseLimit, ManagedPaths: []string{"/var/log/payesh"}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open store:", err)
 		os.Exit(1)
@@ -130,6 +130,9 @@ func main() {
 			}
 			if livenessErr := evaluateUnreachable(pruneCtx, store, alertEngine, now); livenessErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "evaluate node liveness:", livenessErr)
+			}
+			if limitErr := store.EnforceStorageLimit(pruneCtx); limitErr != nil && pruneCtx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "storage limit:", limitErr)
 			}
 			if _, pruneErr := store.Prune(pruneCtx, now, monitoring.DefaultRetentionPolicy()); pruneErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "retention prune:", pruneErr)
