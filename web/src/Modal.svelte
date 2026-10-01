@@ -11,6 +11,7 @@
   export let cancelText: string = 'Cancel';
   export let hideCancel: boolean = false;
   export let busy: boolean = false;
+  export let confirmDisabled: boolean = false;
   export let onConfirm: () => void = () => {};
   export let onCancel: () => void = () => {};
 
@@ -79,7 +80,7 @@
         <button
           class={`button ${tone === 'danger' ? 'danger' : 'primary'}`}
           type="button"
-          disabled={busy}
+          disabled={busy || confirmDisabled}
           on:click={onConfirm}
         >
           {#if busy}

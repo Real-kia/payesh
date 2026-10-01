@@ -125,6 +125,10 @@
   let packageServerId = '';
   let moduleInstallations: ModuleInstallation[] = [];
   let packageBusy = '';
+  let packageDialog: Module | null = null;
+  let packageStep: 'target' | 'source' = 'target';
+  let packageStatusBusy = false;
+  let packageStatusFailed = false;
   let packageError = '';
   let alerts: AlertState[] = [];
   let alertsState: PreviewState = 'loading';
@@ -358,7 +362,7 @@
     if (updateCheckBusy || PREVIEW_MODE) return;
     updateCheckBusy = true; updateCheckError = '';
     try { updateStatus = await apiClient.checkLatestUpdate(); }
-    catch (error) { updateCheckError = error instanceof Error ? error.message : 'Could not check GitHub Releases.'; }
+    catch (error) { updateCheckError = error instanceof Error ? error.message : 'Could not check the latest version.'; }
     finally { updateCheckBusy = false; }
   }
 
@@ -485,8 +489,7 @@
         if (cached?.savedAt && Array.isArray(cached.items)) {
           modules = cached.items; modulesState = modules.length ? 'ready' : 'empty';
           hasCachedCatalog = true;
-          if (!packageServerId && servers.length) packageServerId = servers[0].id;
-          if (packageServerId) void loadServerModules();
+
 
         }
       } catch { /* corrupt cache is ignored and replaced by a fresh response */ }
@@ -500,8 +503,7 @@
       modulesError = page.warning ?? '';
       modulesState = modules.length ? 'ready' : 'empty';
       if (typeof window !== 'undefined') window.localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), items: modules }));
-      if (!packageServerId && servers.length) packageServerId = servers[0].id;
-      if (packageServerId) void loadServerModules();
+
     } catch (error) {
       modulesError = error instanceof DOMException && error.name === 'AbortError' ? 'The package catalog request timed out.' : error instanceof Error ? error.message : 'Unable to load modules.';
       if (!hasCachedCatalog) modulesState = 'error';
@@ -514,16 +516,29 @@
   async function loadServerModules(): Promise<void> {
     if (!packageServerId) { moduleInstallations = []; return; }
     packageError = '';
+    packageStatusBusy = true; packageStatusFailed = false;
+    moduleInstallations = [];
+    const target = packageServerId;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     try {
-      moduleInstallations = (await apiClient.listServerModules(packageServerId, { signal: controller.signal })).items;
+      const result = await apiClient.listServerModules(target, { signal: controller.signal });
+      if (target === packageServerId) moduleInstallations = result.items;
     } catch (error) {
+      if (target !== packageServerId) return;
+      packageStatusFailed = true;
       packageError = error instanceof DOMException && error.name === 'AbortError' ? 'Package status took too long to load. The cached catalog is still available.' : error instanceof Error ? error.message : 'Unable to load package state.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       window.clearTimeout(timeout);
+      if (target === packageServerId) packageStatusBusy = false;
     }
+  }
+
+  function openPackageDialog(module: Module) {
+    packageDialog = module; packageStep = 'target'; packageError = '';
+    packageSource = 'github'; packageLocation = ''; packageVersion = ''; packageManifest = ''; packageSignature = '';
+    packageServerId = ''; moduleInstallations = [];
   }
 
   function moduleState(moduleId: string): ModuleInstallation | undefined {
@@ -547,6 +562,7 @@
       const result = await apiClient.installModuleSource(packageServerId, module.id, source, moduleState(module.id)?.revision ?? '0', operationKey('package-install'));
       moduleInstallations = [...moduleInstallations.filter((item) => item.module_id !== module.id), result];
       showNotice(`${module.name} installed.`);
+      packageDialog = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Package installation failed.';
       await loadServerModules();
@@ -1457,7 +1473,32 @@
       <div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => navigate('settings')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
     {/if}
 
-    {#if activePage === 'monitoring'}
+    {#if !PREVIEW_MODE && authExpired}
+      <section class="page" aria-label="Sign in">
+          <div class="login-screen">
+            <div class="login-card">
+              <div class="brand-mark large"><span>P</span></div>
+              <h2>Sign in to hub</h2>
+              <p class="muted center">Authenticate to access fleet operations.</p>
+              <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
+                <label>
+                  <span>Username</span>
+                  <input bind:value={authUsername} autocomplete="username" placeholder="owner" required />
+                </label>
+                <label>
+                  <span>Password</span>
+                  <input type="password" bind:value={authPassword} autocomplete="current-password" placeholder="••••••••••••" required />
+                </label>
+                {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
+                {#if insecureConnection}<p class="insecure-login" role="note"><Icon name="alert-triangle" size={14} /> Not encrypted: your password is sent without SSL. Add a domain in Settings to enable HTTPS.</p>{/if}
+                <button class="button primary" type="submit" disabled={authBusy}>
+                  {authBusy ? 'Authenticating…' : 'Sign in to Console'}
+                </button>
+              </form>
+            </div>
+          </div>
+      </section>
+    {:else if activePage === 'monitoring'}
       <section class="page" aria-labelledby="monitoring-title">
         <div class="page-heading">
           <div><h1 id="monitoring-title">Server monitoring</h1></div>
@@ -1474,13 +1515,21 @@
             <article class="panel monitoring-card">
               <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
               {#if server.connectionState === 'connected'}<div class="monitoring-metrics">
-                <div><span>CPU</span><strong>{metricValue(server.metrics.cpu)}</strong></div>
-                <div><span>Memory</span><strong>{metricValue(server.metrics.memory)}</strong></div>
-                <div><span>Disk</span><strong>{metricValue(server.metrics.disk)}</strong></div>
-                <div><span>Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
-                <div><span>Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
+                {#each [['CPU', 'cpu', 'teal'], ['Memory', 'memory', 'purple'], ['Disk', 'disk', 'blue']] as metric}
+                  {@const value = server.metrics[metric[1] as 'cpu' | 'memory' | 'disk']}
+                  {@const history = server.metricHistory?.ranges['15m']?.[metric[1] as 'cpu' | 'memory' | 'disk'] ?? []}
+                  <div class={`monitoring-gauge ${metric[2]}`} class:resource-warning={value !== null && value >= 75} class:resource-critical={value !== null && value >= 90}>
+                    <span>{metric[0]}</span><strong>{metricValue(value)}</strong>
+                    <div class="monitoring-spark" aria-label={`${metric[0]} recent history`}>
+                      {#if history.filter(point => point !== null).length > 1}<Sparkline values={history} tone={metric[2] as 'teal' | 'purple' | 'blue'} />{:else}<small class="faint">Awaiting history</small>{/if}
+                    </div>
+                    <div class="resource-track" role="meter" aria-label={`${metric[0]} usage`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={value ?? undefined} aria-valuetext={value === null ? 'Unavailable' : metricValue(value)}><i style:width={`${Math.max(0, Math.min(100, value ?? 0))}%`}></i></div>
+                  </div>
+                {/each}
+                <div class="monitoring-network"><span>↓ Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
+                <div class="monitoring-network"><span>↑ Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
               </div>{/if}
-              <div class="monitoring-bottom">{#if server.connectionState === 'connected'}<span>Traffic: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
+              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected'}<span>Traffic: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
               <button class="button ghost small" type="button" on:click={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
             </article>
           {/each}
@@ -1698,25 +1747,6 @@
           </button>
         </div>
 
-        <article class="panel package-target">
-          <label>
-            <span>Target server</span>
-            <select bind:value={packageServerId} on:change={() => void loadServerModules()}>
-              {#each servers as server}
-                <option value={server.id}>{server.name} ({server.architecture})</option>
-              {/each}
-            </select>
-          </label>
-          <div class="package-source-fields">
-            <label>Source<select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}><option value="github">GitHub</option><option value="local">Local path</option><option value="url">URL</option></select></label>
-            <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}<input bind:value={packageLocation} placeholder={packageSource === 'github' ? 'Real-kia/payesh' : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} /></label>
-            {#if packageSource === 'github'}
-              <label>Release<input bind:value={packageVersion} placeholder="Catalog default" /></label>
-            {:else}
-              <details><summary>Package metadata</summary><label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label><label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label></details>
-            {/if}
-          </div>
-        </article>
 
         {#if modulesError && modulesState === 'ready'}<p class="muted" role="status">{modulesError}</p>{/if}
         {#if modulesState === 'loading'}
@@ -1742,23 +1772,8 @@
                 </div>
                 <h2>{module.name}</h2>
                 <p class="muted module-desc">{module.description || 'Optional Payesh extension capability.'}</p>
-                <div class="module-meta">
-                  <span>Status: <strong class="capitalize">{moduleState(module.id)?.state || 'not installed'}</strong></span>
-                </div>
-                {#if module.id === 'process-monitoring' && moduleState(module.id)?.state === 'enabled'}
-                  <button class="button primary small full-width" type="button" on:click={() => { detailTab = 'processes'; navigate('server', packageServerId); }}>View processes</button>
-                {/if}
-                {#if packageSource === 'github'}<a class="button ghost small full-width" href={packageGitHubURL(module)} target="_blank" rel="noopener noreferrer">{['amd64', 'arm64'].includes(servers.find((server) => server.id === packageServerId)?.architecture || '') ? 'Download archive' : 'View release'}</a>{/if}
-                {#if !moduleState(module.id) || ['unavailable', 'available', 'failed'].includes(moduleState(module.id)?.state || '')}
-                  {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={module.install_supported === false || !!packageBusy || !packageServerId || (packageSource !== 'github' && !packageLocation.trim())} on:click={() => void installPackage(module)}>{module.install_supported === false ? 'Requires Payesh update' : packageBusy === `${module.id}:install` ? 'Installing…' : 'Install'}</button>{/if}
-                {:else if moduleState(module.id)?.state === 'installed-disabled' && myAccount?.permission !== 'read'}
-                  <div class="job-actions">
-                    <button class="button primary small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'enable')}>Enable</button>
-                    <button class="button ghost small" disabled={!!packageBusy} on:click={() => void packageAction(module, 'remove')}>Remove</button>
-                  </div>
-                {:else if moduleState(module.id)?.state === 'enabled' && myAccount?.permission !== 'read'}
-                  <button class="button ghost small full-width" disabled={!!packageBusy} on:click={() => void packageAction(module, 'disable')}>Disable module</button>
-                {/if}
+                <div class="module-meta"><span>Install on your master or a node</span></div>
+                {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={module.install_supported === false || !!packageBusy || !servers.length} on:click={() => openPackageDialog(module)}>{module.install_supported === false ? 'Requires Payesh update' : 'Install'}</button>{/if}
               </article>
             {/each}
           </div>
@@ -1817,14 +1832,15 @@
           </article>
           {/if}
           {#if settingsSection === 'updates'}<article class="panel account-management">
-            <div class="panel-heading"><div><h2>Versions & updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{updateCheckBusy ? 'Checking…' : 'Check GitHub'}</button></div>
+            <div class="panel-heading"><div><h2>Versions & updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{#if updateCheckBusy}<span class="version-spinner" aria-hidden="true"></span>Checking version…{:else}<Icon name="refresh" size={14} />Check version{/if}</button></div>
             <div class="settings-meta-box">
               <div class="meta-row"><span>Installed version</span><strong>{updateStatus?.current ? `v${updateStatus.current}` : servers.find(server => server.role !== 'node')?.version ?? 'Unavailable'}</strong></div>
             </div>
-            {#if updateStatus}
+            {#if updateCheckBusy}<div class="version-checking" role="status"><span class="version-spinner" aria-hidden="true"></span><div><strong>Checking for updates</strong><small>Comparing your installed version with the latest release…</small></div></div>{/if}
+            {#if updateStatus && !updateCheckBusy && !updateCheckError}
               <div class="settings-meta-box">
                 <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
-                <div class="meta-row"><span>Status</span><span class={`status-pill ${updateStatus.update_available ? 'pending' : 'healthy'}`}>{updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
+                <div class="meta-row"><span>Status</span><span class={`status-pill ${updateStatus.update_available ? 'pending' : 'healthy'}`} role="status"><Icon name={updateStatus.update_available ? 'refresh' : 'check'} size={14} />{updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
               </div>
             {/if}
             {#if updateCheckError}<p class="form-error" role="alert">{updateCheckError}</p>{/if}
@@ -2268,30 +2284,7 @@
           </div>
         </div>
 
-        {#if authExpired}
-          <div class="login-screen">
-            <div class="login-card">
-              <div class="brand-mark large"><span>P</span></div>
-              <h2>Sign in to hub</h2>
-              <p class="muted center">Authenticate to access fleet operations.</p>
-              <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
-                <label>
-                  <span>Username</span>
-                  <input bind:value={authUsername} autocomplete="username" placeholder="owner" required />
-                </label>
-                <label>
-                  <span>Password</span>
-                  <input type="password" bind:value={authPassword} autocomplete="current-password" placeholder="••••••••••••" required />
-                </label>
-                {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
-                {#if insecureConnection}<p class="insecure-login" role="note"><Icon name="alert-triangle" size={14} /> Not encrypted: your password is sent without SSL. Add a domain in Settings to enable HTTPS.</p>{/if}
-                <button class="button primary" type="submit" disabled={authBusy}>
-                  {authBusy ? 'Authenticating…' : 'Sign in to Console'}
-                </button>
-              </form>
-            </div>
-          </div>
-        {:else if previewState === 'loading'}
+        {#if previewState === 'loading'}
           <div class="state-panel">
             <div class="loading-spinner" aria-hidden="true"></div>
             <h2>Connecting to fleet…</h2>
@@ -2489,6 +2482,33 @@
   </main>
 </div>
 
+<Modal open={!!packageDialog} title={packageDialog ? `${packageDialog.name}` : 'Install package'} description={packageStep === 'target' ? 'Choose where to install or manage this package.' : `Install on ${servers.find(server => server.id === packageServerId)?.name ?? 'selected server'}.`} icon="packages" confirmText={packageStep === 'target' ? 'Continue' : packageBusy ? 'Installing…' : 'Install package'} busy={!!packageBusy} confirmDisabled={!packageServerId || packageStatusBusy || packageStatusFailed || (packageStep === 'source' && (['enabled', 'installed-disabled', 'downloading', 'verifying', 'installing', 'updating', 'removing'].includes(moduleState(packageDialog?.id ?? '')?.state ?? '') || (packageSource !== 'github' && !packageLocation.trim())))} onCancel={() => { packageDialog = null; }} onConfirm={() => { if (packageStep === 'target') packageStep = 'source'; else if (packageDialog) void installPackage(packageDialog); }}>
+  {#if packageStep === 'target'}
+    <label class="package-dialog-label">Install on<select bind:value={packageServerId} disabled={!!packageBusy} on:change={() => void loadServerModules()}><option value="" disabled>Choose master or node</option>{#each servers as server}<option value={server.id}>{server.name} · {server.role === 'node' ? 'Node' : 'Master'} ({server.architecture})</option>{/each}</select></label>
+    {#if packageStatusBusy}<p class="muted" role="status">Loading package status…</p>{/if}
+  {:else}
+    <button class="button ghost small" disabled={!!packageBusy} on:click={() => packageStep = 'target'}>Change server</button>
+          <div class="package-source-fields">
+            <label>Source<select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}><option value="github">GitHub</option><option value="local">Local path</option><option value="url">URL</option></select></label>
+            <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}<input bind:value={packageLocation} placeholder={packageSource === 'github' ? 'Real-kia/payesh' : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} /></label>
+            {#if packageSource === 'github'}
+              <label>Release<input bind:value={packageVersion} placeholder="Catalog default" /></label>
+            {:else}
+              <details><summary>Package metadata</summary><label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label><label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label></details>
+            {/if}
+          </div>
+    {#if packageDialog}
+      {@const state = moduleState(packageDialog.id)?.state}
+      {#if state === 'enabled' || state === 'installed-disabled'}
+        <p class="muted">This package is {state === 'enabled' ? 'enabled' : 'installed and disabled'} on this server.</p>
+        <div class="job-actions"><button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, state === 'enabled' ? 'disable' : 'enable'); }}>{state === 'enabled' ? 'Disable' : 'Enable'}</button>{#if state === 'installed-disabled'}<button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, 'remove'); }}>Remove</button>{/if}</div>
+      {/if}
+      {#if packageSource === 'github'}<a href={packageGitHubURL(packageDialog)} target="_blank" rel="noopener noreferrer">View package archive ↗</a>{/if}
+    {/if}
+  {/if}
+  {#if packageError}<p class="form-error" role="alert">{packageError}</p>{#if packageStatusFailed}<button class="button ghost small" on:click={() => void loadServerModules()}>Retry status</button>{/if}{/if}
+</Modal>
+
 <Modal
   open={modalDialog.open}
   title={modalDialog.title}
@@ -2671,15 +2691,34 @@
     box-shadow: var(--shadow-sm);
   }
 
-  .monitoring-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .monitoring-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
   .monitoring-card { display: flex; flex-direction: column; gap: 18px; }
   .monitoring-top, .monitoring-bottom { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
   .monitoring-top h2 { margin: 0 0 4px; font-size: 17px; }
-  .monitoring-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
-  .monitoring-metrics div { padding: 12px; border-radius: var(--radius-md); background: var(--surface-muted); }
+  .monitoring-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+  .monitoring-metrics > div { padding: 12px; border-radius: var(--radius-md); background: var(--surface-muted); }
   .monitoring-metrics span, .monitoring-metrics strong { display: block; }
   .monitoring-metrics span, .monitoring-bottom { color: var(--muted); font-size: 12px; }
   .monitoring-metrics strong { margin-top: 5px; font-size: 18px; color: var(--ink); }
+  .monitoring-gauge { grid-column: span 2; border: 1px solid var(--line); --metric-color: var(--teal); }
+  .monitoring-gauge.purple { --metric-color: var(--purple); }
+  .monitoring-gauge.blue { --metric-color: var(--blue); }
+  .monitoring-gauge.resource-warning { --metric-color: var(--warning, #d97706); }
+  .monitoring-gauge.resource-critical { --metric-color: var(--danger); }
+  .monitoring-gauge strong { color: var(--metric-color); }
+  .monitoring-spark { height: 40px; margin: 12px 0 8px; }
+  .resource-track { height: 4px; background: var(--line); border-radius: 9px; overflow: hidden; }
+  .resource-track i { display: block; height: 100%; background: var(--metric-color); transition: width .4s ease; }
+  .monitoring-network { grid-column: span 3; border: 1px solid var(--line); }
+  .monitoring-network strong { font-size: 15px; }
+  .package-dialog-label { display: grid; gap: 8px; }
+  .package-dialog-label select { width: 100%; }
+  .version-spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--teal); border-radius: 50%; animation: version-spin .8s linear infinite; flex-shrink: 0; }
+  .version-checking { display: flex; align-items: center; gap: 14px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 18px; margin: 12px 0; }
+  .version-checking .version-spinner { width: 24px; height: 24px; }
+  .version-checking small { display: block; margin-top: 5px; color: var(--muted); }
+  @keyframes version-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .version-spinner { animation: none; } .resource-track i { transition: none; } }
   .monitoring-bottom { flex-wrap: wrap; }
   .monitoring-card > button { align-self: flex-start; margin-top: auto; }
   .account-management { grid-column: 1 / -1; }
@@ -3762,25 +3801,6 @@
   /* --------------------------------------------------------------------------
      PACKAGES & EXTENSIONS
      -------------------------------------------------------------------------- */
-  .package-target {
-    margin-bottom: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .package-target label {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .package-target label span {
-    color: var(--muted);
-  }
-  .package-target select {
-    min-width: 260px;
-  }
   .info-hint {
     font-size: 12px;
     margin: 0;
@@ -3831,10 +3851,10 @@
     padding-top: 8px;
     border-top: 1px solid var(--line);
   }
-  .package-source-fields { display: grid; grid-template-columns: 150px minmax(200px, 1fr) 160px; align-items: start; gap: 16px; width: 100%; }
+  .package-source-fields { display: grid; grid-template-columns: 1fr; align-items: start; gap: 16px; width: 100%; }
   .package-source-fields label { display: grid; gap: 8px; min-width: 0; }
   .package-source-fields select, .package-source-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
-  .package-source-fields details { grid-column: 2 / -1; }
+  .package-source-fields details { grid-column: auto; }
   .package-source-fields summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
   .package-source-fields details label { margin-bottom: 12px; }
 
