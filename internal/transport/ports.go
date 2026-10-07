@@ -34,6 +34,7 @@ type portState struct {
 type NodePortStatus struct {
 	Port            string                `json:"port"`
 	URL             string                `json:"url,omitempty"`
+	CASHA256        string                `json:"ca_sha256,omitempty"`
 	PreviousPorts   []string              `json:"previous_ports"`
 	LegacyDashboard bool                  `json:"legacy_dashboard"`
 	Nodes           []NodeMigrationStatus `json:"nodes"`
@@ -52,6 +53,10 @@ type NodeMigrationStatus struct {
 // NodePorts owns TLS-only listeners. Historical endpoints stay available until
 // an operator retires them after every enrolled node confirms the new endpoint.
 type NodePorts struct {
+	// CertSHA256 is the hex SHA-256 of the node listener's own certificate when
+	// the operator supplied one that system trust stores will not recognise.
+	// Joining nodes pin it. Empty for publicly trusted certificates.
+	CertSHA256 string
 	syncFile   func(*os.File) error
 	mu         sync.Mutex
 	path, host string
@@ -219,7 +224,7 @@ func (p *NodePorts) Change(port int) error {
 var errNodeStatusCursor = errors.New("invalid node migration cursor")
 
 func (p *NodePorts) statusLocked(ctx context.Context, limit int, after string) (NodePortStatus, error) {
-	status := NodePortStatus{Port: p.currentLocked(), URL: p.publicURL(p.currentLocked()), PreviousPorts: append([]string{}, p.state.Ports[:len(p.state.Ports)-1]...), LegacyDashboard: p.state.LegacyDashboard, Nodes: []NodeMigrationStatus{}}
+	status := NodePortStatus{Port: p.currentLocked(), URL: p.publicURL(p.currentLocked()), PreviousPorts: append([]string{}, p.state.Ports[:len(p.state.Ports)-1]...), LegacyDashboard: p.state.LegacyDashboard, Nodes: []NodeMigrationStatus{}, CASHA256: p.CertSHA256}
 	cursor := ""
 	collect := after == ""
 	var lastID contracts.ServerID

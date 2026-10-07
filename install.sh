@@ -18,6 +18,11 @@
 #   --domain NAME      get a free HTTPS certificate for NAME          PAYESH_DOMAIN
 #   --email ADDR       optional Let's Encrypt contact email           PAYESH_EMAIL
 #   --check            only run the host preflight, change nothing
+#   --join-url URL     hub node endpoint (wss://HOST:PORT/node/v1) to join   PAYESH_JOIN_URL
+#   --join-job ID      enrollment job id shown by the hub dashboard          PAYESH_JOIN_JOB
+#   --join-token TOKEN single-use pairing token shown by the hub dashboard   PAYESH_JOIN_TOKEN
+#   --join-ca-sha256 H pin the hub certificate (SHA-256 of its DER); needed only for
+#                      hubs that do not use a publicly trusted certificate    PAYESH_JOIN_CA_SHA256
 #   --convert-from ROLE explicit hub/standalone to node conversion
 #   --transport-url URL destination hub wss URL for conversion
 #   --node-identity-file PATH enrolled node identity for conversion
@@ -48,6 +53,10 @@ CONVERT_FROM=""
 TRANSPORT_URL=""
 NODE_IDENTITY_FILE=""
 HUB_CA_FILE=""
+JOIN_URL="${PAYESH_JOIN_URL:-}"
+JOIN_JOB="${PAYESH_JOIN_JOB:-}"
+JOIN_TOKEN="${PAYESH_JOIN_TOKEN:-}"
+JOIN_CA_SHA256="${PAYESH_JOIN_CA_SHA256:-}"
 UNINSTALL=0
 REMOVE_DATA=0
 REMOVE_INSTALLER=0
@@ -82,11 +91,15 @@ while [ $# -gt 0 ]; do
 	--transport-url) TRANSPORT_URL="${2:?--transport-url needs a value}"; shift 2 ;;
 	--node-identity-file) NODE_IDENTITY_FILE="${2:?--node-identity-file needs a value}"; shift 2 ;;
 	--hub-ca-file) HUB_CA_FILE="${2:?--hub-ca-file needs a value}"; shift 2 ;;
+	--join-url) JOIN_URL="${2:?--join-url needs a value}"; shift 2 ;;
+	--join-job) JOIN_JOB="${2:?--join-job needs a value}"; shift 2 ;;
+	--join-token) JOIN_TOKEN="${2:?--join-token needs a value}"; shift 2 ;;
+	--join-ca-sha256) JOIN_CA_SHA256="${2:?--join-ca-sha256 needs a value}"; shift 2 ;;
 	--uninstall) UNINSTALL=1; shift ;;
 	--remove-data) REMOVE_DATA=1; shift ;;
 	--remove-installer) REMOVE_INSTALLER=1; shift ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--release-mode production|preview] [--release-public-key PATH --release-key-id ID] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--release-mode production|preview] [--release-public-key PATH --release-key-id ID] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]] [--join-url wss://HOST:PORT/node/v1 --join-job ID --join-token TOKEN [--join-ca-sha256 HEX]]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
@@ -96,6 +109,36 @@ done
 if [ -n "$CONVERT_FROM" ]; then
 	[ "$ROLE" = node ] || die "conversion target must be node"
 	[ -n "$TRANSPORT_URL" ] && [ -n "$NODE_IDENTITY_FILE" ] && [ -n "$HUB_CA_FILE" ] || die "conversion needs --transport-url, --node-identity-file, and --hub-ca-file"
+fi
+
+# Joining a hub from this server's shell: the dashboard prints a one-line command
+# carrying a single-use token. Reject anything that could inject extra settings.
+if [ -n "$JOIN_URL$JOIN_JOB$JOIN_TOKEN$JOIN_CA_SHA256" ]; then
+	[ -n "$JOIN_URL" ] && [ -n "$JOIN_JOB" ] && [ -n "$JOIN_TOKEN" ] || die "joining a hub needs --join-url, --join-job and --join-token together"
+	[ "$ROLE" = node ] || die "--join-* options require --role node"
+	case "$JOIN_URL" in
+	wss://*/node/v1) ;;
+	*) die "--join-url must look like wss://HOST:PORT/node/v1" ;;
+	esac
+	join_host="${JOIN_URL#wss://}"
+	join_host="${join_host%/node/v1}"
+	case "$join_host" in
+	"" | *[!A-Za-z0-9.:-]*) die "--join-url has an unexpected host" ;;
+	esac
+	case "$JOIN_JOB" in
+	"" | *[!A-Za-z0-9._-]*) die "--join-job contains unexpected characters" ;;
+	esac
+	[ "${#JOIN_JOB}" -le 128 ] || die "--join-job is too long"
+	case "$JOIN_TOKEN" in
+	"" | *[!A-Za-z0-9._~-]*) die "--join-token contains unexpected characters" ;;
+	esac
+	[ "${#JOIN_TOKEN}" -ge 16 ] && [ "${#JOIN_TOKEN}" -le 512 ] || die "--join-token has an unexpected length"
+	if [ -n "$JOIN_CA_SHA256" ]; then
+		case "$JOIN_CA_SHA256" in
+		*[!0-9A-Fa-f]*) die "--join-ca-sha256 must be 64 hex characters" ;;
+		esac
+		[ "${#JOIN_CA_SHA256}" -eq 64 ] || die "--join-ca-sha256 must be 64 hex characters"
+	fi
 fi
 
 UPDATING=0
@@ -368,6 +411,62 @@ if [ -n "$CONVERT_FROM" ]; then
 	set -- "$@" --convert-from "$CONVERT_FROM" --transport-url "$TRANSPORT_URL" --node-identity-file "$NODE_IDENTITY_FILE" --hub-ca-file "$HUB_CA_FILE"
 fi
 
+
+# join_hub writes the node's connection settings and restarts the agent, which
+# then enrolls itself with the single-use token and stores its own identity.
+join_hub() {
+	host="${JOIN_URL#wss://}"
+	host="${host%%/*}"
+	hostname="${host%%:*}"
+	port="${host##*:}"
+	[ "$port" != "$host" ] || port=443
+	mkdir -p /etc/payesh /var/lib/payesh
+	if [ -n "$JOIN_CA_SHA256" ]; then
+		command -v openssl >/dev/null 2>&1 || die "openssl is required to pin the hub certificate"
+		openssl s_client -connect "$hostname:$port" -servername "$hostname" </dev/null 2>/dev/null | openssl x509 >"$WORK/hub-cert.pem" 2>/dev/null || die "could not fetch the hub certificate from $hostname:$port"
+		got="$(openssl x509 -in "$WORK/hub-cert.pem" -outform DER | sha256 | tr 'A-F' 'a-f')"
+		want="$(printf '%s' "$JOIN_CA_SHA256" | tr 'A-F' 'a-f')"
+		[ "$got" = "$want" ] || die "hub certificate does not match the pinned fingerprint; not joining"
+		cp "$WORK/hub-cert.pem" /var/lib/payesh/hub-ca.pem
+		chmod 0644 /var/lib/payesh/hub-ca.pem
+		trust=/var/lib/payesh/hub-ca.pem
+	else
+		trust=""
+		for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+			if [ -r "$candidate" ]; then trust="$candidate"; break; fi
+		done
+		[ -n "$trust" ] || die "no system CA bundle found; pass --join-ca-sha256 to pin the hub certificate"
+	fi
+	bootstrap="${JOIN_URL%/node/v1}/node/bootstrap/v1"
+	umask 077
+	{
+		# Keep unrelated settings; replace only the ones this join owns.
+		if [ -f /etc/payesh/payesh.env ]; then
+			grep -v -E '^(PAYESH_TRANSPORT_URL|PAYESH_BOOTSTRAP_URL|PAYESH_BOOTSTRAP_JOB|PAYESH_BOOTSTRAP_TOKEN|PAYESH_HUB_TRUST_FILE|PAYESH_NODE_IDENTITY_FILE)=' /etc/payesh/payesh.env || true
+		fi
+		printf 'PAYESH_TRANSPORT_URL=%s\n' "$JOIN_URL"
+		printf 'PAYESH_BOOTSTRAP_URL=%s\n' "$bootstrap"
+		printf 'PAYESH_BOOTSTRAP_JOB=%s\n' "$JOIN_JOB"
+		printf 'PAYESH_BOOTSTRAP_TOKEN=%s\n' "$JOIN_TOKEN"
+		printf 'PAYESH_HUB_TRUST_FILE=%s\n' "$trust"
+		printf 'PAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n'
+	} >"$WORK/payesh.env.new"
+	cp "$WORK/payesh.env.new" /etc/payesh/payesh.env
+	if id payesh >/dev/null 2>&1; then
+		chown root:payesh /etc/payesh/payesh.env
+		chown -R payesh:payesh /var/lib/payesh 2>/dev/null || true
+	fi
+	chmod 0640 /etc/payesh/payesh.env
+	if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+		systemctl restart payesh-agent
+	elif command -v rc-service >/dev/null 2>&1; then
+		rc-service payesh-agent restart
+	else
+		warn "restart payesh-agent yourself to start joining the hub"
+	fi
+	say "This server is joining the hub. It appears in the dashboard within a minute."
+}
+
 # --- install ---------------------------------------------------------------
 
 # Old signed installers without this read-only capability fail closed.
@@ -398,6 +497,7 @@ if [ -d "$MATRIX" ]; then
 fi
 "$INSTALLER" --install --start --artifact-dir "$ARTIFACTS" "$@" >"$WORK/result.json"
 say "Payesh $VERSION $DONE."
+if [ -n "$JOIN_URL" ]; then join_hub; fi
 case "$ROLE" in
 standalone | hub) ;;
 *) exit 0 ;;

@@ -838,6 +838,7 @@ components:
       properties:
         port: { type: string, pattern: '^[0-9]{1,5}$', description: Current local listener port encoded as a decimal string. }
         url: { type: string, format: uri, description: Advertised wss node endpoint; omitted until a public TLS URL is available. }
+        ca_sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex SHA-256 of the node listener's own certificate; present only when that certificate is operator-supplied rather than publicly trusted. Joining nodes pin it. }
         previous_ports: { type: array, maxItems: 15, items: { type: string, pattern: '^[0-9]{1,5}$' } }
         legacy_dashboard: { type: boolean, description: Legacy node routes remain enabled on dashboard listeners. }
         nodes:

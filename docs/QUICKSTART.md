@@ -25,8 +25,29 @@ Run this on the server that will become a node:
 curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --role node
 ```
 
-This installs the agent. To send data to a hub, enroll the node through the
-hub's **Add Server** flow; a node without enrollment collects locally only.
+This installs the agent. A node without enrollment collects locally only. To
+join a hub, either add the server from the hub's **Add Server** page over SSH, or
+use the one-command option below.
+
+#### Join a hub from the server's own command line
+
+On the hub, open **Add server**, find **Or run one command on the server**, enter
+a name and select **Create command**. Copy the command and run it on the new
+server as a user with `sudo`. It looks like this:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- \
+  --release-mode preview --role node \
+  --join-url wss://HUB:9797/node/v1 --join-job JOB_ID --join-token TOKEN
+```
+
+The server installs the agent, enrolls itself with the single-use token and
+appears in the dashboard within a minute. The token expires after a short time
+and works once; treat the command like a password. If the hub uses its own
+certificate instead of a publicly trusted one, the command also carries
+`--join-ca-sha256 FINGERPRINT`, which pins that certificate (this needs
+`openssl` on the new server). The hub must have HTTPS enabled first, and the new
+server needs outbound access to the hub's node port.
 
 The hub receives node connections on a separate TLS port, **9797** by default.
 Enable HTTPS on the hub and allow this port in its firewall before enrolling

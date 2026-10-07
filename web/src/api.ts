@@ -51,7 +51,7 @@ export type Server = {
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
-export type NodeTransportStatus = { port: string; url?: string; previous_ports: string[]; legacy_dashboard: boolean; pending: number; total: number; migrated: number; next_cursor?: string; nodes: { id: string; name: string; state: 'migrated' | 'pending' | 'update-required' | 'failed'; error?: string }[] };
+export type NodeTransportStatus = { port: string; url?: string; ca_sha256?: string; previous_ports: string[]; legacy_dashboard: boolean; pending: number; total: number; migrated: number; next_cursor?: string; nodes: { id: string; name: string; state: 'migrated' | 'pending' | 'update-required' | 'failed'; error?: string }[] };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
 export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'failed'; target?: string; message?: string; updated_at: string };
@@ -136,6 +136,7 @@ export type Job = {
 };
 export type SetupRequest = { setup_secret: string; username: string; password: string };
 export type EnrollmentRequest = { token: string; idempotency_key: string };
+export type EnrollmentToken = { server_id: string; token: string; expires_at: string };
 export type UpdateRequest = { release: string; selected_server_ids: string[]; idempotency_key: string; expires_at?: string };
 export type InstallRequest = {
   server_id: string;
@@ -270,6 +271,12 @@ export class ApiClient {
   enrollServer(serverId: string, body: EnrollmentRequest, options: QueryOptions = {}): Promise<Job> {
     return this.request<Job>(`/servers/${encodeURIComponent(serverId)}/enrollment`, {
       method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal
+    });
+  }
+
+  createEnrollmentToken(serverId: string, idempotencyKey: string, options: QueryOptions = {}): Promise<EnrollmentToken> {
+    return this.request<EnrollmentToken>(`/servers/${encodeURIComponent(serverId)}/enrollment-token`, {
+      method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ idempotency_key: idempotencyKey }), signal: options.signal
     });
   }
 

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -250,6 +253,9 @@ func main() {
 		}
 		defer nodePorts.Close()
 		nodeHub.Ports = nodePorts
+		if nodeConfig.CertFile != "" {
+			nodePorts.CertSHA256 = certificateSHA256(nodeConfig.CertFile)
+		}
 		nodePorts.Start()
 	}
 	if *bootstrapSecret != "" {
@@ -696,4 +702,19 @@ func evaluateUnreachable(ctx context.Context, store *monitoring.Store, engine *a
 		cursor = page.NextCursor
 	}
 	return fmt.Errorf("server count exceeds liveness evaluation bound")
+}
+
+// certificateSHA256 returns the hex SHA-256 of the first certificate in a PEM
+// file, or an empty string when it cannot be read.
+func certificateSHA256(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(sum[:])
 }

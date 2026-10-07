@@ -279,6 +279,12 @@
   let labelBusy = false;
   let newServerName = '';
   let createServerBusy = false;
+  let joinName = '';
+  let joinBusy = false;
+  let joinError = '';
+  let joinCommand = '';
+  let joinExpiresAt = '';
+  let joinCopied = false;
   let deleteServerBusy = false;
   let modules: Module[] = [];
   let modulesState: PreviewState = 'loading';
@@ -506,6 +512,7 @@
     installKeyPassphrase = '';
     installFingerprint = '';
     jobError = '';
+    joinName = ''; joinError = ''; joinCommand = ''; joinExpiresAt = ''; joinCopied = false;
     if (!activeInstall || !['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)) {
       saveActiveInstall(null);
     }
@@ -956,6 +963,46 @@
     activeInstall.simulatedProgress = p;
     activeInstall.currentStage = targetStage;
     saveActiveInstall(activeInstall);
+  }
+
+  async function createJoinCommand(): Promise<void> {
+    const name = joinName.trim();
+    if (!name || joinBusy) return;
+    joinBusy = true; joinError = ''; joinCommand = ''; joinExpiresAt = ''; joinCopied = false;
+    let createdServerId: string | null = null;
+    let createdRevision = '0';
+    try {
+      const transport = await apiClient.getNodeTransportSettings({ limit: 1 });
+      if (!transport.url) {
+        joinError = 'Enable HTTPS for this hub under Settings → SSL / TLS first. Nodes need its public address to connect.';
+        return;
+      }
+      const created = await apiClient.createServer({ name, address: 'joins by command' });
+      createdServerId = created.id;
+      createdRevision = created.configuration_revision ?? '0';
+      const issued = await apiClient.createEnrollmentToken(created.id, operationKey('join-token'));
+      const job = await apiClient.enrollServer(created.id, { token: issued.token, idempotency_key: operationKey('join-enroll') });
+      servers = [...servers, emptyApiServer(created)];
+      joinExpiresAt = issued.expires_at;
+      joinCommand = `curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --role node --join-url ${transport.url} --join-job ${job.id} --join-token ${issued.token}${transport.ca_sha256 ? ` --join-ca-sha256 ${transport.ca_sha256}` : ''}`;
+    } catch (error) {
+      if (createdServerId) {
+        try { await apiClient.deleteServer(createdServerId, createdRevision); } catch { /* the pending server can be removed from the server list */ }
+      }
+      joinError = error instanceof Error ? error.message : 'Unable to create the join command.';
+    } finally {
+      joinBusy = false;
+    }
+  }
+
+  async function copyJoinCommand(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(joinCommand);
+      joinCopied = true;
+    } catch {
+      joinCopied = false;
+      joinError = 'Copy failed. Select the command and copy it manually.';
+    }
   }
 
   async function createPendingServer(): Promise<void> {
@@ -1992,6 +2039,24 @@
             </div>
           </form>
           {#if jobError}<p class="form-error">{jobError}</p>{/if}
+        </article>
+        <article class="panel">
+          <h2>Or run one command on the server</h2>
+          <p class="muted">Use this when you are already logged in to the server. Name it, copy the command, and run it there as a user with sudo. The server installs Payesh and joins this hub.</p>
+          <form class="form-grid" on:submit|preventDefault={() => void createJoinCommand()}>
+            <label class="form-wide">Server name<input bind:value={joinName} maxlength="128" placeholder="e.g. EU-Node-02" required /></label>
+            <div class="setup-actions form-wide">
+              <button class="button primary" type="submit" disabled={joinBusy || !joinName.trim()}>{joinBusy ? 'Creating…' : 'Create command'}</button>
+            </div>
+          </form>
+          {#if joinError}<p class="form-error" role="alert">{joinError}</p>{/if}
+          {#if joinCommand}
+            <div class="join-command">
+              <pre tabindex="0" aria-label="Join command"><code>{joinCommand}</code></pre>
+              <button class="button small" type="button" on:click={() => void copyJoinCommand()}>{joinCopied ? 'Copied' : 'Copy command'}</button>
+              <p class="muted">The command contains a single-use token and stops working at {new Date(joinExpiresAt).toLocaleString()}. Treat it like a password.</p>
+            </div>
+          {/if}
         </article>
       </section>
 
@@ -4085,6 +4150,19 @@
     border-color: var(--teal);
   }
   .form-grid small { color: var(--muted); font-size: 11px; }
+  .join-command { display: grid; gap: 10px; margin-top: 16px; }
+  .join-command pre {
+    margin: 0;
+    padding: 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+    font-size: 12px;
+  }
+  .join-command .button { justify-self: start; }
   .setup-actions {
     grid-column: 1 / -1;
     display: flex;
