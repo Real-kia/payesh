@@ -192,6 +192,25 @@ publishes one automatically (`.github/workflows/release.yml`):
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
+#### Signed releases from GitHub (enables dashboard and fleet updates)
+
+Updates applied from the dashboard's fleet flow require a signed release. To have
+the release workflow sign for you, create an Ed25519 key pair once, keep the
+private key secret and publish the public key:
+
+```sh
+openssl genpkey -algorithm ED25519 -out release-private.key
+openssl pkey -in release-private.key -pubout -out release.pub
+```
+
+In the repository settings add the private key as the `RELEASE_SIGNING_KEY`
+secret and a name for it as the `RELEASE_SIGNING_KEY_ID` variable (for example
+`release-2026`). The workflow then signs every tagged release. On each server,
+put `release.pub` at a root-owned path and set `PAYESH_RELEASE_MODE=production`,
+`PAYESH_RELEASE_PUBLIC_KEY` and `PAYESH_RELEASE_KEY_ID` in the root-managed
+update-worker environment. Without the secret, releases are published unsigned
+and can only be applied with `--release-mode preview` from a server shell.
+
 These release bundles are unsigned (`signing_key_id` is
 `unavailable-local`). The installer verifies them against the release's
 `SHA256SUMS` over HTTPS only when `--release-mode preview` is explicitly selected, which catches corrupted or incomplete downloads

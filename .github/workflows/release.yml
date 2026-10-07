@@ -44,6 +44,24 @@ jobs:
         run: |
           gh release download v0.2.11 --repo Real-kia/payesh \
             --pattern 'process-monitoring-linux-*' --dir "dist/releases/$VERSION"
+      - name: Sign release (optional)
+        # Set the RELEASE_SIGNING_KEY repository secret (an Ed25519 private key)
+        # and the RELEASE_SIGNING_KEY_ID repository variable to publish a signed
+        # release. Signed releases can be applied from the dashboard and across a
+        # fleet. Without them the release is published unsigned (preview mode).
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ] || [ -z "$RELEASE_SIGNING_KEY_ID" ]; then
+            echo "No signing key configured; publishing an unsigned preview release."
+            exit 0
+          fi
+          umask 077
+          keyfile="$(mktemp)"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" >"$keyfile"
+          make release-sign RELEASE_VERSION="$VERSION" RELEASE_SIGNING_KEY="$keyfile" RELEASE_SIGNING_KEY_ID="$RELEASE_SIGNING_KEY_ID"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
