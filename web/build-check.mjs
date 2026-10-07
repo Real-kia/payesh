@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url)));
 const lock = JSON.parse(readFileSync(new URL('./package-lock.json', import.meta.url)));
-if (pkg.dependencies.svelte !== '5.38.7' || pkg.dependencies.uplot !== '1.6.32' || pkg.devDependencies['@sveltejs/vite-plugin-svelte'] !== '6.2.1' || pkg.devDependencies.typescript !== '5.9.2' || pkg.devDependencies.vite !== '7.1.5' || pkg.devDependencies['svelte-check'] !== '4.3.1') {
+if (pkg.dependencies.svelte !== '5.57.2' || pkg.dependencies.uplot !== '1.6.32' || pkg.devDependencies['@sveltejs/vite-plugin-svelte'] !== '6.2.1' || pkg.devDependencies.typescript !== '5.9.2' || pkg.devDependencies.vite !== '7.3.7' || pkg.devDependencies['svelte-check'] !== '4.3.1') {
   throw new Error('frontend dependency pins changed without contract review');
 }
 const root = lock.packages?.[''];
