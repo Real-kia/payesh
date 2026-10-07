@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -26,6 +27,7 @@ type StorageSettings struct {
 type StorageStatus struct {
 	Settings               StorageSettings `json:"settings"`
 	DatabaseBytes          int64           `json:"database_bytes"`
+	RecoverySnapshotBytes  int64           `json:"recovery_snapshot_bytes"`
 	EffectiveSampleSeconds int             `json:"effective_sample_seconds"`
 }
 type StorageNotification struct {
@@ -105,6 +107,17 @@ func (s *Store) DatabaseBytes() (int64, error) {
 	}
 	return total, nil
 }
+
+// databaseRecoveryBytes includes retained snapshots in pressure accounting
+// while DatabaseBytes remains the live SQLite file metric exposed by the API.
+func (s *Store) databaseRecoveryBytes() (int64, error) {
+	total, err := s.DatabaseBytes()
+	if err != nil || s.path == ":memory:" {
+		return total, err
+	}
+	backups, err := managedFileBytes(s.path+".schema-backups", make(map[string]bool))
+	return total + backups, err
+}
 func (p StorageSettings) EffectiveSampleSeconds() int {
 	if p.AdaptiveSampling && p.PressureState == "saving" {
 		return p.PressureSampleSeconds
@@ -117,7 +130,20 @@ func (s *Store) StorageStatus(ctx context.Context) (StorageStatus, error) {
 		return StorageStatus{}, err
 	}
 	usage, err := s.DatabaseBytes()
-	return StorageStatus{p, usage, p.EffectiveSampleSeconds()}, err
+	if err != nil {
+		return StorageStatus{}, err
+	}
+	var recovery int64
+	if s.path != ":memory:" {
+		recovery, err = managedFileBytes(s.path+".schema-backups", make(map[string]bool))
+	}
+	if err != nil {
+		return StorageStatus{}, err
+	}
+	if usage < 0 || recovery < 0 || usage > math.MaxInt64-recovery {
+		return StorageStatus{}, errors.New("storage footprint exceeds supported range")
+	}
+	return StorageStatus{Settings: p, DatabaseBytes: usage, RecoverySnapshotBytes: recovery, EffectiveSampleSeconds: p.EffectiveSampleSeconds()}, nil
 }
 func (s *Store) SamplingSeconds(ctx context.Context) int {
 	p, _, err := s.StorageSettings(ctx)
@@ -164,7 +190,7 @@ func (s *Store) storageBudget(ctx context.Context) (int64, bool, error) {
 }
 func (s *Store) budgetUsage(databaseOnly bool) (int64, error) {
 	if databaseOnly {
-		return s.DatabaseBytes()
+		return s.databaseRecoveryBytes()
 	}
 	return s.StorageBytes()
 }

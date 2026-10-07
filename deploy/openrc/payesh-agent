@@ -1,20 +1,16 @@
 #!/sbin/openrc-run
-
 name="payesh-agent"
 description="Payesh local monitoring agent"
 command="/bin/sh"
-command_args="-c 'set -o pipefail; /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null'"
+command_args="-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -n \"\$PAYESH_TRANSPORT_URL\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'"
 command_user="payesh:payesh"
 supervisor="supervise-daemon"
 supervise_daemon_args="--respawn-delay 5"
-# The local ingest process consumes the node-sample stream. pipefail keeps
-# either child failure visible to supervise-daemon; routine acknowledgements
-# stay out of the rotating operational log.
 output_log="/dev/null"
 error_log="/var/log/payesh/agent.err"
 
 start_pre() {
-	/usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null || return 1
+	/bin/su -s /bin/sh -c 'if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -z "$PAYESH_TRANSPORT_URL" ]; then exec /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null; fi' payesh || return 1
 }
 
 depend() {

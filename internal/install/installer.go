@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Real-kia/payesh/internal/dbschema"
+	"github.com/Real-kia/payesh/internal/monitoring"
 	"io"
 	"os"
 	"os/exec"
@@ -94,8 +96,8 @@ type InstallOptions struct {
 	// the installer on the target. This makes repair and uninstall available
 	// after the temporary release directory has been removed.
 	InstallerPath string
-	// Verify is mandatory and is called immediately before an artifact is
-	// staged. A release verifier should validate the signed release manifest
+	// Verify is mandatory and verifies every artifact before any replacement.
+	// A release verifier should validate the signed release manifest
 	// and digest; the installer intentionally has no unsigned fallback.
 	Verify func(name, path string) error
 
@@ -106,7 +108,12 @@ type InstallOptions struct {
 	CommandRunner  CommandRunner
 	ServiceRemover ServiceRemover
 	Conversion     *ConversionConfig
-	Start          bool
+	// ProbeConversion verifies authenticated destination connectivity before
+	// any conversion mutation. Nil uses the real TLS/WebSocket endpoint probe.
+	ProbeConversion func(context.Context, ConversionConfig) error
+	// ServiceActive supplies original-service state for isolated supervisors.
+	ServiceActive func(context.Context, string, string, string) (bool, error)
+	Start         bool
 }
 
 // InstallResult describes work completed.  Installed is appended only after
@@ -134,18 +141,34 @@ const (
 	logDir         = "/var/log/payesh"
 )
 
-// Install performs the non-network portion of installation.  It is safe to
+// Install performs installation and, for role conversion, verifies destination
+// transport connectivity before changing the host. It is safe to
 // call repeatedly: data and identity files are never removed, role-specific
 // artifacts are the only binaries replaced, and service definitions are
 // atomically rewritten.  If an operation fails, completed artifacts remain
 // usable and the next invocation continues from them.
-func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
+func Install(ctx context.Context, opts InstallOptions) (result InstallResult, installErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	root := opts.Root
 	if root == "" {
 		root = "/"
+	}
+	// The authenticated candidate installer checks its own compiled registry
+	// before service actions, conversion recovery, account creation or file writes.
+	if err := CheckInstalledDatabaseSchema(ctx, root); err != nil {
+		return InstallResult{}, err
+	}
+	if opts.Conversion != nil || conversionRecoveryPending(root) {
+		lock, err := lockConversion(root)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		defer lock.Close()
+		if err := RecoverConversion(root, opts); err != nil {
+			return InstallResult{}, fmt.Errorf("recover prior conversion: %w", err)
+		}
 	}
 	role := opts.Role
 	if role == "" {
@@ -177,6 +200,123 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	if opts.Verify == nil {
 		return InstallResult{Preflight: p}, ErrArtifactVerifierRequired
 	}
+	verifiedSources := make(map[string]string, len(p.Artifacts))
+	for _, name := range p.Artifacts {
+		source, err := artifactSource(opts, name)
+		if err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		if err := opts.Verify(name, source); err != nil {
+			return InstallResult{Preflight: p}, fmt.Errorf("verify artifact %s: %w", name, err)
+		}
+		verifiedSources[name] = source
+	}
+	if strings.TrimSpace(opts.InstallerPath) != "" {
+		if err := validateArtifactPath(strings.TrimSpace(opts.InstallerPath), false); err != nil {
+			return InstallResult{Preflight: p}, fmt.Errorf("validate installer artifact: %w", err)
+		}
+	}
+	if converting {
+		staging, err := os.MkdirTemp("", "payesh-conversion-enrollment-")
+		if err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		defer os.RemoveAll(staging)
+		frozen := *opts.Conversion
+		identity := filepath.Join(staging, "node-identity.json")
+		trust := filepath.Join(staging, "hub-ca.pem")
+		if err := copyConversionPath(frozen.NodeIdentityFile, identity, &conversionCopyBudget{remaining: 1 << 20}); err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		if err := copyConversionPath(frozen.HubCAFile, trust, &conversionCopyBudget{remaining: 1 << 20}); err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		frozen.NodeIdentityFile, frozen.HubCAFile = identity, trust
+		opts.Conversion = &frozen
+		probe := opts.ProbeConversion
+		if probe == nil {
+			probe = CheckConversionTransport
+		}
+		if err := probe(ctx, *opts.Conversion); err != nil {
+			return InstallResult{Preflight: p}, fmt.Errorf("verify destination node transport: %w", err)
+		}
+	}
+
+	var conversionTx *conversionTransaction
+	if converting {
+		restartOriginal := opts.Start
+		originalActive := []string{}
+		for _, service := range serviceNames(state.Role) {
+			if opts.ServiceActive != nil {
+				active, err := opts.ServiceActive(ctx, root, state.Init, service)
+				if err != nil {
+					return InstallResult{Preflight: p}, fmt.Errorf("inspect original service: %w", err)
+				}
+				restartOriginal = restartOriginal || active
+				if active {
+					originalActive = append(originalActive, service)
+				}
+			} else if root == "/" {
+				var output []byte
+				var checkErr error
+				if state.Init == "systemd" {
+					output, checkErr = chooseRunner(opts.CommandRunner).Run(ctx, "systemctl", "is-active", service)
+					status := strings.TrimSpace(string(output))
+					if status != "active" && status != "inactive" && status != "failed" {
+						return InstallResult{Preflight: p}, errors.New("cannot determine original service status")
+					}
+					restartOriginal = restartOriginal || status == "active"
+					if status == "active" {
+						originalActive = append(originalActive, service)
+					}
+				} else {
+					output, checkErr = chooseRunner(opts.CommandRunner).Run(ctx, "rc-service", service, "status")
+					if checkErr != nil && !strings.Contains(string(output), "stopped") {
+						return InstallResult{Preflight: p}, errors.New("cannot determine original service status")
+					}
+					restartOriginal = restartOriginal || checkErr == nil
+					if checkErr == nil {
+						originalActive = append(originalActive, service)
+					}
+				}
+			}
+		}
+
+		if root != "/" && opts.ServiceActive == nil && opts.Start {
+			originalActive = serviceNames(state.Role)
+		}
+		conversionTx, err = beginConversion(root, state, restartOriginal)
+		if err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		conversionTx.snapshot.ActiveServices = originalActive
+		journal, err := json.Marshal(conversionTx.snapshot)
+		if err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+		if err := writeAtomic(filepath.Join(conversionTx.dir, "journal.json"), journal, 0600); err != nil {
+			return InstallResult{Preflight: p}, err
+		}
+
+		defer func() {
+			if installErr != nil {
+				if recoveryErr := conversionTx.rollback(opts); recoveryErr != nil {
+					installErr = errors.Join(installErr, fmt.Errorf("conversion rollback: %w", recoveryErr))
+				}
+			} else {
+				installErr = os.RemoveAll(conversionTx.dir)
+			}
+		}()
+	}
+	if converting {
+		remover := opts.ServiceRemover
+		if remover == nil {
+			remover = commandServiceRemover{runner: chooseRunner(opts.CommandRunner)}
+		}
+		if err := remover.Remove(ctx, root, state.Init, serviceNames(state.Role), true); err != nil {
+			return InstallResult{Preflight: p}, fmt.Errorf("stop old hub services: %w", err)
+		}
+	}
 
 	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" {
@@ -195,7 +335,7 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		return InstallResult{Preflight: p}, fmt.Errorf("ensure service account: %w", err)
 	}
 
-	result := InstallResult{Preflight: p, Account: account}
+	result = InstallResult{Preflight: p, Account: account}
 	if stateErr == nil && state.Role == role && state.Init == p.Init {
 		result.Resumed = len(state.Installed) > 0
 	}
@@ -242,13 +382,7 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 	}
 
 	for _, name := range p.Artifacts {
-		source, err := artifactSource(opts, name)
-		if err != nil {
-			return result, err
-		}
-		if err := opts.Verify(name, source); err != nil {
-			return result, fmt.Errorf("verify artifact %s: %w", name, err)
-		}
+		source := verifiedSources[name]
 		destination := artifactDestination(root, name)
 		if err := installArtifact(source, destination); err != nil {
 			return result, fmt.Errorf("install artifact %s: %w", name, err)
@@ -278,13 +412,6 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 	}
 	if converting {
-		remover := opts.ServiceRemover
-		if remover == nil {
-			remover = commandServiceRemover{runner: chooseRunner(opts.CommandRunner)}
-		}
-		if err := remover.Remove(ctx, root, state.Init, serviceNames(state.Role), true); err != nil {
-			return result, fmt.Errorf("stop old hub services: %w", err)
-		}
 		if err := writeNodeConversionConfig(root, *opts.Conversion, account); err != nil {
 			return result, fmt.Errorf("configure node enrollment: %w", err)
 		}
@@ -300,6 +427,9 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 		}
 	}
 
+	if err := writeRootInstallationScope(root, role, p.Init); err != nil {
+		return result, fmt.Errorf("write protected installation scope: %w", err)
+	}
 	services := serviceNames(role)
 	result.Services = append([]string(nil), services...)
 	if len(services) > 0 {
@@ -734,9 +864,44 @@ func serviceDefinition(init, service, listen string) (string, bool) {
 	if init == "openrc" {
 		switch service {
 		case "payesh-agent":
-			return "#!/sbin/openrc-run\nname=\"payesh-agent\"\ndescription=\"Payesh local monitoring agent\"\ncommand=\"/bin/sh\"\ncommand_args=\"-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then . /etc/payesh/payesh.env; fi; if [ -n \\\"$PAYESH_TRANSPORT_URL\\\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'\"\ncommand_user=\"payesh:payesh\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/dev/null\"\nerror_log=\"/var/log/payesh/agent.err\"\n\nstart_pre() {\n\tif [ -z \"$PAYESH_TRANSPORT_URL\" ]; then /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null || return 1; fi\n}\n\ndepend() {\n\tneed net\n\tafter firewall\n}\n", true
+			return `#!/sbin/openrc-run
+name="payesh-agent"
+description="Payesh local monitoring agent"
+command="/bin/sh"
+command_args="-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -n \"\$PAYESH_TRANSPORT_URL\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'"
+command_user="payesh:payesh"
+supervisor="supervise-daemon"
+supervise_daemon_args="--respawn-delay 5"
+output_log="/dev/null"
+error_log="/var/log/payesh/agent.err"
+
+start_pre() {
+	/bin/su -s /bin/sh -c 'if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -z "$PAYESH_TRANSPORT_URL" ]; then exec /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null; fi' payesh || return 1
+}
+
+depend() {
+	need net
+	after firewall
+}
+`, true
 		case "payesh-server":
-			return fmt.Sprintf("#!/sbin/openrc-run\nname=\"payesh-server\"\ndescription=\"Payesh local monitoring server\"\ncommand=\"/usr/bin/payesh-server\"\ncommand_args=\"-db=/var/lib/payesh/payesh.db -listen=%s\"\ncommand_user=\"payesh:payesh\"\ncapabilities=\"^cap_net_bind_service\"\nsupervisor=\"supervise-daemon\"\nsupervise_daemon_args=\"--respawn-delay 5\"\noutput_log=\"/var/log/payesh/server.log\"\nerror_log=\"/var/log/payesh/server.err\"\n\ndepend() {\n\tneed net\n\tafter firewall\n}\n", openRCArg(listen)), true
+			return fmt.Sprintf(`#!/sbin/openrc-run
+name="payesh-server"
+description="Payesh local monitoring server"
+command="/bin/sh"
+command_args="-c 'if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; exec /usr/bin/payesh-server -db=/var/lib/payesh/payesh.db -listen=%s'"
+command_user="payesh:payesh"
+capabilities="^cap_net_bind_service"
+supervisor="supervise-daemon"
+supervise_daemon_args="--respawn-delay 5"
+output_log="/var/log/payesh/server.log"
+error_log="/var/log/payesh/server.err"
+
+depend() {
+	need net
+	after firewall
+}
+`, openRCArg(listen)), true
 		}
 	}
 	return "", false
@@ -920,4 +1085,23 @@ func containsAccountLine(contents, name string) bool {
 		}
 	}
 	return false
+}
+
+// CheckInstalledDatabaseSchema is the candidate installer's read-only capability
+// check. It never opens Store, runs migrations, or changes installation state.
+func CheckInstalledDatabaseSchema(ctx context.Context, root string) error {
+	if root == "" {
+		root = "/"
+	}
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("database: installation root must be a clean absolute path")
+	}
+	schema, exists, err := dbschema.ReadInstalledSchemaVersion(ctx, rooted(root, filepath.Join(dataDir, "payesh.db")))
+	if err != nil {
+		return err
+	}
+	if exists {
+		return monitoring.StoreSchemaRegistry().CheckSchemaCompatibility(schema)
+	}
+	return nil
 }

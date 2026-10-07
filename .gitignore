@@ -59,3 +59,26 @@ plans/
 docs/handoffs/
 docs/reviews/
 scratch/
+
+# Local completion review (contains workspace-specific verification evidence)
+docs/reviews/COMPLETION_REVIEW.md
+
+# Local live-server acceptance evidence
+docs/reviews/LIVE_ACCEPTANCE_CHECKLIST.md
+docs/reviews/MASTER_LIVE_TESTS.md
+docs/reviews/NODE_LIVE_TESTS.md
+docs/reviews/CONTRACT_CI_TESTS.md
+docs/reviews/LINUX_TRANSPORT_TESTS.md
+
+# Local production and UI acceptance evidence
+docs/reviews/ui-2026-10-02/
+docs/reviews/UI_PRODUCTION_REVIEW.md
+docs/reviews/DEPLOYMENT_ACCEPTANCE.md
+docs/reviews/PRODUCTION_TRUST_WORK.md
+docs/reviews/PRODUCTION_CONTRACT_WORK.md
+
+# Disposable browser acceptance harness
+web/.qa/
+
+# Local browser automation evidence
+.playwright-mcp/

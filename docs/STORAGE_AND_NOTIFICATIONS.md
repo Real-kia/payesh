@@ -3,8 +3,10 @@
 Open **Settings → Storage & sampling**. Only the owner can save changes;
 other authenticated users can view the current usage and settings.
 
-The default maximum database size is **1 GB** (1,000,000,000 bytes), including
-SQLite journal/WAL files. The limit can be set between 0.128 and 64 GB. It is
+The default storage limit is **1 GB** (1,000,000,000 bytes), including
+SQLite journal/WAL files and retained schema recovery snapshots. Settings shows
+live database usage and recovery snapshots separately; the usage bar includes
+both. The limit can be set between 0.128 and 64 GB. It is
 persisted in the database and survives updates and service restarts. Separate
 CLI ingestion and dashboard processes read the same settings.
 
@@ -22,6 +24,9 @@ above the hard limit, new history writes pause and remote nodes retain
 unacknowledged batches in their bounded spool. Protected state and filesystem
 conditions can prevent immediate reclamation; the limit is not a guarantee
 that existing files shrink instantly after saving a smaller value.
+History cleanup preserves recovery snapshots. The owner must preserve or move
+existing recovery copies before retrying a migration when its recovery budget
+or two-snapshot limit is exhausted.
 
 ## Sampling
 
@@ -61,4 +66,6 @@ continues to handle monitoring alerts separately.
 The authenticated API exposes `GET/PUT /api/v1/settings/storage` and
 `GET/POST /api/v1/notifications`. Settings writes require owner access, CSRF,
 and the current revision. Notification mutations require edit access and
-CSRF. Settings reads include current database bytes and effective cadence.
+CSRF. Settings reads include physical live SQLite bytes in `database_bytes`,
+retained recovery bytes in `recovery_snapshot_bytes` (zero when absent), and
+effective cadence. Storage pressure uses the sum of both byte counts.

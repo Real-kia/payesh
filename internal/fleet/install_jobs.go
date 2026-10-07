@@ -286,7 +286,10 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 	}
 	serverID := contracts.ServerID(request.ServerID)
 	var nodeIdentityJSON []byte
-	if s.Authority != nil && serverID != "" {
+	// Never mint a node identity for a server this hub no longer owns; without an
+	// identity the installation cannot complete, which fails closed.
+	owned := s.Store == nil || serverID == "" || s.Store.RequireServerAuthority(context.Background(), serverID) == nil
+	if s.Authority != nil && serverID != "" && owned {
 		identity, err := s.Authority.IssueNodeIdentity(serverID, s.now())
 		if err == nil {
 			nodeIdentityJSON, _ = json.Marshal(identity)

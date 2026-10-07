@@ -62,7 +62,7 @@ func TestEnvironmentBool(t *testing.T) {
 	}
 }
 
-func TestNodeTransportConfigRequiresExplicitCompleteTLSConfiguration(t *testing.T) {
+func TestNodeTransportConfigSupportsAutomaticTLSOrCompleteCustomTLS(t *testing.T) {
 	if config, err := newNodeTransportConfig("", "", ""); err != nil || config.Enabled() {
 		t.Fatalf("empty node transport should be disabled: config=%+v err=%v", config, err)
 	}
@@ -75,6 +75,9 @@ func TestNodeTransportConfigRequiresExplicitCompleteTLSConfiguration(t *testing.
 		if _, err := newNodeTransportConfig(values[0], values[1], values[2]); err == nil {
 			t.Fatalf("accepted unsafe node transport config: %q", values)
 		}
+	}
+	if config, err := newNodeTransportConfig("127.0.0.1:9797", "", ""); err != nil || !config.Enabled() {
+		t.Fatalf("automatic TLS listener rejected: config=%+v err=%v", config, err)
 	}
 	config, err := newNodeTransportConfig("127.0.0.1:9797", "/tmp/cert", "/tmp/key")
 	if err != nil || !config.Enabled() || config.CertFile != "/tmp/cert" || config.KeyFile != "/tmp/key" {

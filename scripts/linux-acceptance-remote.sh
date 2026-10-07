@@ -195,26 +195,18 @@ if (( cpu_acceptance_ready == 1 )); then
   fi
 fi
 
-primary_iface=''
-if command -v ip >/dev/null 2>&1; then
-  primary_iface=$(ip -o route show default 2>/dev/null | awk 'NR == 1 {print $5}') || true
-fi
-foreign_iface="${PAYESH_ACCEPTANCE_FOREIGN_IFACE:-$primary_iface}"
 if ! profile_has bandwidth; then
   :
 elif (( EUID != 0 )); then
   mark_unsupported bandwidth_tc "root-required"
 elif command -v ip >/dev/null 2>&1 && command -v tc >/dev/null 2>&1; then
   current_stage=bandwidth_tc
-  if [[ -n "$foreign_iface" ]]; then
-    PAYESH_LINUX_ACCEPTANCE=1 PAYESH_ACCEPTANCE_FOREIGN_IFACE="$foreign_iface" "$base/bandwidth-acceptance" -test.run TestLinuxTCBackendAcceptance -test.v
-  else
-    PAYESH_LINUX_ACCEPTANCE=1 "$base/bandwidth-acceptance" -test.run TestLinuxTCBackendAcceptance -test.v
-  fi
+  bash "$base/linux-network-acceptance.sh" --run-isolated env PAYESH_LINUX_ACCEPTANCE=1 "$base/bandwidth-acceptance" -test.run TestLinuxTCBackendAcceptance -test.v
+  echo 'foreign_host_qdisc=NOT_TESTED reason=isolated-network-namespace'
   echo 'bandwidth_tc=PASS'
   if [[ "${PAYESH_LINUX_THROUGHPUT:-0}" == "1" ]]; then
     throughput_output="$work/throughput.log"
-    if ! PAYESH_LINUX_THROUGHPUT=1 "$base/bandwidth-acceptance" -test.run TestLinuxTCThroughputAcceptance -test.v >"$throughput_output" 2>&1; then
+    if ! bash "$base/linux-network-acceptance.sh" --run-isolated env PAYESH_LINUX_THROUGHPUT=1 "$base/bandwidth-acceptance" -test.run TestLinuxTCThroughputAcceptance -test.v >"$throughput_output" 2>&1; then
       cat "$throughput_output" >&2
       echo 'bandwidth_throughput=FAIL' >&2
       exit 1
@@ -228,7 +220,7 @@ elif command -v ip >/dev/null 2>&1 && command -v tc >/dev/null 2>&1; then
   fi
   if [[ "${PAYESH_LINUX_QUOTA_OVERSHOOT:-0}" == "1" ]]; then
     quota_output="$work/quota-overshoot.log"
-    if ! PAYESH_LINUX_QUOTA_OVERSHOOT=1 "$base/bandwidth-acceptance" -test.run TestBandwidthQuotaOvershootAcceptance -test.v >"$quota_output" 2>&1; then
+    if ! bash "$base/linux-network-acceptance.sh" --run-isolated env PAYESH_LINUX_QUOTA_OVERSHOOT=1 "$base/bandwidth-acceptance" -test.run TestBandwidthQuotaOvershootAcceptance -test.v >"$quota_output" 2>&1; then
       cat "$quota_output" >&2
       echo 'bandwidth_quota_overshoot=FAIL' >&2
       exit 1
@@ -250,7 +242,7 @@ elif (( EUID != 0 )); then
 elif command -v nft >/dev/null 2>&1 && nft list tables >/dev/null 2>&1; then
   current_stage=port_traffic_nft
   nft_output="$work/nftables.log"
-  if ! PAYESH_LINUX_ACCEPTANCE=1 "$base/porttraffic-acceptance" -test.run TestLinuxNftBackendAcceptance -test.v >"$nft_output" 2>&1; then
+  if ! bash "$base/linux-network-acceptance.sh" --run-isolated env PAYESH_LINUX_ACCEPTANCE=1 "$base/porttraffic-acceptance" -test.run TestLinuxNftBackendAcceptance -test.v >"$nft_output" 2>&1; then
     cat "$nft_output" >&2
     echo 'port_traffic_nft=FAIL' >&2
     exit 1
@@ -260,6 +252,18 @@ elif command -v nft >/dev/null 2>&1 && nft list tables >/dev/null 2>&1; then
     mark_unsupported port_traffic_nft "ownership-or-kernel-capability-unavailable"
   else
     echo 'port_traffic_nft=PASS'
+    accounting_output="$work/nft-accounting.log"
+    if ! bash "$base/linux-network-acceptance.sh" --run-isolated env PAYESH_LINUX_ACCOUNTING=1 "$base/porttraffic-acceptance" -test.run '^TestLinuxNftUDPAccountingAcceptance$' -test.v >"$accounting_output" 2>&1; then
+      cat "$accounting_output" >&2
+      echo 'port_traffic_udp_accounting=FAIL' >&2
+      exit 1
+    fi
+    cat "$accounting_output"
+    if grep -q -- '--- SKIP:' "$accounting_output"; then
+      mark_unsupported port_traffic_udp_accounting "accounting-fixture-reported-unsupported"
+    else
+      echo 'port_traffic_udp_accounting=PASS topology=local-ipv4-loopback'
+    fi
   fi
 else
   if command -v nft >/dev/null 2>&1; then

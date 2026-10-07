@@ -33,23 +33,24 @@ type API struct {
 	monitoring http.Handler
 	// secureCookies is false only for the explicitly loopback-bound HTTP
 	// mode. Public deployments should construct the API with true behind TLS.
-	secureCookies       bool
-	trustedProxies      []*net.IPNet
-	alerts              http.Handler
-	traffic             http.Handler
-	modules             http.Handler
-	processMonitoring   http.Handler
-	cpuControl          http.Handler
-	bandwidth           http.Handler
-	portTraffic         http.Handler
-	jobs                http.Handler
-	updates             http.Handler
-	install             http.Handler
-	installDownloads    http.Handler
-	enrollment          http.Handler
-	enrollmentToken     http.Handler
-	enrollmentAuthority *transport.CertificateAuthority
-	httpsSettings       http.Handler
+	secureCookies         bool
+	trustedProxies        []*net.IPNet
+	alerts                http.Handler
+	traffic               http.Handler
+	modules               http.Handler
+	processMonitoring     http.Handler
+	cpuControl            http.Handler
+	bandwidth             http.Handler
+	portTraffic           http.Handler
+	jobs                  http.Handler
+	updates               http.Handler
+	install               http.Handler
+	installDownloads      http.Handler
+	enrollment            http.Handler
+	enrollmentToken       http.Handler
+	enrollmentAuthority   *transport.CertificateAuthority
+	httpsSettings         http.Handler
+	nodeTransportSettings http.Handler
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -103,6 +104,8 @@ type Options struct {
 	InstallService *InstallService
 	// HTTPSSettings owns the dashboard domain/certificate settings route.
 	HTTPSSettings http.Handler
+	// NodeTransportSettings owns node port migration and retirement settings.
+	NodeTransportSettings http.Handler
 }
 
 func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Options) (*API, error) {
@@ -189,7 +192,11 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.HTTPSSettings != nil {
 		httpsSettingsHandler = sessions.Middleware(options.HTTPSSettings)
 	}
-	return &API{sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	var nodeSettingsHandler http.Handler
+	if options.NodeTransportSettings != nil {
+		nodeSettingsHandler = sessions.Middleware(options.NodeTransportSettings)
+	}
+	return &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
@@ -211,6 +218,12 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/session":
 		if r.Method == http.MethodPost {
 			a.login(w, r)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			// Logout validates the session and CSRF itself. Read-only accounts
+			// must be able to revoke their own session without edit permission.
+			a.logout(w, r)
 			return
 		}
 	case "/api/v1/servers":
@@ -242,6 +255,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if trimmedPath == "/api/v1/notifications" {
 		a.sessions.Middleware(http.HandlerFunc(a.storageNotifications)).ServeHTTP(w, r)
+		return
+	}
+	if a.nodeTransportSettings != nil && trimmedPath == "/api/v1/settings/node-transport" {
+		a.nodeTransportSettings.ServeHTTP(w, r)
 		return
 	}
 	if a.httpsSettings != nil && trimmedPath == "/api/v1/settings/https" {

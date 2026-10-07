@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import ProcessTable from './ProcessTable.svelte';
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
@@ -8,7 +8,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type StorageStatus, type StorageNotification, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type NodeTransportStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type StorageStatus, type StorageNotification, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
 
   type Theme = 'light' | 'dark';
@@ -29,6 +29,7 @@
   let displayServers: PreviewServer[] = [];
   let previewLogEntries: PreviewLogEntry[] = [];
   let activePage: Page = 'overview';
+  let mobileNavOpen = false;
   let selectedServerId = '';
   let detailTab: DetailTab = 'metrics';
   let chartRange: ChartRange = '15m';
@@ -80,14 +81,34 @@
   let apiError = '';
   let partialWarning = '';
   let authExpired = false;
+  function focusLogin(input: HTMLInputElement) {
+    const focus = () => {
+      if (input.isConnected && !document.querySelector('dialog:modal')) input.focus();
+    };
+    void tick().then(focus);
+    // Signing out can mount this form before its confirmation closes.
+    document.addEventListener('close', focus, true);
+    return { destroy: () => document.removeEventListener('close', focus, true) };
+  }
   let logState: PreviewState = 'ready';
   let logError = '';
   let logEntries: PreviewLogEntry[] = [];
   let apiAbortController: AbortController | null = null;
+  let nodeTransportStatus: NodeTransportStatus | null = null;
+  let nodePort = '';
+  let nodePortBusy = false;
+  let nodePortError = '';
+  let nodeTransportLoadError = '';
+  let nodeTransportLoading = false;
+  let nodePortPoll: ReturnType<typeof setTimeout> | null = null;
+  let nodePageCursor = '';
+  let nodePageHistory: string[] = [];
   let httpsStatus: HTTPSStatus | null = null;
   let httpsStatusLoading = false;
   const browserHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:';
   let storageStatus: StorageStatus | null = null;
+  $: recoverySnapshotBytes = storageStatus?.recovery_snapshot_bytes ?? 0;
+  $: storageUsageBytes = (storageStatus?.database_bytes ?? 0) + recoverySnapshotBytes;
   let databaseLimitGB = 1;
   let samplingSeconds = 15;
   let pressureSamplingSeconds = 60;
@@ -110,7 +131,10 @@
       pressureSamplingSeconds = storageStatus.settings.pressure_sample_seconds;
       adaptiveSampling = storageStatus.settings.adaptive_sampling;
       storageNotificationsEnabled = storageStatus.settings.notifications_enabled;
-    } catch (error) { storageError = error instanceof ApiError ? error.message : 'Storage settings could not be loaded.'; }
+    } catch (error) {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      storageError = error instanceof ApiError ? error.message : 'Storage settings could not be loaded.';
+    }
     finally { storageBusy = false; }
   }
   async function saveStorageSettings(): Promise<void> {
@@ -120,29 +144,41 @@
       storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: storageNotificationsEnabled });
       storageSaved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
       await loadNotifications();
-    } catch (error) { storageError = error instanceof ApiError ? error.message : 'Storage settings could not be saved.'; }
+    } catch (error) {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      storageError = error instanceof ApiError ? error.message : 'Storage settings could not be saved.';
+    }
     finally { storageBusy = false; }
   }
   async function loadNotifications(): Promise<void> {
-    if (notificationBusy || PREVIEW_MODE || sessionState !== 'authenticated' || document.hidden) return;
+    if (notificationBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || document.hidden) return;
     notificationBusy = true; notificationError = '';
     try { notificationItems = (await apiClient.getNotifications()).items; }
-    catch (error) { notificationError = error instanceof ApiError ? error.message : 'Notifications could not be loaded.'; }
+    catch (error) {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      notificationError = error instanceof ApiError ? error.message : 'Notifications could not be loaded.';
+    }
     finally { notificationBusy = false; }
   }
   let storageRefreshBusy = false;
   async function refreshStorageUsage(): Promise<void> {
-    if (PREVIEW_MODE || activePage !== 'settings' || settingsSection !== 'storage' || storageBusy || storageRefreshBusy || !storageStatus || document.hidden) return;
+    if (PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || activePage !== 'settings' || settingsSection !== 'storage' || storageBusy || storageRefreshBusy || !storageStatus || document.hidden) return;
     storageRefreshBusy = true;
     try {
       const result = await apiClient.getStorageSettings();
-      if (storageStatus && result.settings.revision === storageStatus.settings.revision) storageStatus = { ...storageStatus, database_bytes: result.database_bytes, effective_sample_seconds: result.effective_sample_seconds, settings: { ...storageStatus.settings, pressure_state: result.settings.pressure_state } };
-    } catch { /* Keep the last measurement; Refresh reports any API error. */ }
+      if (storageStatus && result.settings.revision === storageStatus.settings.revision) storageStatus = { ...storageStatus, database_bytes: result.database_bytes, recovery_snapshot_bytes: result.recovery_snapshot_bytes ?? 0, effective_sample_seconds: result.effective_sample_seconds, settings: { ...storageStatus.settings, pressure_state: result.settings.pressure_state } };
+    } catch (error) {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      // Keep the last measurement for other failures; Refresh reports errors.
+    }
     finally { storageRefreshBusy = false; }
   }
   async function markNotificationsRead(): Promise<void> {
     try { await apiClient.markNotificationsRead(); await loadNotifications(); }
-    catch (error) { notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.'; }
+    catch (error) {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.';
+    }
   }
   let settingsSection: 'users' | 'updates' | 'tls' | 'storage' | 'notifications' = 'tls';
   let addingUser = false;
@@ -158,6 +194,7 @@
   let httpsPoll: ReturnType<typeof setTimeout> | null = null;
   let logAbortController: AbortController | null = null;
   let notice = '';
+  let signOutError = '';
   let setupStep = 1;
   let workspaceName = PREVIEW_MODE ? "Kia's workspace" : '';
   let setupSecret = '';
@@ -218,10 +255,19 @@
   let installHost = '';
   let installPort = '22';
   let installUser = 'root';
+  let installAuthMethod: 'password' | 'key' = 'password';
   let installPassword = '';
   let installKey = '';
+  let installKeyPassphrase = '';
   let installFingerprint = '';
   let installBusy = false;
+  function chooseInstallAuth(method: 'password' | 'key'): void {
+    if (installAuthMethod === method) return;
+    installAuthMethod = method;
+    installPassword = '';
+    installKey = '';
+    installKeyPassphrase = '';
+  }
   let nodeControlPort = '22';
   let nodeControlUser = 'root';
   let nodeControlPassword = '';
@@ -385,7 +431,7 @@
   function promptSignOut() {
     openConfirmModal({
       title: 'Sign out?',
-      description: 'Are you sure you want to sign out of Payesh? You will need your administrator username and password to log in again.',
+      description: 'Are you sure you want to sign out of Payesh? You will need your username and password to log in again.',
       tone: 'warning',
       icon: 'log-out',
       confirmText: 'Sign out',
@@ -400,6 +446,9 @@
   $: displayServers = servers;
   $: healthyCount = displayServers.filter((server) => server.displayState === 'healthy').length;
   $: attentionCount = displayServers.filter((server) => server.displayState !== 'healthy').length;
+  $: connectedCount = displayServers.filter((server) => server.connectionState === 'connected').length;
+  $: fleetDownload = sumNetworkRate(displayServers, 'download');
+  $: fleetUpload = sumNetworkRate(displayServers, 'upload');
   $: firingAlertCount = alerts.filter((alert) => alert.state === 'firing').length;
   $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
   $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
@@ -446,12 +495,15 @@
   }
 
   function openAddServer() {
+    if (myAccount?.permission === 'read') return;
     newServerName = '';
     installHost = '';
     installPort = '22';
     installUser = 'root';
+    installAuthMethod = 'password';
     installPassword = '';
     installKey = '';
+    installKeyPassphrase = '';
     installFingerprint = '';
     jobError = '';
     if (!activeInstall || !['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)) {
@@ -461,7 +513,10 @@
   }
 
   function navigate(page: Page, serverId = selectedServerId) {
+    const fromMobileMenu = mobileNavOpen;
+    mobileNavOpen = false;
     activePage = page;
+    if (fromMobileMenu) void tick().then(() => document.querySelector<HTMLElement>('main h1')?.focus());
     selectedServerId = serverId;
     saveUiState();
     if (typeof window !== 'undefined') {
@@ -521,6 +576,7 @@
     window.clearTimeout(updatePollTimer);
     const deadline = Date.now() + 30 * 60_000;
     const tick = async () => {
+      if (sessionState !== 'authenticated' || authExpired) return;
       if (Date.now() >= deadline) { updateApplyError = 'Update status timed out. Check the server before trying again.'; return; }
       try {
         const progress = await apiClient.getUpdateProgress();
@@ -586,7 +642,70 @@
     } });
   }
 
+  async function loadNodeTransport(): Promise<void> {
+    if (nodeTransportLoading) return;
+    if (nodePortPoll) { clearTimeout(nodePortPoll); nodePortPoll = null; }
+    nodeTransportLoading = true;
+    let keepPolling = true;
+    try {
+      const previouslyObservedPort = nodeTransportStatus?.port;
+      nodeTransportStatus = await apiClient.getNodeTransportSettings({ cursor: nodePageCursor || undefined });
+      nodeTransportLoadError = '';
+      if (!nodePort || nodePort === previouslyObservedPort) nodePort = nodeTransportStatus.port;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 400 && nodePageCursor) {
+        nodePageCursor = ''; nodePageHistory = [];
+        nodeTransportLoadError = 'The node list changed. Reloading the first page.';
+      } else if (error instanceof ApiError && error.status === 404) {
+        nodeTransportLoadError = 'This hub version does not support separate node port settings. Update the hub to use this feature.';
+        keepPolling = false;
+      } else {
+        nodeTransportLoadError = error instanceof Error ? error.message : 'Could not read node transport settings.';
+        if (error instanceof ApiError && error.authExpired) { authExpired = true; keepPolling = false; }
+      }
+    } finally {
+      nodeTransportLoading = false;
+      if (keepPolling && activePage === 'settings' && settingsSection === 'tls') {
+        nodePortPoll = setTimeout(() => void loadNodeTransport(), nodeTransportLoadError ? 10000 : 5000);
+      }
+    }
+  }
+
+  async function saveNodePort(): Promise<void> {
+    if (nodePortBusy || !nodeTransportStatus || Number(nodePort) === Number(nodeTransportStatus.port)) return;
+    nodePortBusy = true; nodePortError = '';
+    try {
+      nodeTransportStatus = await apiClient.setNodeTransportPort(Number(nodePort));
+      nodePort = nodeTransportStatus.port;
+      nodePageCursor = ''; nodePageHistory = [];
+      showNotice('Node port opened. Nodes will verify the new connection and migrate automatically.');
+    } catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not change node port.'; }
+    finally { nodePortBusy = false; }
+  }
+
+  async function changeNodePage(next: boolean): Promise<void> {
+    if (nodeTransportLoading || nodePortBusy) return;
+    if (next && nodeTransportStatus?.next_cursor) {
+      nodePageHistory = [...nodePageHistory, nodePageCursor];
+      nodePageCursor = nodeTransportStatus.next_cursor;
+    } else if (!next && nodePageHistory.length) {
+      nodePageCursor = nodePageHistory.at(-1)!;
+      nodePageHistory = nodePageHistory.slice(0, -1);
+    } else return;
+    await loadNodeTransport();
+  }
+
+  function retireNodePorts(): void {
+    openConfirmModal({ title: 'Retire previous node endpoints?', description: 'All enrolled nodes have connected to the current node port. Previous node ports and node access through the dashboard will be disabled.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Retire endpoints', cancelText: 'Cancel', action: async () => {
+      nodePortBusy = true; nodePortError = '';
+      try { nodeTransportStatus = await apiClient.retireNodeTransportPorts(); nodePageCursor = ''; nodePageHistory = []; showNotice('Previous node endpoints retired.'); }
+      catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not retire previous endpoints.'; }
+      finally { nodePortBusy = false; }
+    } });
+  }
+
   async function loadHTTPS(): Promise<void> {
+    void loadNodeTransport();
     if (httpsPoll) { clearTimeout(httpsPoll); httpsPoll = null; }
     httpsStatusLoading = true; httpsError = '';
     try {
@@ -608,6 +727,7 @@
   }
 
   async function saveHTTPS(): Promise<void> {
+    if (PREVIEW_MODE || httpsBusy) return;
     httpsError = '';
     httpsBusy = true;
     try {
@@ -640,7 +760,7 @@
   function promptRemoveHTTPS() {
     openConfirmModal({
       title: 'Remove domain?',
-      description: 'The certificate is deleted and the dashboard goes back to plain HTTP. Logins will no longer be encrypted.',
+      description: 'The certificate is deleted and the dashboard goes back to plain HTTP. Logins will no longer be encrypted, and nodes using this certificate will lose their TLS connection.',
       tone: 'warning',
       icon: 'alert-triangle',
       confirmText: 'Remove domain',
@@ -839,16 +959,17 @@
   }
 
   async function createPendingServer(): Promise<void> {
-    if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (!installPassword && !installKey) || createServerBusy) return;
+    if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || createServerBusy) return;
     createServerBusy = true; jobError = '';
     const host = installHost.trim();
     const port = Number(installPort);
     const user = installUser.trim();
     const serverName = newServerName.trim();
+    let createdServerId: string | null = null;
     try {
       const created = await apiClient.createServer({ name: serverName, address: host });
+      createdServerId = created.id;
       const server = emptyApiServer(created);
-      server.displayState = 'installing';
       servers = [...servers, server];
       selectedServerId = server.id;
       labelDraft = server.name;
@@ -857,14 +978,14 @@
         host,
         port,
         user,
-        ...(installPassword ? { password: installPassword } : {}),
-        ...(installKey ? { private_key: installKey } : {}),
+        ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
         role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
-      installPassword = ''; installKey = '';
+      servers = servers.map((entry) => entry.id === server.id ? { ...entry, displayState: 'installing' as DisplayState } : entry);
+      installPassword = ''; installKey = ''; installKeyPassphrase = '';
 
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
@@ -886,7 +1007,10 @@
       showNotice(`Connecting to ${serverName} over SSH to install Payesh...`);
       navigate('install-progress', server.id);
     } catch (error) {
-      jobError = error instanceof Error ? error.message : 'Unable to create server.';
+      if (createdServerId) navigate('server', createdServerId);
+      jobError = error instanceof ApiError && error.code === 'install_executor_unavailable'
+        ? 'Server added, but installation did not start. SSH installation is not configured on this hub. Ask the hub administrator to enable it, then retry using Install Payesh.'
+        : error instanceof Error ? error.message : 'Unable to create server.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       createServerBusy = false;
@@ -989,10 +1113,14 @@
 
   async function signOut(): Promise<void> {
     authError = '';
+    signOutError = '';
     try {
       await apiClient.logout();
     } catch (error) {
-      if (!(error instanceof ApiError && error.authExpired)) authError = error instanceof Error ? error.message : 'Unable to sign out.';
+      if (!(error instanceof ApiError && error.authExpired)) {
+        signOutError = 'Unable to sign out. Your session may still be active. Try again.';
+        return;
+      }
     }
     sessionState = 'signed-out';
     authExpired = true;
@@ -1016,7 +1144,7 @@
   }
 
   async function submitInstall(): Promise<void> {
-    if (!selectedServer || !installHost.trim() || !installUser.trim() || installBusy) return;
+    if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || installBusy) return;
     installBusy = true; jobError = '';
     const host = installHost.trim();
     const port = Number(installPort);
@@ -1029,14 +1157,13 @@
         host,
         port,
         user,
-        ...(installPassword ? { password: installPassword } : {}),
-        ...(installKey ? { private_key: installKey } : {}),
+        ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
         role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
-      installPassword = ''; installKey = '';
+      installPassword = ''; installKey = ''; installKeyPassphrase = '';
 
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
@@ -1057,7 +1184,9 @@
       recordJob(job);
       showNotice(`Connecting to ${serverName} over SSH to install Payesh...`);
     } catch (error) {
-      jobError = error instanceof Error ? error.message : 'Unable to queue the installation.';
+      jobError = error instanceof ApiError && error.code === 'install_executor_unavailable'
+        ? 'Installation did not start. SSH installation is not configured on this hub. Ask the hub administrator to enable it, then retry using Install Payesh.'
+        : error instanceof Error ? error.message : 'Unable to queue the installation.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       installBusy = false;
@@ -1302,6 +1431,11 @@
     return series?.at(-1) ?? null;
   }
 
+  function sumNetworkRate(fleet: PreviewServer[], direction: 'download' | 'upload'): number | null {
+    const rates = fleet.filter((server) => server.connectionState === 'connected').map((server) => currentNetworkRate(server, direction));
+    return rates.length && rates.every((rate) => rate !== null) ? rates.reduce<number>((sum, rate) => sum + (rate ?? 0), 0) : null;
+  }
+
   function sampleAge(server: PreviewServer): string {
     if (!server.latestMetricAt) return 'awaiting sample';
     const seconds = Math.max(0, Math.round((Date.now() - Date.parse(server.latestMetricAt)) / 1000));
@@ -1317,7 +1451,7 @@
   let liveRefreshBusy = false;
 
   async function refreshMonitoring(): Promise<void> {
-    if (liveRefreshBusy || PREVIEW_MODE || activePage !== 'monitoring' || document.hidden) return;
+    if (liveRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || !['overview', 'monitoring', 'servers'].includes(activePage) || document.hidden) return;
     liveRefreshBusy = true;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -1339,14 +1473,14 @@
         }
         return server;
       });
-      if (activePage === 'monitoring' && !controller.signal.aborted) servers = refreshed;
+      if (['overview', 'monitoring', 'servers'].includes(activePage) && !controller.signal.aborted) servers = refreshed;
     } catch (error) { if (error instanceof ApiError && error.authExpired) authExpired = true; }
     finally { window.clearTimeout(timeout); liveRefreshBusy = false; }
   }
 
   let selectedRefreshBusy = false;
   async function refreshSelectedServer(): Promise<void> {
-    if (selectedRefreshBusy || PREVIEW_MODE || activePage !== 'server' || !selectedServerId || document.hidden) return;
+    if (selectedRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || activePage !== 'server' || !selectedServerId || document.hidden) return;
     const id = selectedServerId;
     const range = chartRange;
     const controller = new AbortController();
@@ -1570,6 +1704,7 @@
       window.clearInterval(notificationRefresh);
       window.clearTimeout(updatePollTimer);
       if (httpsPoll) clearTimeout(httpsPoll);
+      if (nodePortPoll) clearTimeout(nodePortPoll);
       window.removeEventListener('popstate', onPopState);
       trafficUsageController?.abort();
       apiAbortController?.abort();
@@ -1585,7 +1720,7 @@
 </svelte:head>
 
 <div class="app-shell" data-theme={theme}>
-  <aside class="sidebar" aria-label="Primary navigation">
+  <aside class="sidebar" aria-label="Primary navigation" inert={!PREVIEW_MODE && authExpired}>
     <div class="brand-lockup">
       <div class="brand-mark" aria-hidden="true">
         <span>P</span>
@@ -1596,7 +1731,8 @@
       </div>
     </div>
 
-    <nav class="nav-list">
+    <button class="button ghost mobile-menu-toggle" type="button" aria-expanded={mobileNavOpen} aria-controls="primary-navigation" on:click={() => mobileNavOpen = !mobileNavOpen}>Menu <Icon name="chevron-right" size={14} /></button>
+    <nav id="primary-navigation" class="nav-list" class:menu-open={mobileNavOpen}>
       <button class:active={activePage === 'overview'} class="nav-item" type="button" on:click={() => navigate('overview')} aria-current={activePage === 'overview' ? 'page' : undefined}>
         <Icon name="overview" size={17} />
         <span>Overview</span>
@@ -1634,12 +1770,12 @@
         <span class="connection-dot"></span>
         <span class="connection-label">Local hub</span>
       </div>
-      <span class="version-tag">{PREVIEW_MODE ? 'v0.1 preview' : 'API connected'}</span>
+      <span class="version-tag">{PREVIEW_MODE ? 'Fixture preview' : sessionState === 'authenticated' && !authExpired ? 'Connected' : 'Sign in required'}</span>
     </div>
   </aside>
 
   <main class="main-content">
-    <header class="topbar">
+    <header class="topbar" inert={!PREVIEW_MODE && authExpired}>
       <div class="breadcrumbs">
         <span class="crumb-root">Workspace</span>
         <span class="crumb-separator" aria-hidden="true">/</span>
@@ -1676,6 +1812,7 @@
     </header>
 
     {#if notice}<div class="notice" role="status"><Icon name="check" size={14} /><span>{notice}</span></div>{/if}
+    {#if signOutError}<div class="partial-warning" role="alert"><Icon name="alert-triangle" size={15} /><span>{signOutError}</span></div>{/if}
     {#if showUpdateBanner && updateStatus}
       <div class="partial-warning update-banner" role="status"><Icon name="alert-triangle" size={15} /><span>Payesh v{updateStatus.latest} is available{updateStatus.current && updateStatus.current !== 'dev' ? ` (installed: v${updateStatus.current})` : ''}. <button class="link-button" type="button" on:click={openUpdateSettings}>View update</button></span><button class="link-button" type="button" aria-label="Dismiss update notice" on:click={dismissUpdateBanner}>Dismiss</button></div>
     {/if}
@@ -1689,12 +1826,12 @@
           <div class="login-screen">
             <div class="login-card">
               <div class="brand-mark large"><span>P</span></div>
-              <h2>Sign in to hub</h2>
+              <h1>Sign in to hub</h1>
               <p class="muted center">Authenticate to access fleet operations.</p>
               <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
                 <label>
                   <span>Username</span>
-                  <input bind:value={authUsername} autocomplete="username" placeholder="owner" required />
+                  <input use:focusLogin bind:value={authUsername} autocomplete="username" placeholder="owner" required />
                 </label>
                 <label>
                   <span>Password</span>
@@ -1712,13 +1849,13 @@
     {:else if activePage === 'monitoring'}
       <section class="page" aria-labelledby="monitoring-title">
         <div class="page-heading">
-          <div><h1 id="monitoring-title">Server monitoring</h1></div>
+          <div><h1 id="monitoring-title" tabindex="-1">Server monitoring</h1><p class="lede">Resources and network activity across your fleet.</p></div>
           <span class="heading-status-badge"><span class="live-ping"></span>{displayServers.length} servers</span>
         </div>
         <div class="summary-grid">
           <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
           <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
-          <article class="summary-card"><div class="card-header"><span class="stat-label">Fleet traffic</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">{formatBytes(overviewTrafficBytes)}</strong></article>
+          <article class="summary-card"><div class="card-header"><span class="stat-label">Live download</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">{formatNetworkRate(fleetDownload)}</strong><span class="stat-badge">Upload {formatNetworkRate(fleetUpload)} · {connectedCount} connected</span></article>
         </div>
         {#if displayServers.length === 0}<div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>{/if}
         <div class="monitoring-grid">
@@ -1740,7 +1877,7 @@
                 <div class="monitoring-network"><span>↓ Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
                 <div class="monitoring-network"><span>↑ Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
               </div>{/if}
-              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected'}<span>Traffic: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
+              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected' && server.traffic.allowanceBytes !== '0'}<span>Billing period: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
               <button class="button ghost small" type="button" on:click={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
             </article>
           {/each}
@@ -1750,7 +1887,7 @@
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading">
           <div>
-            <h1 id="servers-title">Servers</h1>
+            <h1 id="servers-title" tabindex="-1">Servers</h1>
 
           </div>
           {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}>
@@ -1807,7 +1944,7 @@
         </button>
         <div class="page-heading">
           <div>
-            <h1 id="add-server-title">Add a server</h1>
+            <h1 id="add-server-title" tabindex="-1">Add a server</h1>
             <p class="lede">Connect over SSH. Payesh detects the operating system and architecture automatically.</p>
           </div>
         </div>
@@ -1831,12 +1968,25 @@
             <label>IP address or hostname<input bind:value={installHost} maxlength="255" placeholder="e.g. 192.0.2.1" required /></label>
             <label>SSH port<input type="number" min="1" max="65535" bind:value={installPort} required /></label>
             <label>SSH user<input bind:value={installUser} placeholder="root" required /></label>
-            <label>Password<input type="password" bind:value={installPassword} autocomplete="off" placeholder="SSH user password" /></label>
-            <label>Private key<textarea bind:value={installKey} rows="3" autocomplete="off" placeholder="Paste OpenSSH private key"></textarea></label>
-            <label>Expected host-key fingerprint <small>(recommended)</small><input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
+            <fieldset class="ssh-auth-choice form-wide">
+              <legend>SSH authentication</legend>
+              <div class="ssh-auth-options">
+                <label><input type="radio" name="new-server-auth" checked={installAuthMethod === 'password'} on:change={() => chooseInstallAuth('password')} /> Password</label>
+                <label><input type="radio" name="new-server-auth" checked={installAuthMethod === 'key'} on:change={() => chooseInstallAuth('key')} /> Private key</label>
+              </div>
+              <small>Choose one method. Credentials are used for this installation.</small>
+            </fieldset>
+            {#if installAuthMethod === 'password'}
+              <label class="form-wide">SSH password<input type="password" bind:value={installPassword} autocomplete="off" placeholder="SSH user password" required /></label>
+            {:else}
+              <label class="form-wide">OpenSSH private key<textarea bind:value={installKey} rows="4" autocomplete="off" placeholder="Paste OpenSSH private key" required></textarea></label>
+              <label class="form-wide">Key passphrase <small>(if encrypted)</small><input type="password" bind:value={installKeyPassphrase} autocomplete="off" /></label>
+            {/if}
+            <label>Host-key fingerprint <small>(required for new hosts)</small><input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
+            <small class="form-wide muted">Verify the SHA256 fingerprint through a trusted channel before installing. A matching existing known_hosts entry can be reused.</small>
             <div class="setup-actions">
               <button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button>
-              <button class="button primary" type="submit" disabled={createServerBusy || (!installPassword && !installKey)}>
+              <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
                 {createServerBusy ? 'Connecting…' : 'Add and install server'}
               </button>
             </div>
@@ -1853,7 +2003,7 @@
         </button>
         <div class="page-heading">
           <div>
-            <h1 id="install-progress-title">{activeInstall ? `Installing ${activeInstall.serverName}` : 'Server Installation'}</h1>
+            <h1 id="install-progress-title" tabindex="-1">{activeInstall ? `Installing ${activeInstall.serverName}` : 'Server Installation'}</h1>
             <p class="lede">
               {activeInstall
                 ? `Connecting over SSH to ${activeInstall.host}:${activeInstall.port} and monitoring deployment progress.`
@@ -1869,12 +2019,13 @@
             onViewServer={(id) => { saveActiveInstall(null); detailTab = 'metrics'; navigate('server', id); }}
             onRetry={() => {
               if (activeInstall) {
-                newServerName = activeInstall.serverName;
+                const serverId = activeInstall.serverId;
                 installHost = activeInstall.host;
                 installPort = String(activeInstall.port);
                 installUser = activeInstall.user;
+                saveActiveInstall(null);
+                navigate('server', serverId);
               }
-              navigate('add-server');
             }}
             onAddAnother={() => openAddServer()}
           />
@@ -1895,7 +2046,7 @@
       <section class="page" aria-labelledby="alerts-title">
         <div class="page-heading">
           <div>
-            <h1 id="alerts-title">Alerts</h1>
+            <h1 id="alerts-title" tabindex="-1">Alerts</h1>
 
           </div>
           <button class="button ghost" type="button" on:click={() => void loadAlerts()}>
@@ -1949,7 +2100,7 @@
       <section class="page" aria-labelledby="packages-title">
         <div class="page-heading">
           <div>
-            <h1 id="packages-title">Packages</h1>
+            <h1 id="packages-title" tabindex="-1">Packages</h1>
 
           </div>
           <button class="button ghost" type="button" on:click={() => void loadModules(true)}>
@@ -1996,12 +2147,15 @@
       <section class="page" aria-labelledby="settings-title">
         <div class="page-heading">
           <div>
-            <h1 id="settings-title">Settings</h1>
+            <h1 id="settings-title" tabindex="-1">Settings</h1>
+            <p class="settings-intro">Manage connections, updates, and how your fleet collects data.</p>
           </div>
         </div>
 
         <div class="settings-layout">
-          <nav class="settings-nav" aria-label="Settings sections">
+          <nav class="settings-nav" aria-label="Settings sections" on:focusin={(event) => {
+            if (event.target instanceof HTMLButtonElement) event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          }}>
             <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => { settingsSection = 'tls'; if (!PREVIEW_MODE) void loadHTTPS(); }}>SSL / TLS</button>
             <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => { settingsSection = 'updates'; if (!PREVIEW_MODE) void checkLatestUpdate(); }}>Versions & updates</button>
             <button type="button" aria-current={settingsSection === 'storage' ? 'page' : undefined} class:chosen={settingsSection === 'storage'} on:click={() => { settingsSection = 'storage'; if (!PREVIEW_MODE) void loadStorageSettings(); }}>Storage & sampling</button>
@@ -2013,9 +2167,17 @@
           <article class="panel account-management storage-settings-panel">
             <div class="panel-heading"><div><h2>Storage & sampling</h2><p class="muted">Keep monitoring lightweight and control how much history is stored.</p></div><button class="button ghost small" disabled={storageBusy || PREVIEW_MODE} on:click={() => void loadStorageSettings()}>Refresh</button></div>
             {#if storageStatus}
-              <div class="settings-meta-box"><div class="meta-row"><span>Database usage</span><strong>{formatBytes(String(storageStatus.database_bytes))} / {formatBytes(String(storageStatus.settings.max_database_bytes))}</strong></div><div class="progress"><span style={`width:${Math.min(100, storageStatus.database_bytes / storageStatus.settings.max_database_bytes * 100)}%`}></span></div><div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div></div>
+              <div class="settings-meta-box">
+                <div class="meta-row"><span>Total storage usage</span><strong>{formatBytes(String(storageUsageBytes))} / {formatBytes(String(storageStatus.settings.max_database_bytes))}</strong></div>
+                <div class="progress"><span style={`width:${Math.min(100, storageUsageBytes / storageStatus.settings.max_database_bytes * 100)}%`}></span></div>
+                {#if recoverySnapshotBytes > 0}
+                  <div class="meta-row"><span>Database and journals</span><strong>{formatBytes(String(storageStatus.database_bytes))}</strong></div>
+                  <div class="meta-row"><span>Recovery snapshots</span><strong>{formatBytes(String(recoverySnapshotBytes))}</strong></div>
+                {/if}
+                <div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div>
+              </div>
               <form class="form-grid" on:submit|preventDefault={() => void saveStorageSettings()}>
-                <label>Maximum database size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 1 GB. Includes the database and its journal files. Lowering the limit can remove old history.</small></label>
+                <label>Maximum storage size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 1 GB. Includes the database, its journal files, and retained recovery snapshots. Lowering the limit can remove old history.</small></label>
                 <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 15 seconds. Larger intervals produce fewer new samples.</small></label>
                 <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 60 seconds. Applies automatically under storage pressure.</small></label>
                 <label>Automatic sampling reduction<select bind:value={adaptiveSampling} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
@@ -2048,7 +2210,7 @@
                 {#if editingAccount === account.username}
                   <form class="form-grid account-edit-form" on:submit|preventDefault={() => void editAccount(account)}>
                     <label>Username<input bind:value={editUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-                    <label>New password<input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" /></label>
+                    <label><span id="edit-password-label">New password</span><input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" aria-labelledby="edit-password-label" aria-describedby="edit-password-help" /><small id="edit-password-help" class="muted">Use at least 12 characters, or leave blank to keep the current password.</small></label>
                     {#if account.role !== 'owner'}
                       <label>Role<select bind:value={editRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
                       <label>Permission<select bind:value={editPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
@@ -2061,7 +2223,7 @@
             {#if addingUser}<form class="form-grid account-edit-form" on:submit|preventDefault={() => void saveAccount()}>
               <h3 class="form-wide">New user</h3>
               <label>Username<input bind:value={accountUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-              <label>Password<input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" /></label>
+              <label><span id="new-password-label">Password</span><input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" aria-labelledby="new-password-label" aria-describedby="new-password-help" /><small id="new-password-help" class="muted">Use at least 12 characters.</small></label>
               <label>Role<select bind:value={accountRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
               <label>Permission<select bind:value={accountPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
               <button class="button primary" type="submit" disabled={accountBusy}>Create user</button>
@@ -2112,7 +2274,9 @@
             <div class="settings-meta-box">
               <div class="meta-row">
                 <span>Status</span>
-                {#if browserHTTPS || httpsStatus?.state === 'active'}
+                {#if PREVIEW_MODE}
+                  <span class="status-pill">Fixture preview · no hub connection</span>
+                {:else if browserHTTPS || httpsStatus?.state === 'active'}
                   <span class="status-pill healthy"><i class="status-dot"></i> HTTPS active</span>
                 {:else if httpsStatus?.state === 'pending'}
                   <span class="status-pill pending"><i class="status-dot"></i> Requesting certificate…</span>
@@ -2142,19 +2306,52 @@
             </form>
             {#if httpsError}<p class="form-error" role="alert">{httpsError}</p>{/if}
             <div class="settings-actions">
-              <button class="button primary" type="button" disabled={httpsBusy || myAccount?.permission === 'read' || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
+              <button class="button primary" type="button" disabled={httpsBusy || PREVIEW_MODE || myAccount?.permission === 'read' || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
               {#if httpsStatus?.domain && !httpsBusy && myAccount?.permission !== 'read'}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
             </div>
           </article>
           {/if}
-          {#if settingsSection === 'tls'}<article class="panel">
+          {#if settingsSection === 'tls'}<article class="panel connection-settings-panel">
             <div class="panel-heading"><h2>Dashboard port</h2></div>
             <form class="port-form" on:submit|preventDefault={() => void saveDashboardPort()}>
-              <label>Port<input type="number" min="1" max="65535" required bind:value={dashboardPort} disabled={portBusy || myAccount?.permission === 'read'} /></label>
+              <label>Dashboard port<input type="number" min="1" max="65535" required bind:value={dashboardPort} disabled={portBusy || myAccount?.permission === 'read'} /></label>
               <button class="button primary" type="submit" disabled={portBusy || PREVIEW_MODE || myAccount?.permission === 'read'}>{portBusy ? 'Checking port…' : 'Change port'}</button>
             </form>
             {#if portError}<p class="form-error" role="alert">{portError}</p>{/if}
-            <p class="muted">Existing nodes keep their current connection address.</p>
+            <p class="muted">Dashboard access uses a separate port from node transport. Changing this port does not change the node transport port.</p>
+          </article>{/if}
+          {#if settingsSection === 'tls'}<article class="panel connection-settings-panel">
+            <div class="panel-heading"><h2>Node transport port</h2></div>
+            <p class="muted">Nodes connect to this TLS port for metrics and commands. Open the new port in your firewall before migrating.</p>
+            <form class="port-form" on:submit|preventDefault={() => void saveNodePort()}>
+              <label>Node transport port<input type="number" min="1" max="65535" required bind:value={nodePort} disabled={nodePortBusy || PREVIEW_MODE || myAccount?.permission === 'read'} /></label>
+              <button class="button primary" type="submit" disabled={nodePortBusy || PREVIEW_MODE || !nodeTransportStatus?.url || Number(nodePort) === Number(nodeTransportStatus.port) || myAccount?.permission === 'read'}>{nodePortBusy ? 'Saving…' : 'Change node port'}</button>
+            </form>
+            {#if nodeTransportLoading && !nodeTransportStatus}<p class="muted" role="status">Loading node transport settings…</p>{/if}
+            {#if nodeTransportLoadError}
+              <p class="form-error" role="alert">{nodeTransportLoadError}</p>
+              <button class="button ghost" type="button" disabled={nodeTransportLoading} on:click={() => void loadNodeTransport()}>{nodeTransportLoading ? 'Retrying…' : 'Retry node settings'}</button>
+            {/if}
+            {#if nodePortError}<p class="form-error" role="alert">{nodePortError}</p>{/if}
+            {#if nodeTransportStatus}
+              {#if nodeTransportStatus.url}<p class="mono">{nodeTransportStatus.url}</p>{:else}<p class="muted">Enable HTTPS to connect nodes.</p>{/if}
+              <p class="muted">{nodeTransportStatus.migrated} of {nodeTransportStatus.total} nodes on the current port. Nodes verify and save the new address automatically; unsuccessful migrations keep their working connection.</p>
+              {#each nodeTransportStatus.nodes as node (node.id)}
+                <div class="meta-row"><span>{node.name}</span><span>{node.state === 'migrated' ? 'Migrated' : node.state === 'update-required' ? 'Agent update required' : node.state === 'failed' ? 'Migration failed · retrying' : 'Pending connection'}</span></div>
+                {#if node.error}<p class="muted">{node.name}: {node.error}</p>{/if}
+              {/each}
+              {#if nodePageHistory.length || nodeTransportStatus.next_cursor}
+                <div class="node-page-actions" aria-label="Node migration pages">
+                  <button class="button ghost small" type="button" disabled={nodeTransportLoading || nodePortBusy || !nodePageHistory.length} on:click={() => void changeNodePage(false)}>Previous nodes</button>
+                  <span class="muted">Page {nodePageHistory.length + 1}</span>
+                  <button class="button ghost small" type="button" disabled={nodeTransportLoading || nodePortBusy || !nodeTransportStatus.next_cursor} on:click={() => void changeNodePage(true)}>Next nodes</button>
+                </div>
+              {/if}
+              {#if nodeTransportStatus.previous_ports.length || nodeTransportStatus.legacy_dashboard}
+                <p class="muted">Previous endpoints remain available for offline and older nodes.{nodeTransportStatus.previous_ports.length ? ` Previous node ports: ${nodeTransportStatus.previous_ports.join(', ')}.` : ''}{nodeTransportStatus.legacy_dashboard ? ' Legacy node access through dashboard ports is still enabled.' : ''}</p>
+                <button class="button ghost" type="button" disabled={nodePortBusy || nodeTransportStatus.pending > 0 || myAccount?.permission === 'read'} on:click={retireNodePorts}>Retire previous node endpoints</button>
+              {/if}
+            {/if}
           </article>{/if}
           </div>
         </div>
@@ -2164,7 +2361,7 @@
       <section class="page onboarding-page" aria-labelledby="setup-title">
         <div class="page-heading">
           <div>
-            <h1 id="setup-title">Setup your local hub</h1>
+            <h1 id="setup-title" tabindex="-1">Setup your local hub</h1>
             <p class="lede">Set your secure credentials to initialize this Payesh node.</p>
           </div>
         </div>
@@ -2232,7 +2429,7 @@
         <div class="page-heading server-heading">
           <div>
             <div class="heading-row">
-              <h1 id="server-title">{selectedServer.name}</h1>
+              <h1 id="server-title" tabindex="-1">{selectedServer.name}</h1>
               <span class={`status-pill ${selectedServer.displayState}`}>
                 <i class="status-dot"></i>
                 <span>{stateLabel(selectedServer.displayState)}</span>
@@ -2315,10 +2512,21 @@
               <label>SSH host<input bind:value={installHost} placeholder="hostname or IP" required /></label>
               <label>Port<input type="number" min="1" max="65535" bind:value={installPort} required /></label>
               <label>SSH user<input bind:value={installUser} required /></label>
-              <label>Password (or private key)<input type="password" bind:value={installPassword} autocomplete="off" /></label>
-              <label>Private key<textarea bind:value={installKey} rows="2" autocomplete="off"></textarea></label>
-              <label>Expected host-key fingerprint<input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
-              <button class="button primary small" type="submit" disabled={installBusy || (!installPassword && !installKey)}>
+              <fieldset class="ssh-auth-choice form-wide">
+                <legend>SSH authentication</legend>
+                <div class="ssh-auth-options">
+                  <label><input type="radio" name="retry-server-auth" checked={installAuthMethod === 'password'} on:change={() => chooseInstallAuth('password')} /> Password</label>
+                  <label><input type="radio" name="retry-server-auth" checked={installAuthMethod === 'key'} on:change={() => chooseInstallAuth('key')} /> Private key</label>
+                </div>
+              </fieldset>
+              {#if installAuthMethod === 'password'}
+                <label class="form-wide">SSH password<input type="password" bind:value={installPassword} autocomplete="off" required /></label>
+              {:else}
+                <label class="form-wide">OpenSSH private key<textarea bind:value={installKey} rows="4" autocomplete="off" required></textarea></label>
+                <label class="form-wide">Key passphrase <small>(if encrypted)</small><input type="password" bind:value={installKeyPassphrase} autocomplete="off" /></label>
+              {/if}
+              <label>Host-key fingerprint <small>(required for new hosts)</small><input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
+              <button class="button primary small" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
                 {installBusy ? 'Connecting…' : 'Install Payesh'}
               </button>
             </form>
@@ -2381,7 +2589,7 @@
               <div class="legend">
                 <span><i class="legend-dot teal"></i> CPU Utilization</span>
                 <span><i class="legend-dot purple"></i> Memory</span>
-                <span class="faint">Scale: 0–100%</span>
+                <span class="faint">Scale: 0–100% · Time: UTC</span>
               </div>
               {#key `${chartRange}-${theme}-${selectedServer.id}`}
                 <ChartPreview data={chartData} range={chartRange} label="CPU and memory history over the selected time range" />
@@ -2405,7 +2613,7 @@
               <div><span class="muted">Upload</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'upload'))}</strong></div>
             </div>
             {#if chartData && (chartData.networkRx?.some((value) => value !== null) || chartData.networkTx?.some((value) => value !== null))}
-              <div class="legend"><span><i class="legend-dot teal"></i> Download</span><span><i class="legend-dot blue"></i> Upload</span><span class="faint">Mbit/s</span></div>
+              <div class="legend"><span><i class="legend-dot teal"></i> Download</span><span><i class="legend-dot blue"></i> Upload</span><span class="faint">Mbit/s · Time: UTC</span></div>
               {#key `${chartRange}-${theme}-${selectedServer.id}-network`}
                 <TrafficChart data={chartData} />
               {/key}
@@ -2551,12 +2759,12 @@
       <section class="page overview-page" aria-labelledby="overview-title">
         <div class="page-heading">
           <div>
-            <h1 id="overview-title">{PREVIEW_MODE ? "Kia's Workspace" : 'Fleet Overview'}</h1>
+            <h1 id="overview-title" tabindex="-1">Fleet overview</h1><p class="lede">Health, collection status, and live network activity.</p>
 
           </div>
           <div class="heading-status-badge">
             <span class="live-ping"></span>
-            <span class="date-stamp tabular">{PREVIEW_MODE ? 'Preview adapter' : 'Live telemetry stream'}</span>
+            <span class="date-stamp tabular">{PREVIEW_MODE ? 'Fixture preview' : 'Updates every 15s'}</span>
           </div>
         </div>
 
@@ -2567,14 +2775,26 @@
             <p>Gathering health telemetry and server states.</p>
           </div>
         {:else if previewState === 'empty'}
-          <div class="state-panel">
-            <div class="state-icon"><Icon name="servers" size={28} /></div>
-            <h2>No servers enrolled</h2>
-            <p>Connect your first Linux VPS via SSH to begin monitoring.</p>
-            <button class="button primary" type="button" on:click={() => openAddServer()}>
-              <Icon name="plus" size={15} />
-              <span>Add first server</span>
-            </button>
+          <div class="empty-onboarding">
+            <div class="empty-onboarding-main">
+              <span class="eyebrow">Get started · 1 of 3</span>
+              <div class="state-icon"><Icon name="servers" size={26} /></div>
+              <h2>Bring your first server online</h2>
+              <p>Connect a Linux server over SSH. Payesh checks node transport reachability before installing the agent, then shows its live metrics here.</p>
+              {#if myAccount?.permission === 'read'}
+                <p class="muted">Ask a user with edit access to add the first server.</p>
+              {:else}
+                <button class="button primary" type="button" on:click={() => openAddServer()}>
+                  <Icon name="plus" size={15} />
+                  <span>Add first server</span>
+                </button>
+              {/if}
+            </div>
+            <ol class="empty-onboarding-steps" aria-label="Server setup steps">
+              <li><span>01</span><div><strong>Enter server details</strong><small>Hostname, SSH user, and one sign-in method.</small></div></li>
+              <li><span>02</span><div><strong>Verify the connection</strong><small>Payesh checks SSH and the TLS node endpoint.</small></div></li>
+              <li><span>03</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
+            </ol>
           </div>
         {:else if previewState === 'error'}
           <div class="state-panel error-state">
@@ -2610,12 +2830,12 @@
 
             <article class="summary-card">
               <div class="card-header">
-                <span class="stat-label">Bandwidth Usage</span>
+                <span class="stat-label">Live download</span>
                 <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
               </div>
-              <strong class="stat-value tabular">{overviewAllowanceBytes === '0' ? 'Unmetered' : formatBytes(overviewTrafficBytes)}</strong>
+              <strong class="stat-value tabular">{formatNetworkRate(fleetDownload)}</strong>
               <div class="stat-badge neutral">
-                <span>{overviewAllowanceBytes === '0' ? 'Live rates available per server' : `of ${formatBytes(overviewAllowanceBytes)} quota`}</span>
+                <span>Upload {formatNetworkRate(fleetUpload)} · {connectedCount} connected servers</span>
               </div>
             </article>
           </div>
@@ -2699,23 +2919,23 @@
             <article class="panel">
               <div class="panel-heading">
                 <div>
-                  <h2>Telemetry Activity</h2>
+                  <h2>Collection status</h2>
                 </div>
-                <span class="status-pill healthy"><i class="status-dot"></i> Live</span>
+                <span class={`status-pill ${attentionCount ? 'stale' : 'healthy'}`}><i class="status-dot"></i>{attentionCount ? 'Review needed' : 'Receiving data'}</span>
               </div>
               <div class="activity-feed">
                 <div class="activity-item">
                   <span class="activity-icon-pill emerald"><Icon name="check" size={13} /></span>
                   <div>
-                    <strong>Telemetry heartbeats active</strong>
-                    <small class="faint">Periodic agent polling connected</small>
+                    <strong>{connectedCount} of {displayServers.length} servers connected</strong>
+                    <small class="faint">{healthyCount} healthy · {attentionCount} need attention</small>
                   </div>
                 </div>
                 <div class="activity-item">
                   <span class="activity-icon-pill amber"><Icon name="activity" size={13} /></span>
                   <div>
-                    <strong>Anomaly surveillance armed</strong>
-                    <small class="faint">Fleet-wide threshold observers enabled</small>
+                    <strong>Alerts and incidents</strong>
+                    <button class="text-button" type="button" on:click={() => navigate('alerts')}>Review alert history <Icon name="chevron-right" size={14} /></button>
                   </div>
                 </div>
               </div>
@@ -2752,7 +2972,7 @@
     {/if}
 
     <footer>
-      <span>{PREVIEW_MODE ? 'Preview adapter · Fixture data' : 'Authenticated API client · Production'}</span>
+      <span>{PREVIEW_MODE ? 'Fixture preview · Sample data' : sessionState === 'authenticated' && !authExpired ? 'Your fleet dashboard' : 'Secure Linux monitoring'}</span>
       <span>Payesh · Low-overhead Linux Fleet Monitor</span>
     </footer>
   </main>
@@ -2881,6 +3101,10 @@
   .capitalize { text-transform: capitalize; }
   .faint { color: var(--muted); opacity: 0.8; }
 
+  .button.mobile-menu-toggle { display: none; }
+  .node-page-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; }
+  h1:focus { outline: none; }
+
   /* --------------------------------------------------------------------------
      APP SHELL & LAYOUT
      -------------------------------------------------------------------------- */
@@ -3003,7 +3227,7 @@
   .user-table-head { color: var(--muted); font-size: 12px; }
   .account-row .settings-actions { margin: 0; justify-content: flex-end; gap: 8px; }
   .user-role { text-transform: capitalize; }
-  @media (max-width: 650px) { .user-table-head { display: none; } .account-row { grid-template-columns: 1fr 1fr; } .account-row .settings-actions { justify-content: flex-start; } }
+  @media (max-width: 1100px) { .user-table-head { display: none; } .account-row { grid-template-columns: 1fr 1fr; } .account-row .settings-actions { justify-content: flex-start; } }
   .update-command { display: block; width: fit-content; max-width: 100%; padding: 10px 14px; margin: 12px 0; border-radius: var(--radius-md); background: var(--surface-muted); overflow-wrap: anywhere; }
 
   .nav-count {
@@ -3153,7 +3377,7 @@
     font-weight: 600;
     transition: all 0.15s ease;
   }
-  .button:hover {
+  .button:hover:not(:disabled) {
     background: var(--surface-muted);
     border-color: var(--muted);
   }
@@ -3167,7 +3391,9 @@
     color: var(--primary-contrast);
     box-shadow: none;
   }
-  .button.primary:hover {
+  .button.primary:hover:not(:disabled) {
+    background: var(--teal);
+    border-color: var(--teal);
     filter: brightness(1.1);
   }
   .button.ghost {
@@ -3175,7 +3401,7 @@
     border-color: var(--line);
     color: var(--muted);
   }
-  .button.ghost:hover {
+  .button.ghost:hover:not(:disabled) {
     background: var(--surface-muted);
     border-color: var(--muted);
     color: var(--ink);
@@ -3185,10 +3411,11 @@
     border-color: transparent;
     color: var(--danger);
   }
-  .button.danger:hover {
+  .button.danger:hover:not(:disabled) {
     filter: brightness(0.95);
   }
   .button.full-width { width: 100%; }
+  .button:disabled { opacity: 0.55; cursor: not-allowed; }
 
   .icon-button {
     display: grid;
@@ -3352,10 +3579,10 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 16px;
-    margin-bottom: 32px;
+    margin-bottom: 24px;
   }
   .summary-card {
-    padding: 20px;
+    padding: 18px 20px;
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--surface);
@@ -3900,7 +4127,7 @@
     margin: 0 auto 16px;
     font-size: 22px;
   }
-  .login-card h2 { text-align: center; margin-bottom: 6px; }
+  .login-card h1 { text-align: center; margin-bottom: 6px; font-size: 18px; }
   .login-card .center { text-align: center; }
   .auth-form {
     display: flex;
@@ -3991,6 +4218,30 @@
     background: var(--surface);
     text-align: center;
   }
+  .empty-onboarding {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .empty-onboarding-main { padding: 40px; background: linear-gradient(135deg, var(--surface), var(--teal-bg)); }
+  .empty-onboarding-main .eyebrow { color: var(--teal); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .empty-onboarding-main .state-icon { margin: 28px 0 18px; color: var(--teal); background: var(--surface); }
+  .empty-onboarding-main h2 { margin: 0 0 12px; font-size: clamp(24px, 3vw, 32px); letter-spacing: -.03em; line-height: 1.15; }
+  .empty-onboarding-main p { max-width: 52ch; margin: 0 0 22px; color: var(--ink-secondary); line-height: 1.6; }
+  .empty-onboarding-main .button { min-height: 42px; }
+  .empty-onboarding-steps { display: grid; align-content: center; gap: 0; margin: 0; padding: 20px 30px; list-style: none; }
+  .empty-onboarding-steps li { display: flex; gap: 16px; padding: 22px 0; border-bottom: 1px solid var(--line-light); }
+  .empty-onboarding-steps li:last-child { border-bottom: 0; }
+  .empty-onboarding-steps li > span { flex: 0 0 30px; color: var(--teal); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .empty-onboarding-steps li div { display: grid; gap: 6px; }
+  .empty-onboarding-steps strong { color: var(--ink); font-size: 14px; }
+  .empty-onboarding-steps small { color: var(--muted); line-height: 1.5; }
+  @media (max-width: 800px) { .empty-onboarding { grid-template-columns: 1fr; } .empty-onboarding-main { padding: 28px; } .empty-onboarding-steps { padding: 0 28px 8px; } .empty-onboarding-steps li { padding: 16px 0; } }
+  @media (max-width: 480px) { .empty-onboarding-main { padding: 24px; } .empty-onboarding-steps { padding: 0 24px 8px; } }
   .state-icon {
     width: 52px;
     height: 52px;
@@ -4035,10 +4286,18 @@
     max-width: 720px;
     min-width: 0;
   }
+  .settings-intro { margin-top: 8px; font-size: 14px; line-height: 1.6; color: var(--muted); }
   .settings-layout { display: grid; grid-template-columns: 200px minmax(0, 850px); gap: 32px; align-items: start; }
   .settings-nav { display: grid; gap: 4px; border-right: 1px solid var(--line); padding-right: 16px; }
-  .settings-nav button { text-align: left; padding: 12px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; border-radius: 4px; }
-  .settings-nav button.chosen { background: var(--surface-muted); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--accent); }
+  .settings-nav button { text-align: left; padding: 12px; min-height: 44px; font-size: 14px; line-height: 1.4; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-family: inherit; border-radius: var(--radius-md); }
+  .settings-nav button.chosen { background: var(--teal-bg); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--teal); }
+  .ssh-auth-choice { margin: 0; padding: 0; border: 0; min-width: 0; }
+  .ssh-auth-choice legend { margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .ssh-auth-choice > small { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+  .ssh-auth-options { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ssh-auth-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); cursor: pointer; }
+  .ssh-auth-options label:has(input:checked) { border-color: var(--teal); background: var(--teal-bg); }
+  .ssh-auth-options input { width: auto; margin: 0; accent-color: var(--teal); }
   .user-search { display: grid; gap: 8px; margin-bottom: 20px; font-size: 13px; }
   .release-list { border-top: 1px solid var(--line); margin: 16px 0 12px; }
   .release-row { align-items: center; }
@@ -4049,10 +4308,17 @@
   .update-banner { justify-content: space-between; }
   .update-banner span { flex: 1; }
   .release-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; }
-  .port-form { display: flex; gap: 16px; align-items: end; }
-  .port-form label { display: grid; gap: 8px; }
+  .connection-settings-panel > p { font-size: 14px; line-height: 1.6; color: var(--muted); }
+  .connection-settings-panel .panel-heading { margin-bottom: 16px; }
+  .port-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  .port-form label { display: grid; gap: 8px; font-size: 13px; color: var(--ink-secondary); }
+  .port-form input { width: 120px; max-width: 100%; box-sizing: border-box; }
   .form-wide { grid-column: 1 / -1; }
-  @media (max-width: 760px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 12px; } .release-row { grid-template-columns: 70px 1fr; } .release-row .release-actions { grid-column: 1 / -1; justify-content: space-between; } }
+  @media (max-width: 1100px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; gap: 6px; overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); padding: 6px; scrollbar-width: thin; } .settings-nav button { flex: 0 0 auto; padding: 10px 14px; white-space: nowrap; } .settings-nav button.chosen { box-shadow: inset 0 -3px var(--teal); } .release-row { grid-template-columns: 70px 1fr; } .release-row .release-actions { grid-column: 1 / -1; justify-content: space-between; } }
+  @media (max-width: 640px) {
+    .settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+    .settings-nav button { min-width: 0; padding: 10px; white-space: normal; }
+  }
   .settings-meta-box {
     display: flex;
     flex-direction: column;
@@ -4232,9 +4498,12 @@
       border-bottom: 1px solid var(--line);
       gap: 16px;
     }
-    .brand-lockup { padding: 0; }
-    .nav-list { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; }
-    .nav-item { padding: 8px 12px; white-space: nowrap; }
+    .sidebar { flex-wrap: wrap; }
+    .brand-lockup { padding: 0; flex: 1; }
+    .button.mobile-menu-toggle { display: inline-flex; min-height: 40px; }
+    .nav-list { display: none; flex: 0 0 100%; width: 100%; min-width: 0; }
+    .nav-list.menu-open { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .nav-item { padding: 10px 12px; white-space: normal; min-height: 44px; }
     .sidebar-footer { display: none; }
     .summary-grid { grid-template-columns: 1fr 1fr; }
     .table-header, .server-row {
@@ -4244,17 +4513,38 @@
   }
 
   @media (max-width: 640px) {
+    .nav-list.menu-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .sidebar { padding: 10px 16px; }
     .page { padding: 20px 16px 32px; }
+    .page-heading { flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    .summary-card { padding: 16px; }
+    .summary-grid { gap: 12px; }
+    .button, .icon-button { min-height: 40px; }
+    .topbar-actions { flex-wrap: wrap; gap: 8px; }
+    :global(input), :global(select), :global(textarea) { max-width: 100%; }
     .topbar { padding: 12px 16px; height: auto; min-height: 58px; flex-wrap: wrap; gap: 10px; }
     .settings-grid .panel-heading, .settings-actions { flex-wrap: wrap; }
     .meta-row { flex-wrap: wrap; gap: 8px; overflow-wrap: anywhere; }
     .summary-grid, .lower-grid, .metric-grid, .form-grid, .package-source-fields { grid-template-columns: 1fr; }
+    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .summary-card:last-child { grid-column: 1 / -1; }
+    .summary-card .card-header { margin-bottom: 6px; }
+    .summary-card .stat-value { font-size: 25px; margin-bottom: 6px; }
+    .summary-card .stat-label { font-size: 12px; }
+    .summary-card .stat-icon-wrap { width: 20px; height: 20px; }
+    .summary-card .stat-badge { font-size: 11px; }
+
     .package-source-fields details { grid-column: auto; }
     .table-header { display: none; }
-    .server-row {
-      grid-template-columns: 1fr auto;
-      gap: 8px;
+    .server-row:not(.alert-row) {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: 'name action' 'status action';
+      gap: 8px 12px;
+      padding: 14px 16px;
     }
+    .server-row:not(.alert-row) .col-name { grid-area: name; min-width: 0; }
+    .server-row:not(.alert-row) .col-status { grid-area: status; }
+    .server-row:not(.alert-row) .col-action { grid-area: action; }
     .col-meta { display: none; }
     footer { flex-direction: column; gap: 8px; padding: 0 16px 24px; }
   }

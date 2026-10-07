@@ -1,0 +1,28 @@
+[Unit]
+Description=Payesh server-cutover peer (start only for a supervised cutover)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/payesh/cutover/grants.json
+
+[Service]
+Type=simple
+User=payesh
+Group=payesh
+EnvironmentFile=-/etc/payesh/cutover-peer.env
+ExecStart=/usr/bin/payesh cutover serve --db ${PAYESH_CUTOVER_DB} --listen ${PAYESH_CUTOVER_LISTEN} --generate-tls --tls-cert /var/lib/payesh/cutover/cert.pem --tls-key /var/lib/payesh/cutover/key.pem --grants-file /var/lib/payesh/cutover/grants.json --spool-dir /var/lib/payesh/cutover/spool
+# Grants last at most 24 hours; the peer never needs to outlive one.
+RuntimeMaxSec=86400
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/payesh
+MemoryMax=512M
+TasksMax=128
+
+# Intentionally no [Install] section: an operator starts this for one cutover and
+# stops it afterwards. Set PAYESH_CUTOVER_DB and PAYESH_CUTOVER_LISTEN in
+# /etc/payesh/cutover-peer.env, and restrict the port with a firewall rule.

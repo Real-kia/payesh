@@ -28,7 +28,10 @@ jobs:
       - name: Verify process module and API
         run: go test -race ./internal/processmonitor ./internal/modules ./internal/fleet
       - name: Build release bundle
+        env:
+          PAYESH_RELEASE_MIN_CORE: ${{ vars.PAYESH_RELEASE_MIN_CORE }}
         run: |
+          test -n "$PAYESH_RELEASE_MIN_CORE" || { echo "Configure the reviewed PAYESH_RELEASE_MIN_CORE repository variable before release packaging" >&2; exit 2; }
           version="${GITHUB_REF_NAME#v}"
           echo "VERSION=$version" >>"$GITHUB_ENV"
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \

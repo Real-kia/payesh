@@ -17,8 +17,9 @@ content type; the server validates the token and origin policy.
 
 The owner can manage up to 100 delegated `admin` or `member` accounts through
 `/accounts`. Each has `read` or `edit` permission. Read-only sessions may query
-the API but cannot mutate it; only the owner may list, create, change, or delete
-accounts. Password resets revoke that account's sessions. `GET /account/me`
+the API and revoke their own session using CSRF-protected `DELETE /session`;
+they cannot change product data. Only the owner may list, create, change, or
+delete accounts. Password resets revoke that account's sessions. `GET /account/me`
 returns the current role and permission without credential material.
 
 The packaged server's default browser mode binds to the loopback HTTP listener
@@ -103,3 +104,29 @@ not. Several declared endpoints and production integrations remain package
 work—notably enrollment production, WebSocket transport, installers, updates,
 backups and role transitions—and
 must not be replaced with successful dummy responses.
+
+## Storage settings
+
+Authenticated `GET /api/v1/settings/storage` returns settings, physical live
+SQLite file usage as `database_bytes`, retained schema recovery usage as
+`recovery_snapshot_bytes`, and `effective_sample_seconds`. The recovery field
+is always present and defaults to zero. The configured storage limit and
+pressure state account for the sum of both byte counts. Owner-only `PUT`
+requires CSRF and the current settings revision. These endpoints and their
+`StorageStatus` and `StorageSettings` schemas are specified in OpenAPI.
+
+## Node transport settings
+
+The implementation exposes `/api/v1/settings/node-transport` separately from
+dashboard HTTPS settings. `GET` returns current port/URL, previous ports, legacy
+dashboard compatibility, per-node migration state, and pending count. `PATCH`
+accepts `{ "port": 9797 }`, reserves the listener, and starts verified migration.
+`DELETE` retires previous node endpoints only when every enrolled, non-revoked
+node has connected on the current port. Reads require a session; mutations also
+require CSRF and edit permission. See [Settings](../SETTINGS.md) for migration
+and firewall behavior. The OpenAPI document includes this extension and its
+response schemas. Migration status returns at most 200 node details per page
+with an opaque cursor, and enforces the 1 MiB response limit. The `total`,
+`migrated` and `pending` counts include every non-revoked enrolled node, so
+retirement remains blocked by pending nodes outside the displayed page.
+Passing contract validation does not establish completeness of all API routes.

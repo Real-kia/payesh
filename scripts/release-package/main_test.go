@@ -73,3 +73,18 @@ func TestArchiveBinaryIsDeterministic(t *testing.T) {
 		t.Fatal("same source and timestamp produced different archive bytes")
 	}
 }
+
+func TestPublisherMinimumCoreDeclarationRejectsMissingInvalidAndFutureBaseline(t *testing.T) {
+	for _, minimum := range []string{"", "dev", "1.2.4", "2.0.0"} {
+		if err := run("1.2.3", t.TempDir(), "", "2026-01-01T00:00:00Z", false, minimum); err == nil || !strings.Contains(err.Error(), "min-core") {
+			t.Fatalf("invalid publisher minimum %q accepted: %v", minimum, err)
+		}
+	}
+	output := t.TempDir()
+	if err := os.Mkdir(filepath.Join(output, "1.2.3"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("1.2.3", output, "", "2026-01-01T00:00:00Z", false, "1.0.0"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("legitimate explicit publisher baseline rejected: %v", err)
+	}
+}

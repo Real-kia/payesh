@@ -63,7 +63,7 @@ const requiredPaths = [
   '/servers/{serverId}/cpu-policies/{targetKind}/{targetName}/revert:',
   '/updates/preflight:', '/backups:', '/backups/export:', '/backups/import:',
   '/role-transitions:', '/servers/{serverId}/enrollment:', '/servers/{serverId}/enrollment-token:', '/jobs/{jobId}:',
-  '/audit-events:', '/settings/https:'
+  '/audit-events:', '/settings/https:', '/settings/node-transport:'
 ];
 for (const path of requiredPaths) {
   if (!spec.includes(`  ${path}`)) throw new Error(`OpenAPI path missing: ${path}`);
@@ -121,4 +121,30 @@ const server = document.components.schemas.Server;
 if (!server.required?.includes('connection_state') || !server.required?.includes('freshness_state')) {
   throw new Error('server connection/freshness contract missing');
 }
-console.log('OpenAPI foundation contract checks passed');
+const nodeTransport = document.paths['/settings/node-transport'];
+for (const method of ['get', 'patch', 'delete']) {
+  if (nodeTransport?.[method]?.responses?.['200']?.content?.['application/json']?.schema?.$ref !== '#/components/schemas/NodeTransportStatus') {
+    throw new Error(`node transport ${method} must return migration status`);
+  }
+}
+const nodePortRequest = nodeTransport.patch.requestBody?.content?.['application/json']?.schema;
+if (nodePortRequest?.properties?.port?.minimum !== 1 || nodePortRequest?.properties?.port?.maximum !== 65535 || nodePortRequest.additionalProperties !== false) {
+  throw new Error('node transport port request must reject unknown fields and constrain the TCP port');
+}
+if (nodeTransport.patch.responses['400']?.content?.['text/plain']?.schema?.type !== 'string') {
+  throw new Error('node transport malformed-request error is currently plain text');
+}
+const migrationStates = document.components.schemas.NodeTransportMigration?.properties?.state?.enum;
+if (JSON.stringify(migrationStates) !== JSON.stringify(['migrated', 'pending', 'update-required', 'failed'])) {
+  throw new Error('node migration states differ from the handler contract');
+}
+const statusSchema = document.components.schemas.NodeTransportStatus;
+if (statusSchema.properties.nodes.maxItems !== 200 || !['total', 'migrated', 'pending'].every((field) => statusSchema.required.includes(field))) {
+  throw new Error('node migration status must bound details and include whole-fleet counts');
+}
+const pageLimit = nodeTransport.get.parameters?.find((parameter) => parameter.name === 'limit');
+const pageCursor = nodeTransport.get.parameters?.find((parameter) => parameter.name === 'cursor');
+if (pageLimit?.schema?.maximum !== 200 || pageLimit.schema.minimum !== 1 || pageCursor?.schema?.maxLength !== 256) {
+  throw new Error('node migration status needs bounded pagination parameters');
+}
+console.log('OpenAPI foundation and node transport contract checks passed');

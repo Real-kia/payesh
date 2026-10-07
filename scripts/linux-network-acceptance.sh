@@ -1,13 +1,69 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Every kernel mutation runs in a fresh outer network and mount namespace.
+# Named child namespaces and their bind mounts live on a private /run tmpfs.
+# This command mode is also used by the tc/nft acceptance runner so fixed test
+# interface/table names can never collide with installed or foreign host state.
+if [[ "${1:-}" != --isolated ]]; then
+  for required in unshare mount readlink ip; do
+    if ! command -v "$required" >/dev/null 2>&1; then
+      printf 'network_isolation=UNSUPPORTED reason=%s-unavailable; no host fallback\n' "$required" >&2
+      exit 1
+    fi
+  done
+  if (( EUID != 0 )); then
+    echo 'network_isolation=UNSUPPORTED reason=root-required; no host fallback' >&2
+    exit 1
+  fi
+  parent_netns=$(readlink /proc/self/ns/net)
+  parent_mountns=$(readlink /proc/self/ns/mnt)
+  if [[ "${1:-}" == --run-isolated ]]; then
+    shift
+    (( $# > 0 )) || { echo 'isolated command required' >&2; exit 2; }
+    isolated_command=("$@")
+  else
+    isolated_command=(bash "${BASH_SOURCE[0]}" --isolated)
+  fi
+  # --kill-child ensures the private PID namespace and all its descendants
+  # disappear if a bounded external runner interrupts this process.
+  isolation_work=$(mktemp -d "${TMPDIR:-/tmp}/payesh-network-isolation.XXXXXX")
+  trap 'rm -rf -- "$isolation_work"' EXIT
+  result=0
+  unshare --mount --net --pid --fork --kill-child=KILL \
+    bash -c '
+      set -Eeuo pipefail
+      parent_netns=$1; parent_mountns=$2; isolation_ready=$3; shift 3
+      [[ "$(readlink /proc/self/ns/net)" != "$parent_netns" && "$(readlink /proc/self/ns/mnt)" != "$parent_mountns" ]] || {
+        echo "network_isolation=UNSUPPORTED reason=namespace-not-isolated; no host fallback" >&2; exit 1;
+      }
+      mount --make-rprivate /
+      mount -t proc -o nosuid,nodev,noexec proc /proc
+      mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+      mkdir -m 0755 /run/netns
+      ip link set lo up
+      export PAYESH_ACCEPTANCE_OUTER_NETNS="$(readlink /proc/self/ns/net)"
+      : > "$isolation_ready"
+      echo "network_isolation=PASS network-and-mount-private"
+      exec "$@"
+    ' payesh-isolated "$parent_netns" "$parent_mountns" "$isolation_work/ready" "${isolated_command[@]}" || result=$?
+  if (( result != 0 )) && [[ ! -e "$isolation_work/ready" ]]; then
+    echo 'network_isolation=UNSUPPORTED reason=namespace-setup-rejected; no host fallback' >&2
+  fi
+  exit "$result"
+fi
+[[ -n "${PAYESH_ACCEPTANCE_OUTER_NETNS:-}" && "$(readlink /proc/self/ns/net)" == "$PAYESH_ACCEPTANCE_OUTER_NETNS" ]] || {
+  echo 'network_isolation=UNSUPPORTED reason=missing-outer-namespace; no host fallback' >&2
+  exit 1
+}
+shift
+
 # Disposable Linux network acceptance probe.  It exercises kernel topology
 # primitives in private network namespaces and only creates names containing
 # this process' PID.  It never flushes a ruleset or changes a foreign link.
 #
-# The probe intentionally reports a missing container runtime as unsupported:
-# a network namespace is a useful kernel-level substitute, but it is not proof
-# of Docker/Podman integration.
+# The probe intentionally excludes shared Docker/Podman daemons. Namespace
+# connectivity is kernel evidence and is not runtime integration evidence.
 
 stage=bootstrap
 work=$(mktemp -d "${TMPDIR:-/tmp}/payesh-network-acceptance.XXXXXX")
@@ -253,27 +309,9 @@ test_offload() {
 
 test_container_runtime() {
   stage=container_runtime
-  local runtime=''
-  if command -v docker >/dev/null 2>&1; then runtime=docker; elif command -v podman >/dev/null 2>&1; then runtime=podman; fi
-  if [[ -z "$runtime" ]]; then
-    mark_unsupported container_runtime docker-or-podman-not-installed
-    # The namespace and bridge tests above still provide kernel-level
-    # container-network evidence; this result must not be mislabeled runtime.
-    return 0
-  fi
-  if command -v timeout >/dev/null 2>&1; then
-    if ! timeout 8 "$runtime" info >/dev/null 2>&1; then
-      mark_unsupported container_runtime "${runtime}-daemon-unavailable"
-      return 0
-    fi
-  elif ! "$runtime" info >/dev/null 2>&1; then
-    mark_unsupported container_runtime "${runtime}-daemon-unavailable"
-    return 0
-  fi
-  local version
-  version=$("$runtime" version --format '{{.Server.Version}}' 2>/dev/null || true)
-  if [[ -z "$version" ]]; then version=unknown; fi
-  printf 'container_runtime=%s version=%s\n' "$runtime" "$version"
+  # The isolated probe cannot contact a shared host daemon. Namespace bridge
+  # and NAT results are not proof of Docker/Podman integration.
+  mark_unsupported container_runtime isolated-probe-does-not-use-host-daemon
 }
 
 if ! require_commands; then

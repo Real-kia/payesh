@@ -43,8 +43,7 @@ Use a warm-up, then repeat the same workload with each optional module disabled
 and enabled. For release evidence, record host/kernel/architecture, build
 digest, workload, duration, interval, module configuration, and whether the
 run was idle, steady-state, or under load. A 30-minute steady-state run and a
-separate 24-hour retention/ingestion soak are the target evidence from the
-shared plan; short local runs only validate the harness.
+separate 24-hour retention/ingestion soak are required release evidence; short local runs only validate the harness.
 
 The JSON schema is `payesh.resource_benchmark.v1`. TSV has one row per run and
 is suitable for importing into a spreadsheet. Reports contain no environment

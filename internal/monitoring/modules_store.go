@@ -143,6 +143,9 @@ func (s *Store) transitionModuleInstallation(ctx context.Context, serverID contr
 		return contracts.ModuleInstallation{}, err
 	}
 	defer tx.Rollback()
+	if err := requireServerCommandAuthorityTx(ctx, tx, serverID); err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO module_installations(server_id,module_id,version,state,revision,updated_at,error_json) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(server_id,module_id) DO UPDATE SET version=excluded.version,state=excluded.state,revision=excluded.revision,updated_at=excluded.updated_at,error_json=excluded.error_json

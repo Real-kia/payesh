@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,6 +110,9 @@ func (f *fakeSSHTransport) Upload(_ context.Context, _ SSHEndpoint, _ string, au
 
 func (f *fakeSSHTransport) Run(_ context.Context, _ SSHEndpoint, _ string, _ SSHAuth, command string, _ []byte) ([]byte, error) {
 	f.commands = append(f.commands, command)
+	if strings.HasPrefix(command, "cat ") && strings.Contains(command, "status.txt") {
+		return []byte("FALLBACK:master_upload_required\n"), nil
+	}
 	if strings.Contains(command, " --json ") {
 		return json.Marshal(f.preflight)
 	}
@@ -119,6 +124,69 @@ func strconvBool(value bool) string {
 		return "recursive"
 	}
 	return "file"
+}
+
+type sudoSchemaTransport struct {
+	fakeSSHTransport
+	schemaChecked bool
+	installed     bool
+}
+
+func (f *sudoSchemaTransport) Run(ctx context.Context, ep SSHEndpoint, hosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
+	if strings.Contains(command, "temporary-sudo-password") {
+		return nil, errors.New("sudo password leaked into remote command")
+	}
+	if command == "id -u" {
+		return []byte("1000\n"), nil
+	}
+	if strings.HasSuffix(command, " --check-schema") || (strings.Contains(command, " --install ") && !strings.Contains(command, "\n")) {
+		if !strings.HasPrefix(command, "sudo -S -p '' ") || string(stdin) != "temporary-sudo-password\n" {
+			return nil, errors.New("permission denied reading installed database")
+		}
+		if strings.HasSuffix(command, " --check-schema") {
+			f.schemaChecked = true
+		} else {
+			if !f.schemaChecked {
+				return nil, errors.New("installation preceded schema check")
+			}
+			f.installed = true
+		}
+	}
+	if strings.Contains(command, " --json ") && !strings.Contains(command, "\n") && !f.schemaChecked {
+		return nil, errors.New("preflight preceded privileged schema check")
+	}
+	return f.fakeSSHTransport.Run(ctx, ep, hosts, auth, command, stdin)
+}
+
+func TestInstallOverSSHChecksSchemaWithInstallerSudoPrivileges(t *testing.T) {
+	root := t.TempDir()
+	installer := filepath.Join(root, "payesh-install")
+	if err := os.WriteFile(installer, []byte("installer"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := map[string]string{}
+	for _, name := range requiredArtifacts("node") {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		artifacts[name] = path
+	}
+	key := testHostKey("node.example", 22, 15)
+	transport := &sudoSchemaTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "node", Supported: true, Artifacts: requiredArtifacts("node")}}}
+	password := []byte("temporary-sudo-password")
+	result, err := InstallOverSSH(t.Context(), SSHInstallOptions{
+		Endpoint: SSHEndpoint{Host: "node.example", Port: 22, User: "deploy"}, ExpectedHostKeyFingerprint: key.Fingerprint,
+		Auth: SSHAuth{Password: []byte("login-password"), SudoPassword: password}, InstallerPath: installer, Artifacts: artifacts,
+		Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"),
+		Enroll: func(context.Context) error { return nil }, VerifyMeasurements: func(context.Context) error { return nil },
+	})
+	if err != nil || result.Stage != "complete" || !transport.schemaChecked || !transport.installed {
+		t.Fatalf("sudo schema installation result=%+v checked=%t installed=%t err=%v", result, transport.schemaChecked, transport.installed, err)
+	}
+	if !bytes.Equal(password, make([]byte, len(password))) {
+		t.Fatal("caller sudo password was not cleared")
+	}
 }
 
 func TestInstallOverSSHUsesTransientCredentialsAndRequiresMeasurement(t *testing.T) {
@@ -142,7 +210,7 @@ func TestInstallOverSSHUsesTransientCredentialsAndRequiresMeasurement(t *testing
 		Endpoint:                   SSHEndpoint{Host: "node.example", Port: 2222, User: "root"},
 		ExpectedHostKeyFingerprint: key.Fingerprint,
 		Auth:                       SSHAuth{Password: password}, InstallerPath: installer, Artifacts: artifacts,
-		Role: "node", Transport: transport, VerifyArtifact: acceptArtifact,
+		Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"),
 		Enroll:             func(context.Context) error { return nil },
 		VerifyMeasurements: func(context.Context) error { return nil },
 	})
@@ -178,7 +246,7 @@ func TestInstallOverSSHDoesNotUploadOnUnknownHost(t *testing.T) {
 	_, err := InstallOverSSH(context.Background(), SSHInstallOptions{
 		Endpoint: SSHEndpoint{Host: "node.example", Port: 22, User: "root"},
 		Auth:     SSHAuth{PrivateKey: []byte("key")}, InstallerPath: installer, Artifacts: artifacts,
-		Role: "node", Transport: transport, VerifyArtifact: acceptArtifact,
+		Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"),
 	})
 	if !errors.Is(err, ErrSSHHostKeyUnknown) || len(transport.uploads) != 0 || len(transport.commands) != 0 {
 		t.Fatalf("unknown host err=%v uploads=%v commands=%v", err, transport.uploads, transport.commands)
@@ -256,12 +324,12 @@ func TestInstallOverSSHRejectsSymlinkRoleArtifact(t *testing.T) {
 }
 
 func TestSSHInstallFailureDetail(t *testing.T) {
-	err := sshStage("scan host key", errors.New("host key scan failed for 89.58.29.206:22 (connection refused)\nextra line"))
+	err := sshStage("scan host key", errors.New("host key scan failed for 192.0.2.10:22 (connection refused)\nextra line"))
 	if stage := SSHInstallFailureStage(err); stage != "scan host key" {
 		t.Fatalf("unexpected stage: %s", stage)
 	}
 	detail := SSHInstallFailureDetail(err)
-	if detail != "host key scan failed for 89.58.29.206:22 (connection refused)" {
+	if detail != "host key scan failed for 192.0.2.10:22 (connection refused)" {
 		t.Fatalf("unexpected detail: got %q", detail)
 	}
 }
@@ -339,10 +407,11 @@ func TestInstallOverSSHGithubFirstSucceedsWithoutUpload(t *testing.T) {
 		InstallerPath:              installer,
 		Artifacts:                  artifacts,
 		Role:                       "node",
-		Transport:                  transport,
-		VerifyArtifact:             acceptArtifact,
-		Enroll:                     func(context.Context) error { return nil },
-		VerifyMeasurements:         func(context.Context) error { return nil },
+		TransportURL:               "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"),
+		Transport:          transport,
+		VerifyArtifact:     acceptArtifact,
+		Enroll:             func(context.Context) error { return nil },
+		VerifyMeasurements: func(context.Context) error { return nil },
 	})
 	if err != nil || result.Stage != "complete" || !result.Enrolled {
 		t.Fatalf("unexpected result: result=%+v err=%v", result, err)
@@ -377,10 +446,11 @@ func TestInstallOverSSHGithubFallbackUploadsFromMaster(t *testing.T) {
 		InstallerPath:              installer,
 		Artifacts:                  artifacts,
 		Role:                       "node",
-		Transport:                  transport,
-		VerifyArtifact:             acceptArtifact,
-		Enroll:                     func(context.Context) error { return nil },
-		VerifyMeasurements:         func(context.Context) error { return nil },
+		TransportURL:               "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"),
+		Transport:          transport,
+		VerifyArtifact:     acceptArtifact,
+		Enroll:             func(context.Context) error { return nil },
+		VerifyMeasurements: func(context.Context) error { return nil },
 	})
 	if err != nil || result.Stage != "complete" || !result.Enrolled {
 		t.Fatalf("unexpected result: result=%+v err=%v", result, err)
@@ -413,7 +483,7 @@ func TestInstallOverSSHUsesHubHTTPWithoutUploadingBinaries(t *testing.T) {
 	key := testHostKey("node.example", 2222, 4)
 	transport := &hubDownloadTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "node", Supported: true, Architecture: "arm64", Artifacts: requiredArtifacts("node")}}}
 	closed := false
-	opts := SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 2222, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{Password: []byte("transient")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, Enroll: func(context.Context) error { return nil }, VerifyMeasurements: func(context.Context) error { return nil }}
+	opts := SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 2222, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{Password: []byte("transient")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "node", Transport: transport, VerifyArtifact: acceptArtifact, TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust"), Enroll: func(context.Context) error { return nil }, VerifyMeasurements: func(context.Context) error { return nil }}
 	opts.DownloadArtifacts = func(_ context.Context, arch, role string) (ArtifactDownload, error) {
 		if arch != "arm64" || role != "node" {
 			t.Fatalf("selection %s %s", arch, role)
@@ -437,5 +507,123 @@ func TestInstallOverSSHUsesHubHTTPWithoutUploadingBinaries(t *testing.T) {
 	}
 	if !closed {
 		t.Fatal("download lease not closed")
+	}
+}
+
+type nodePortSSHTransport struct {
+	githubCapableTransport
+	blocked bool
+}
+
+func (f *nodePortSSHTransport) Run(ctx context.Context, ep SSHEndpoint, hosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
+	if strings.Contains(command, " --check-transport ") && !strings.Contains(command, "github_bootstrap.sh") {
+		f.commands = append(f.commands, command)
+		if f.blocked {
+			return []byte("sensitive remote diagnostic"), errors.New("probe failed")
+		}
+		return nil, nil
+	}
+	return f.githubCapableTransport.Run(ctx, ep, hosts, auth, command, stdin)
+}
+func TestSSHNodePortProbeRunsBeforeInstallAndBlocksUnreachableHub(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(strconvBool(blocked), func(t *testing.T) {
+			paths := downloadFixture(t)
+			key := testHostKey("node.example", 2222, 4)
+			remote := &nodePortSSHTransport{blocked: blocked, githubCapableTransport: githubCapableTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "node", Supported: true, Architecture: "amd64", Artifacts: requiredArtifacts("node")}}}}
+			enrolled := false
+			result, err := InstallOverSSH(context.Background(), SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 2222, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{Password: []byte("transient")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "node", Transport: remote, VerifyArtifact: acceptArtifact, TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte(`{"test":"identity"}`), HubTrustPEM: []byte("test trust"), Enroll: func(context.Context) error { enrolled = true; return nil }, VerifyMeasurements: func(context.Context) error { return nil }})
+			probe, install := -1, -1
+			for i, command := range remote.commands {
+				if strings.Contains(command, " --check-transport ") && !strings.Contains(command, "github_bootstrap.sh") {
+					probe = i
+				}
+				if strings.Contains(command, " --install --role ") && !strings.Contains(command, "github_bootstrap.sh") {
+					install = i
+				}
+			}
+			if probe < 0 {
+				t.Fatal("no node-side probe was run")
+			}
+			if blocked {
+				if !errors.Is(err, ErrSSHNodePortUnavailable) || SSHInstallFailureStage(err) != "node transport port" || enrolled || result.Enrolled || install >= 0 {
+					t.Fatalf("blocked install continued: result=%+v err=%v install=%d", result, err, install)
+				}
+				if strings.Contains(SSHInstallFailureDetail(err), "sensitive") {
+					t.Fatal("probe leaked remote output")
+				}
+			} else if err != nil || !enrolled || install <= probe {
+				t.Fatalf("probe did not precede install: probe=%d install=%d err=%v", probe, install, err)
+			}
+		})
+	}
+}
+func TestGitHubBootstrapPortProbeStopsBeforeInstaller(t *testing.T) {
+	dir := t.TempDir()
+	// The fetched agent rejects the hub connection. The installer must never run.
+	if err := os.WriteFile(filepath.Join(dir, "payesh-agent"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "installer-ran")
+	if err := os.WriteFile(filepath.Join(dir, "payesh-install"), []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range requiredArtifacts("node") {
+		if name == "payesh-agent" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("unused"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command, err := nodePortCheckCommand(dir, SSHInstallOptions{Role: "node", TransportURL: "wss://hub.example.test:9797/node/v1", NodeIdentityJSON: []byte("identity"), HubTrustPEM: []byte("trust")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(githubBootstrapScriptTemplate, dir, "amd64", "node", "0", "", strings.Join(append([]string{"payesh-install"}, requiredArtifacts("node")...), " "), "", command)
+	cmd := exec.Command("sh")
+	cmd.Stdin = strings.NewReader(script)
+	if err = cmd.Run(); err == nil {
+		t.Fatal("blocked transport probe reported success")
+	}
+	status, err := os.ReadFile(filepath.Join(dir, "status.txt"))
+	if err != nil || strings.TrimSpace(string(status)) != "FAILED:transport_check" {
+		t.Fatalf("status=%s err=%v", status, err)
+	}
+	if _, err = os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("installer ran before transport probe succeeded")
+	}
+}
+
+func TestNodePortCheckRequiresTransportURL(t *testing.T) {
+	for _, endpoint := range []string{"", " \t\n "} {
+		command, err := nodePortCheckCommand("/tmp/test-stage", SSHInstallOptions{Role: "node", TransportURL: endpoint, NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust")})
+		if err == nil || command != "" {
+			t.Fatalf("missing node endpoint bypassed reachability check: command=%q err=%v", command, err)
+		}
+	}
+	for _, role := range []string{"standalone", "hub", "cli-only"} {
+		command, err := nodePortCheckCommand("/tmp/test-stage", SSHInstallOptions{Role: role})
+		if err != nil || command != "true" {
+			t.Fatalf("non-node role %q requires a node probe: command=%q err=%v", role, command, err)
+		}
+	}
+}
+
+func TestInstallOverSSHRejectsMissingNodeEndpointBeforeStagingArtifacts(t *testing.T) {
+	paths := downloadFixture(t)
+	key := testHostKey("node.example", 22, 26)
+	remote := &fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "node", Supported: true}}
+	_, err := InstallOverSSH(context.Background(), SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 22, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{PrivateKey: []byte("fixture")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "node", Transport: remote, VerifyArtifact: acceptArtifact, NodeIdentityJSON: []byte("fixture identity"), HubTrustPEM: []byte("fixture trust")})
+	if err == nil || SSHInstallFailureStage(err) != "node transport port" {
+		t.Fatalf("missing node endpoint accepted: %v", err)
+	}
+	if len(remote.uploads) != 0 {
+		t.Fatalf("artifacts uploaded without a required node endpoint: %v", remote.uploads)
+	}
+	for _, command := range remote.commands {
+		if strings.Contains(command, " --json --role ") || strings.Contains(command, " --install --role ") || strings.Contains(command, " --check-transport ") || strings.Contains(command, "github_bootstrap.sh") {
+			t.Fatalf("release code staged or executed without a node endpoint: %s", command)
+		}
 	}
 }

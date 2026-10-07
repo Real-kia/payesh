@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+
+name="Payesh server-cutover peer"
+description="Start only for a supervised cutover; stop it afterwards"
+supervisor="supervise-daemon"
+command="${PAYESH_BINARY:-/usr/bin/payesh}"
+command_user="payesh:payesh"
+output_log="/var/log/payesh/cutover-peer.log"
+error_log="/var/log/payesh/cutover-peer.log"
+respawn_delay=5
+respawn_max=5
+respawn_period=600
+
+depend() {
+	need net localmount
+}
+
+start_pre() {
+	[ -s /var/lib/payesh/cutover/grants.json ] || { eerror "no grant file at /var/lib/payesh/cutover/grants.json"; return 1; }
+	[ -f /etc/payesh/cutover-peer.env ] && . /etc/payesh/cutover-peer.env
+	: "${PAYESH_CUTOVER_DB:?set PAYESH_CUTOVER_DB in /etc/payesh/cutover-peer.env}"
+	: "${PAYESH_CUTOVER_LISTEN:?set PAYESH_CUTOVER_LISTEN in /etc/payesh/cutover-peer.env}"
+	command_args="cutover serve --db ${PAYESH_CUTOVER_DB} --listen ${PAYESH_CUTOVER_LISTEN} --generate-tls --tls-cert /var/lib/payesh/cutover/cert.pem --tls-key /var/lib/payesh/cutover/key.pem --grants-file /var/lib/payesh/cutover/grants.json --spool-dir /var/lib/payesh/cutover/spool"
+	checkpath --directory --mode 0700 --owner payesh:payesh /var/lib/payesh/cutover
+	checkpath --directory --mode 0750 --owner payesh:payesh /var/log/payesh
+}

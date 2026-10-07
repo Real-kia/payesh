@@ -73,3 +73,24 @@ already collected samples. Heartbeats remain independent. The hub omits this
 field for older nodes, whose strict decoders reject unknown fields. Policy can
 be included on a retryable rejected batch so storage pressure also slows
 future collection while the existing batch remains in the spool.
+
+## Transport port migration extension
+
+The default node channel uses TLS on port 9797, independently of dashboard
+access. Agents advertising `transport-migration` receive `hello_accepted`
+after their identity and inventory are accepted. The hub may then send
+`transport_migrate` with a typed body `{"url":"wss://hub.example.com:9798/node/v1"}`.
+Older agents receive neither extension message.
+
+The agent accepts only a new port on the same hub hostname, with no URL
+credentials, query, or fragment. It probes an authenticated TLS/WebSocket
+upgrade without sending a second `hello`, preserving the one-controller rule.
+It saves the verified endpoint with the previous address as a fallback before
+reconnecting. `hello_accepted` on the new connection clears that fallback.
+Failures leave the working endpoint available and send `transport_result`
+with a bounded `error` string. The hub retries proposals every 30 seconds,
+including after an offline node returns to a retained previous endpoint.
+
+Migration progress uses authenticated connections on the actual local listener
+port and persists across hub restarts. Previous endpoints can be retired only
+when all enrolled, non-revoked nodes have reached the current node port.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,6 +34,7 @@ import (
 	"github.com/Real-kia/payesh/internal/updater"
 	"github.com/Real-kia/payesh/internal/version"
 	"github.com/Real-kia/payesh/internal/webtls"
+	"github.com/Real-kia/payesh/internal/webupdate"
 )
 
 func main() {
@@ -55,7 +57,7 @@ func main() {
 	webDir := flag.String("web-dir", envOr("PAYESH_WEB_DIR", defaultWebDir), "built dashboard directory served on non-API paths (or PAYESH_WEB_DIR)")
 	tlsDir := flag.String("tls-dir", os.Getenv("PAYESH_TLS_DIR"), "automatic HTTPS state directory (default: tls/ beside the database)")
 	trustedProxyCIDRs := flag.String("trusted-proxy-cidrs", os.Getenv("PAYESH_TRUSTED_PROXY_CIDRS"), "comma-separated trusted reverse-proxy IPs/CIDRs for client-address headers")
-	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "optional TLS node transport listen address (disabled when empty)")
+	nodeListen := flag.String("node-listen", os.Getenv("PAYESH_NODE_LISTEN"), "TLS node transport listen address (default: dashboard bind host on port 9797)")
 	nodeTLSCert := flag.String("node-tls-cert", os.Getenv("PAYESH_NODE_TLS_CERT"), "node transport TLS server certificate PEM path")
 	nodeTLSKey := flag.String("node-tls-key", os.Getenv("PAYESH_NODE_TLS_KEY"), "node transport TLS server private key PEM path")
 	transportURL := flag.String("transport-url", os.Getenv("PAYESH_TRANSPORT_URL"), "public transport URL advertised to nodes (or PAYESH_TRANSPORT_URL)")
@@ -176,6 +178,8 @@ func main() {
 	var nodeHub *transport.Hub
 	var updateScheduler *updater.Scheduler
 	var installService *fleet.InstallService
+	var nodeServer *http.Server
+	var nodePorts *transport.NodePorts
 	if nodeConfig.Enabled() || *bootstrapSecret != "" {
 		enrollmentAuthority, err = transport.NewPersistentCertificateAuthority(time.Now().UTC(), store)
 		if err != nil {
@@ -187,6 +191,66 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configure node transport hub:", err)
 			os.Exit(1)
 		}
+	}
+	if nodeHub != nil {
+		nodeServer = &http.Server{Handler: nodeTransportHandler(nodeHub), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequestClientCert, NextProtos: []string{"http/1.1"}, GetCertificate: httpsManager.GetCertificate}
+		if nodeConfig.CertFile != "" {
+			certificate, certErr := tls.LoadX509KeyPair(nodeConfig.CertFile, nodeConfig.KeyFile)
+			if certErr != nil {
+				fmt.Fprintln(os.Stderr, "node TLS:", certErr)
+				os.Exit(1)
+			}
+			tlsConfig.Certificates = []tls.Certificate{certificate}
+			tlsConfig.GetCertificate = nil
+		}
+		address := *nodeListen
+		if address == "" {
+			host, _, splitErr := net.SplitHostPort(*listen)
+			if splitErr != nil {
+				fmt.Fprintln(os.Stderr, "dashboard address:", splitErr)
+				os.Exit(2)
+			}
+			address = net.JoinHostPort(host, transport.DefaultNodePort)
+		}
+		_, originalNodePort, _ := net.SplitHostPort(address)
+		nodePorts, err = transport.NewNodePorts(filepath.Join(*tlsDir, "node-ports.json"), address, store, func(port string) string {
+			if nodeConfig.CertFile == "" && !httpsManager.Active() {
+				return ""
+			}
+			if configured := strings.TrimSpace(*transportURL); configured != "" {
+				// Preserve an explicitly advertised proxy port on the original
+				// listener. Subsequent changes require matching forwarding rules.
+				advertisedPort := port
+				if port == originalNodePort {
+					if endpoint, parseErr := url.Parse(configured); parseErr == nil {
+						advertisedPort = endpoint.Port()
+						if advertisedPort == "" {
+							advertisedPort = "443"
+						}
+					}
+				}
+				return transport.NodeURL(configured, advertisedPort)
+			}
+			if !httpsManager.Active() {
+				return ""
+			}
+			return transport.NodeURL("wss://"+httpsManager.Domain()+"/node/v1", port)
+		}, func(l net.Listener) {
+			fmt.Fprintf(os.Stderr, "payesh node transport listening on %s\n", l.Addr().String())
+			go func() {
+				if serveErr := nodeServer.Serve(tls.NewListener(l, tlsConfig)); serveErr != nil && serveErr != http.ErrServerClosed && !errors.Is(serveErr, net.ErrClosed) && ctx.Err() == nil {
+					fmt.Fprintln(os.Stderr, "node transport:", serveErr)
+				}
+			}()
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "node transport:", err)
+			os.Exit(1)
+		}
+		defer nodePorts.Close()
+		nodeHub.Ports = nodePorts
+		nodePorts.Start()
 	}
 	if *bootstrapSecret != "" {
 		updateScheduler = updater.NewScheduler(store, nil)
@@ -218,25 +282,21 @@ func main() {
 			}
 		}
 		installService.ResolveTransport = func() (string, []byte, error) {
-			if installService.TransportURL != "" {
-				if !nodeConfig.Enabled() {
-					return "", nil, errors.New("configured node transport requires a node listener")
-				}
-				return installService.TransportURL, installService.HubTrustPEM, nil
-			}
-			if !httpsManager.Active() {
+			endpoint := nodePorts.URL()
+			if endpoint == "" {
 				return "", nil, errors.New("enable HTTPS on the hub before installing nodes")
+			}
+			if nodeConfig.CertFile != "" {
+				if len(installService.HubTrustPEM) == 0 {
+					return "", nil, errors.New("node TLS trust is unavailable")
+				}
+				return endpoint, installService.HubTrustPEM, nil
 			}
 			trustPEM, err := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
 			if err != nil {
 				return "", nil, fmt.Errorf("read system TLS trust: %w", err)
 			}
-			port := httpsManager.DashboardPort()
-			host := httpsManager.Domain()
-			if port != "" && port != "443" {
-				host = net.JoinHostPort(host, port)
-			}
-			return "wss://" + host + "/node/v1", trustPEM, nil
+			return endpoint, trustPEM, nil
 		}
 
 		alertService, alertErr := alerts.NewService(store)
@@ -267,6 +327,22 @@ func main() {
 			} else {
 				fmt.Fprintln(os.Stderr, "resolve local package identity:", err)
 			}
+		}
+		updateScheduler.Executor = &updater.FleetExecutor{
+			Store: store, Producer: nodeHub, LocalServerID: moduleManager.LocalServerID,
+			Local: updater.ExecutorFunc(func(updateCtx context.Context, execution updater.Execution) error {
+				if !webupdate.Supported("/") {
+					return errors.New("signed root update worker is not installed")
+				}
+				child, found, err := store.GetJob(updateCtx, execution.JobID)
+				if err != nil {
+					return err
+				}
+				if !found {
+					return updater.ErrUpdateNotFound
+				}
+				return webupdate.ExecuteLocal(updateCtx, webupdate.DefaultDir, version.Value, execution, child.ExpiresAt)
+			}),
 		}
 		processRuntime := &modules.ProcessRuntime{Context: ctx, Store: store, Root: moduleManager.RootDir, ServerID: moduleManager.LocalServerID, Fallback: moduleManager.Executor}
 		moduleManager.Executor = processRuntime
@@ -301,7 +377,7 @@ func main() {
 			}
 			bandwidthService = handlerService{handler: proxy}
 		}
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx)})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx), NodeTransportSettings: nodePorts.Handler()})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -323,7 +399,11 @@ func main() {
 		nodeHandler := nodeTransportHandler(nodeHub)
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/node/v1" || r.URL.Path == "/node/bootstrap/v1" {
-				nodeHandler.ServeHTTP(w, r)
+				if nodePorts.LegacyDashboard() {
+					nodeHandler.ServeHTTP(w, r)
+				} else {
+					http.NotFound(w, r)
+				}
 				return
 			}
 			browserHandler.ServeHTTP(w, r)
@@ -344,39 +424,7 @@ func main() {
 			}
 		})
 	}
-	var nodeServer *http.Server
-	var nodeListener net.Listener
-	if nodeConfig.Enabled() {
-		certificate, certErr := tls.LoadX509KeyPair(nodeConfig.CertFile, nodeConfig.KeyFile)
-		if certErr != nil {
-			fmt.Fprintln(os.Stderr, "load node transport TLS certificate:", certErr)
-			os.Exit(1)
-		}
-		if nodeHub == nil {
-			fmt.Fprintln(os.Stderr, "configure node transport hub: hub is unavailable")
-			os.Exit(1)
-		}
-		nodeServer = &http.Server{
-			Addr:              nodeConfig.Listen,
-			Handler:           nodeTransportHandler(nodeHub),
-			ReadHeaderTimeout: 5 * time.Second,
-			MaxHeaderBytes:    16 << 10,
-			TLSConfig:         nodeTransportTLSConfig(certificate),
-		}
-		nodeListener, err = net.Listen("tcp", nodeConfig.Listen)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "listen node transport:", err)
-			os.Exit(1)
-		}
-		tlsListener := tls.NewListener(nodeListener, nodeServer.TLSConfig)
-		nodeListener = tlsListener
-		go func() {
-			if serveErr := nodeServer.Serve(tlsListener); serveErr != nil && serveErr != http.ErrServerClosed && ctx.Err() == nil {
-				fmt.Fprintln(os.Stderr, "node transport:", serveErr)
-			}
-		}()
-		fmt.Fprintf(os.Stderr, "payesh node transport listening on %s\n", nodeConfig.Listen)
-	}
+
 	server := &http.Server{
 		Addr:              *listen,
 		Handler:           httpsManager.RedirectToHTTPS(withWebAssets(*webDir, handler)),
@@ -398,11 +446,7 @@ func main() {
 		}
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	defer func() {
-		if nodeListener != nil {
-			_ = nodeListener.Close()
-		}
-	}()
+
 	// Bind before announcing readiness. Apart from surfacing bind errors before
 	// the process enters Serve, this makes :0 useful to disposable acceptance
 	// runs: the log contains the kernel-selected, race-free endpoint.
@@ -488,7 +532,7 @@ func newNodeTransportConfig(listen, certFile, keyFile string) (nodeTransportConf
 		}
 		return c, nil
 	}
-	if c.CertFile == "" || c.KeyFile == "" {
+	if (c.CertFile == "") != (c.KeyFile == "") {
 		return nodeTransportConfig{}, fmt.Errorf("node transport requires both TLS certificate and key")
 	}
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {

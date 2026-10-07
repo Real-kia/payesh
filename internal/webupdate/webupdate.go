@@ -1,9 +1,13 @@
 // Package webupdate is the file-based handoff between the unprivileged web
 // hub and the root update worker. The hub can only ask for a release version;
-// the worker validates it and runs the normal release installer.
+// durable intent stays queued until the worker's authenticated installation
+// transaction completes health verification or recovery.
 package webupdate
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,7 +33,9 @@ const (
 
 	// A queued or running state older than this is treated as abandoned.
 	StaleAfter = 30 * time.Minute
-	maxFile    = 4096
+	// LocalAuthorizationTTL bounds browser intent across worker restarts.
+	LocalAuthorizationTTL = 30 * time.Minute
+	maxFile               = 4096
 )
 
 var submitMu sync.Mutex
@@ -38,12 +44,16 @@ var ErrBusy = errors.New("an update is already in progress")
 
 type Request struct {
 	Version     string    `json:"version"`
+	JobID       string    `json:"job_id,omitempty"`
+	Deadline    time.Time `json:"deadline,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
 	RequestedBy string    `json:"requested_by,omitempty"`
 }
 
 type Status struct {
+	Rollback  string    `json:"rollback,omitempty"`
 	State     string    `json:"state"`
+	JobID     string    `json:"job_id,omitempty"`
 	Target    string    `json:"target,omitempty"`
 	Message   string    `json:"message,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -64,31 +74,30 @@ func Supported(root string) bool {
 	return false
 }
 
-// Submit queues a request. It fails with ErrBusy while another is active.
+// Submit queues a durable local activation using the same protected worker
+// transaction as fleet updates. Authorization expires even after a restart.
 func Submit(dir string, req Request, now time.Time) error {
-	submitMu.Lock()
-	defer submitMu.Unlock()
 	if len(req.Version) > 64 || !updater.ValidRelease(req.Version) {
 		return errors.New("invalid release version")
 	}
-	if status, err := ReadStatus(dir); err == nil && status.Active(now) {
-		return ErrBusy
-	}
-	req.RequestedAt = now.UTC()
-	// Publish queued status before the request so a fast worker cannot have its
-	// running status overwritten by the producer.
-	if err := WriteStatus(dir, Status{State: StateQueued, Target: req.Version, UpdatedAt: now.UTC()}); err != nil {
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
 		return err
 	}
-	if err := writeJSON(dir, RequestFile, req, 0o600); err != nil {
-		_ = WriteStatus(dir, Status{State: StateFailed, Target: req.Version, Message: "could not queue update request", UpdatedAt: now.UTC()})
-		return err
-	}
-	return nil
+	req.JobID = "web-local-" + hex.EncodeToString(identity[:])
+	req.Deadline = now.UTC().Add(LocalAuthorizationTTL)
+	return SubmitFleet(dir, req, now)
 }
 
-// Take reads and removes a pending request. A malformed request is discarded.
+// Take reads a durable pending intent without removing its recovery handle.
+// Older browser requests are promoted before the worker can activate anything.
 func Take(dir string) (Request, bool, error) {
+	return takeAt(dir, time.Now().UTC())
+}
+
+func takeAt(dir string, now time.Time) (Request, bool, error) {
+	submitMu.Lock()
+	defer submitMu.Unlock()
 	path := filepath.Join(dir, RequestFile)
 	var req Request
 	if err := readJSON(path, &req); err != nil {
@@ -98,9 +107,33 @@ func Take(dir string) (Request, bool, error) {
 		_ = os.Remove(path)
 		return Request{}, false, err
 	}
-	_ = os.Remove(path)
 	if len(req.Version) > 64 || !updater.ValidRelease(req.Version) {
+		_ = os.Remove(path)
 		return Request{}, false, errors.New("invalid release version in request")
+	}
+	if req.JobID == "" {
+		if req.RequestedAt.IsZero() || req.RequestedAt.After(now) {
+			return Request{}, false, errors.New("legacy update request has no valid authorization time; inspect and replace the retained request")
+		}
+		// Stable identity binds retries and concurrent readers to one root
+		// journal. Promotion never grants a fresh deadline to old authorization.
+		original, err := json.Marshal(req)
+		if err != nil {
+			return Request{}, false, err
+		}
+		digest := sha256.Sum256(original)
+		req.JobID = "web-legacy-" + hex.EncodeToString(digest[:16])
+		deadline := req.RequestedAt.UTC().Add(LocalAuthorizationTTL)
+		if req.Deadline.IsZero() || req.Deadline.After(deadline) {
+			req.Deadline = deadline
+		}
+		if err := writeJSON(dir, RequestFile, req, 0600); err != nil {
+			return Request{}, false, fmt.Errorf("persist legacy update recovery intent: %w", err)
+		}
+	}
+	if !validFleetRequest(req) {
+		_ = os.Remove(path)
+		return Request{}, false, errors.New("invalid fleet update intent")
 	}
 	return req, true, nil
 }
@@ -177,8 +210,20 @@ func writeJSON(dir, name string, v any, mode os.FileMode) error {
 		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, filepath.Join(dir, name))
+	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	parent, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,7 @@ var (
 	ErrSSHHostKeyFingerprint   = errors.New("SSH host key fingerprint mismatch")
 	ErrSSHHostKeyRevoked       = errors.New("SSH host key is revoked")
 	ErrSSHEnrollmentRequired   = errors.New("node enrollment verification is not configured")
+	ErrSSHNodePortUnavailable  = errors.New("node cannot reach the hub transport port with trusted TLS; check the hub listener, firewall, forwarding rules, DNS and certificate trust, then retry")
 	ErrSSHMeasurementsRequired = errors.New("measurement verification is not configured")
 )
 
@@ -340,7 +342,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	}
 	remoteDir := "/tmp/payesh-install-" + id
 	if opts.DownloadArtifacts != nil {
-		stagingScript := "# payesh-executable-staging\numask 077\nfor base in /var/tmp /tmp \"$HOME\"; do\n dir=\"$base/payesh-install-" + id + "\"\n if mkdir -m 700 -- \"$dir\" 2>/dev/null; then\n if cp /bin/true \"$dir/.exec-check\" 2>/dev/null && chmod 700 \"$dir/.exec-check\" && \"$dir/.exec-check\" 2>/dev/null; then rm -f \"$dir/.exec-check\"; printf '%s' \"$dir\"; exit 0; fi\n rm -rf -- \"$dir\"\n fi\ndone\necho 'No writable executable staging directory is available' >&2\nexit 1"
+		stagingScript := executableStagingScript(id)
 		output, stageErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, stagingScript, nil)
 		if stageErr != nil {
 			return result, sshStage("prepare executable staging", errors.New("no writable executable staging directory is available"))
@@ -407,14 +409,53 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	}
 	allArtifacts := append([]string{"payesh-install"}, requiredArtifacts(opts.Role)...)
 	artifactsArg := strings.Join(allArtifacts, " ")
+	legacyPaths := map[string]string{}
+	verificationScript := artifactChecksumScript
+	if opts.DownloadArtifacts == nil {
+		for _, name := range allArtifacts {
+			path := artifactPaths[name]
+			if name == "payesh-install" {
+				path = opts.InstallerPath
+			}
+			if name != "web-assets" {
+				matrixPath := filepath.Join("/usr/share/payesh/matrix", name+"-linux-"+arch)
+				if info, statErr := os.Stat(matrixPath); statErr == nil && !info.IsDir() {
+					path = matrixPath
+				}
+			}
+			if err := validateArtifactPath(path, name == "web-assets"); err != nil {
+				return result, sshStage("verify bootstrap artifacts", err)
+			}
+			if err := opts.VerifyArtifact(name, path); err != nil {
+				return result, sshStage("verify bootstrap artifacts", errors.New("bootstrap artifact verification failed"))
+			}
+			digest, digestErr := ArtifactDigest(path, name == "web-assets")
+			if digestErr != nil {
+				return result, sshStage("verify bootstrap artifacts", digestErr)
+			}
+			legacyPaths[name] = path
+			if name != "payesh-install" {
+				artifactDigests[name] = digest
+			}
+			// Pins arrive over the verified SSH connection, independently of
+			// GitHub delivery. Check every artifact before executing any of it.
+			if name != "web-assets" {
+				verificationScript += fmt.Sprintf("if [ ! -f \"${DIR}/%s\" ] || [ \"$(calc_sha256 \"${DIR}/%s\")\" != %s ]; then\n set_status 'FAILED:artifact_verification'\n exit 1\nfi\n", name, name, shellQuote(digest))
+			}
+		}
+	}
 
+	portCheckCommand, portCheckErr := nodePortCheckCommand(remoteDir, opts)
+	if portCheckErr != nil {
+		return result, sshStage("node transport port", portCheckErr)
+	}
 	scriptBody := fmt.Sprintf(githubBootstrapScriptTemplate,
-		remoteDir, arch, opts.Role, startFlag, opts.Listen, artifactsArg)
+		remoteDir, arch, opts.Role, startFlag, opts.Listen, artifactsArg, verificationScript, portCheckCommand)
 
 	if err := stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts); err != nil {
 		return result, sshStage("node configuration staging", err)
 	}
-	if opts.DownloadArtifacts == nil {
+	if opts.DownloadArtifacts == nil && (opts.Role == "node" || opts.Role == "cli-only") {
 		deployKey := loadGitHubDeployKey()
 		if len(deployKey) > 0 {
 			keyCmd := fmt.Sprintf("cat << 'EOF' > %s/id_github\n%s\nEOF\nchmod 600 %s/id_github",
@@ -425,12 +466,17 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
 			remoteDir, scriptBody, remoteDir)
 
-		if _, writeErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, writeScriptCmd, nil); writeErr == nil {
+		if _, writeErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, writeScriptCmd, nil); writeErr != nil {
+			return result, sshStage("bootstrap preparation", errors.New("could not stage bootstrap script"))
+		} else {
 			report("connecting", 20)
 			launchCmd := fmt.Sprintf("%snohup sh %s/github_bootstrap.sh >/dev/null 2>&1 &", sudoPrefix, remoteDir)
-			_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, launchCmd, sudoInput)
+			if _, launchErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, launchCmd, sudoInput); launchErr != nil {
+				return result, sshStage("bootstrap launch", errors.New("bootstrap launch completion is uncertain"))
+			}
 
 			deadline := time.Now().Add(90 * time.Second)
+			fallbackSafe := false
 			missingCount := 0
 			for time.Now().Before(deadline) {
 				select {
@@ -443,15 +489,16 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 				if statusErr != nil || status == "" {
 					missingCount++
 					if missingCount >= 5 {
-						// Status file not created yet or transport is mock/fake without live shell; fallback immediately
-						break
+						return result, sshStage("bootstrap observation", errors.New("bootstrap status was not established"))
 					}
-					time.Sleep(1 * time.Second)
+					time.Sleep(time.Second)
 					continue
 				}
 				missingCount = 0
 				if strings.HasPrefix(status, "RUNNING:github_fetch") {
 					report("connecting", 25)
+				} else if strings.HasPrefix(status, "RUNNING:transport_check") {
+					report("checking node port", 45)
 				} else if strings.HasPrefix(status, "RUNNING:preflight") {
 					report("preflight", 50)
 				} else if strings.HasPrefix(status, "RUNNING:install") {
@@ -466,18 +513,27 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 						report("installing", 75)
 						break
 					}
+					return result, sshStage("bootstrap observation", errors.New("bootstrap success could not be verified"))
 				}
-				if strings.HasPrefix(status, "FALLBACK") {
+				if status == "FALLBACK:master_upload_required" {
+					// The script emits this only after fetch_bin returned, with no
+					// remaining artifact writes or executable invocations.
+					fallbackSafe = true
 					break
+				}
+				if status == "FAILED:transport_check" {
+					return result, sshStage("node transport port", ErrSSHNodePortUnavailable)
 				}
 				if strings.HasPrefix(status, "FAILED") {
-					logOut, _ := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "tail -n 10 "+shellQuote(remoteDir+"/install.log")+" 2>/dev/null", nil)
-					if len(bytes.TrimSpace(logOut)) > 0 {
-						return result, sshStage("install", fmt.Errorf("GitHub install failed: %s", strings.TrimSpace(string(logOut))))
-					}
-					break
+					return result, sshStage("bootstrap execution", errors.New("bootstrap failed"))
+				}
+				if status != "RUNNING:github_fetch" && status != "RUNNING:transport_check" && status != "RUNNING:preflight" && status != "RUNNING:install" {
+					return result, sshStage("bootstrap observation", errors.New("unrecognized bootstrap status"))
 				}
 				time.Sleep(1 * time.Second)
+			}
+			if !githubSucceeded && !fallbackSafe {
+				return result, sshStage("bootstrap observation", errors.New("bootstrap completion deadline exceeded"))
 			}
 		}
 
@@ -487,14 +543,6 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		if opts.DownloadArtifacts == nil {
 			report("connecting", 35)
 		}
-		lookupArtifact := func(name, defaultPath string) string {
-			matrixPath := filepath.Join("/usr/share/payesh/matrix", name+"-linux-"+arch)
-			if stat, statErr := os.Stat(matrixPath); statErr == nil && !stat.IsDir() {
-				return matrixPath
-			}
-			return defaultPath
-		}
-
 		usingDownload := opts.DownloadArtifacts != nil
 		if usingDownload {
 			download, downloadErr := opts.DownloadArtifacts(ctx, arch, opts.Role)
@@ -520,20 +568,38 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 				artifactDigests[name] = digest
 			}
 		} else {
-			installerSrc := lookupArtifact("payesh-install", opts.InstallerPath)
+			installerSrc := legacyPaths["payesh-install"]
 			if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, installerSrc, remoteDir+"/payesh-install", false); err != nil {
 				return result, sshStage("upload installer", err)
 			}
 			for _, name := range requiredArtifacts(opts.Role) {
-				path := lookupArtifact(name, artifactPaths[name])
+				path := legacyPaths[name]
 				recursive := name == "web-assets"
 				if err = transport.Upload(ctx, opts.Endpoint, knownHosts, opts.Auth, path, remoteDir+"/"+name, recursive); err != nil {
 					return result, sshStage("upload artifact", err)
 				}
 			}
+			verifyScript := "# payesh-verify-upload\nset -eu\nset_status() { :; }\nDIR=" + shellQuote(remoteDir) + "\n" + verificationScript
+			if _, verifyErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "sh -c "+shellQuote(verifyScript), nil); verifyErr != nil {
+				return result, sshStage("verify uploaded artifacts", errors.New("uploaded executable checksum verification failed"))
+			}
 		}
 		if _, err = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, "chmod 700 -- "+shellQuote(remoteDir+"/payesh-install"), nil); err != nil {
 			return result, sshStage("prepare installer", err)
+		}
+
+		if portCheckCommand != "true" {
+			report("checking node port", 45)
+			checkCtx, cancelCheck := context.WithTimeout(ctx, 15*time.Second)
+			_, checkErr := transport.Run(checkCtx, opts.Endpoint, knownHosts, opts.Auth, portCheckCommand, nil)
+			cancelCheck()
+			if checkErr != nil {
+				return result, sshStage("node transport port", ErrSSHNodePortUnavailable)
+			}
+		}
+
+		if _, schemaErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix+shellQuote(remoteDir+"/payesh-install")+" --check-schema", sudoInput); schemaErr != nil {
+			return result, sshStage("candidate database schema", errors.New("candidate installer cannot safely open the installed database or lacks schema preflight support"))
 		}
 
 		// The remote preflight is parsed but never treated as successful install.
@@ -556,11 +622,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		report("installing", 70)
 		installCommand := shellQuote(remoteDir+"/payesh-install") + " --install --role " + shellQuote(opts.Role) + " --artifact-dir " + shellQuote(remoteDir)
 		for _, name := range requiredArtifacts(opts.Role) {
-			path := lookupArtifact(name, artifactPaths[name])
 			digest := artifactDigests[name]
-			if actualDigest, dErr := ArtifactDigest(path, name == "web-assets"); !usingDownload && dErr == nil && actualDigest != "" {
-				digest = actualDigest
-			}
 			installCommand += " --artifact-sha256 " + shellQuote(name+"="+digest)
 		}
 		if opts.Start {
@@ -843,6 +905,14 @@ func randomInstallID() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", raw[:]), nil
+}
+
+// executableStagingScript finds a private directory on the target where the
+// downloaded installer can run. Executability is proven with a script the check
+// writes itself: copying a system binary such as /bin/true fails on busybox
+// systems (Alpine), where it is a symlink that only works under its own name.
+func executableStagingScript(id string) string {
+	return "# payesh-executable-staging\numask 077\nfor base in /var/tmp /tmp \"$HOME\"; do\n dir=\"$base/payesh-install-" + id + "\"\n if mkdir -m 700 -- \"$dir\" 2>/dev/null; then\n  check=\"$dir/.exec-check\"\n  if printf '#!/bin/sh\\nexit 0\\n' > \"$check\" 2>/dev/null && chmod 700 \"$check\" && \"$check\" 2>/dev/null; then rm -f \"$check\"; printf '%s' \"$dir\"; exit 0; fi\n  rm -rf -- \"$dir\"\n fi\ndone\necho 'No writable executable staging directory is available' >&2\nexit 1"
 }
 
 func shellQuote(value string) string {
@@ -1227,6 +1297,19 @@ func (a *sshAgent) close() {
 	a.env, a.socket, a.pid, a.passFile, a.askFile = nil, "", "", "", ""
 }
 
+const artifactChecksumScript = `
+calc_sha256() {
+	_FILE="$1"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$_FILE" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$_FILE" | awk '{print $1}'
+	else
+		openssl dgst -sha256 "$_FILE" | awk '{print $NF}'
+	fi
+}
+`
+
 const githubBootstrapScriptTemplate = `#!/bin/sh
 set -u
 DIR='%s'
@@ -1317,6 +1400,21 @@ done
 # Cleanup temporary clone and deploy key to keep disk clean & secure
 rm -rf "${DIR}/payesh-repo" "${DIR}/id_github" 2>/dev/null || true
 
+# Authenticate all executable bytes before the transport probe or installer.
+%s
+
+log "Checking node-to-hub transport before installation..."
+set_status "RUNNING:transport_check"
+if ! %s >> "$LOG_FILE" 2>&1; then
+    set_status "FAILED:transport_check"
+    exit 1
+fi
+
+if ! "${DIR}/payesh-install" --check-schema; then
+ set_status "FAILED:schema_check"
+ exit 1
+fi
+
 log "All binaries successfully fetched from GitHub. Running preflight..."
 set_status "RUNNING:preflight"
 chmod 700 "${DIR}/payesh-install" 2>/dev/null || true
@@ -1331,17 +1429,6 @@ fi
 
 log "Executing payesh-install..."
 set_status "RUNNING:install"
-
-calc_sha256() {
-	_FILE="$1"
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$_FILE" | awk '{print $1}'
-	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$_FILE" | awk '{print $1}'
-	else
-		openssl dgst -sha256 "$_FILE" | awk '{print $NF}'
-	fi
-}
 
 SHA_FLAGS=""
 for art in $ARTIFACTS; do
@@ -1384,6 +1471,22 @@ log "Installation complete!"
 set_status "SUCCESS:0"
 exit 0
 `
+
+// The verified staged agent performs the probe on the node itself, without
+// requiring curl, netcat, Python, or an installed Payesh service.
+func nodePortCheckCommand(remoteDir string, opts SSHInstallOptions) (string, error) {
+	if opts.Role != "node" {
+		return "true", nil
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(opts.TransportURL))
+	if err != nil || endpoint.Scheme != "wss" || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/" && endpoint.Path != "/node/v1") {
+		return "", errors.New("node transport URL must be a wss hub endpoint without credentials or query parameters")
+	}
+	if len(opts.NodeIdentityJSON) == 0 || len(opts.HubTrustPEM) == 0 {
+		return "", errors.New("node transport port check requires the enrolled identity and hub trust anchor")
+	}
+	return shellQuote(remoteDir+"/payesh-agent") + " --check-transport --transport-url " + shellQuote(endpoint.String()) + " --node-identity-file " + shellQuote(remoteDir+"/node-identity.json") + " --hub-trust-file " + shellQuote(remoteDir+"/hub-ca.pem"), nil
+}
 
 func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, remoteDir string, opts SSHInstallOptions) error {
 	if opts.Role != "node" {
@@ -1441,8 +1544,11 @@ fi
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload
 	systemctl restart payesh-agent
+elif command -v rc-service >/dev/null 2>&1; then
+	rc-service payesh-agent restart
 fi`,
 		remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir, remoteDir)
-	_, err := transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+cmd, sudoInput)
+	// Wrapped so sudo elevates the whole script, not only its first line.
+	_, err := transport.Run(ctx, endpoint, knownHosts, auth, sudoPrefix+"sh -c "+shellQuote(cmd), sudoInput)
 	return err
 }

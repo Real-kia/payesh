@@ -1,7 +1,7 @@
 // Command release-validate checks a locally generated Payesh release bundle.
 // It verifies archive bytes, manifest sizes, checksums, and safe tar members.
-// A detached signature is intentionally not accepted here: signing is a
-// separate owner-authorized operation using a key outside this repository.
+// Signed bundles require an explicitly supplied public trust anchor. Signing
+// remains a separate owner operation using a key outside this repository.
 package main
 
 import (
@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/release"
 	"github.com/Real-kia/payesh/internal/trust"
 )
@@ -34,12 +35,13 @@ type artifact struct {
 	URL             string `json:"url"`
 }
 type manifest struct {
-	Format       string     `json:"format"`
-	Release      string     `json:"release"`
-	CreatedAt    time.Time  `json:"created_at"`
-	MinCore      string     `json:"min_core"`
-	Artifacts    []artifact `json:"artifacts"`
-	SigningKeyID string     `json:"signing_key_id"`
+	DatabaseSchema *contracts.ReleaseDatabaseSchema `json:"database_schema,omitempty"`
+	Format         string                           `json:"format"`
+	Release        string                           `json:"release"`
+	CreatedAt      time.Time                        `json:"created_at"`
+	MinCore        string                           `json:"min_core"`
+	Artifacts      []artifact                       `json:"artifacts"`
+	SigningKeyID   string                           `json:"signing_key_id"`
 }
 
 func main() {
@@ -91,6 +93,11 @@ func validateWithTrust(dir, publicKeyPath, keyID string) error {
 			return errors.New("manifest has trailing JSON values")
 		}
 		return fmt.Errorf("decode manifest: %w", err)
+	}
+	if m.DatabaseSchema != nil {
+		if err := m.DatabaseSchema.Validate(); err != nil {
+			return err
+		}
 	}
 	if m.Format != "payesh.release.v1" || m.Release == "" || m.MinCore == "" || m.CreatedAt.IsZero() || m.SigningKeyID == "" {
 		return errors.New("manifest identity is not a complete payesh.release.v1 bundle")
@@ -188,6 +195,25 @@ func validateWithTrust(dir, publicKeyPath, keyID string) error {
 			return errors.New("unsigned bundle must use signing_key_id=unavailable-local")
 		}
 	}
+	if info, err := os.Lstat(filepath.Join(dir, "install.sh")); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("bootstrap script must be a regular non-symlink file")
+		}
+		digest, _, err := digestFile(filepath.Join(dir, "install.sh"))
+		if err != nil {
+			return err
+		}
+		expectedChecksums = append(expectedChecksums, digest+"  install.sh")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if m.DatabaseSchema != nil {
+		digest, _, err := digestFile(manifestPath)
+		if err != nil {
+			return err
+		}
+		expectedChecksums = append(expectedChecksums, digest+"  manifest.json")
+	}
 	sort.Strings(expectedChecksums)
 	checksums, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
 	if err != nil {
@@ -195,6 +221,23 @@ func validateWithTrust(dir, publicKeyPath, keyID string) error {
 	}
 	if string(checksums) != strings.Join(expectedChecksums, "\n")+"\n" {
 		return errors.New("SHA256SUMS does not exactly match manifest artifacts")
+	}
+	if publicKeyPath != "" {
+		if info, err := os.Lstat(filepath.Join(dir, "SHA256SUMS.sig")); err == nil && !info.Mode().IsRegular() {
+			return errors.New("bootstrap signature must be a regular non-symlink file")
+		}
+		sig, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS.sig"))
+		if err == nil {
+			key, err := release.ReadPublicKey(publicKeyPath)
+			if err != nil {
+				return err
+			}
+			if err := release.VerifyBootstrap(key, m.Release, keyID, checksums, sig); err != nil {
+				return err
+			}
+		} else if _, bootstrapErr := os.Stat(filepath.Join(dir, "install.sh")); bootstrapErr == nil || !os.IsNotExist(err) {
+			return fmt.Errorf("read bootstrap signature: %w", err)
+		}
 	}
 	return nil
 }

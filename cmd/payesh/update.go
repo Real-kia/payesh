@@ -120,12 +120,13 @@ func updateWorker(ctx context.Context, args []string) error {
 			fmt.Fprintln(os.Stderr, "update-worker: ignoring request:", err)
 		}
 		if found {
-			done, err := runWebUpdate(ctx, *dir, req.Version)
+			done, err := runFleetUpdate(ctx, *dir, req)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "update-worker:", err)
 			}
-			if done {
-				// Exit so the service manager restarts the freshly installed binary.
+			if done || errors.Is(err, webupdate.ErrInstallationRestored) {
+				// Exit so the service manager restarts the active on-disk binary,
+				// whether activation committed or rollback restored the old one.
 				return nil
 			}
 		}
@@ -137,41 +138,41 @@ func updateWorker(ctx context.Context, args []string) error {
 	}
 }
 
-func runWebUpdate(ctx context.Context, dir, target string) (bool, error) {
-	set := func(state, message string) {
-		if err := webupdate.WriteStatus(dir, webupdate.Status{State: state, Target: target, Message: message, UpdatedAt: time.Now().UTC()}); err != nil {
-			fmt.Fprintln(os.Stderr, "update-worker: write status:", err)
-		}
-	}
-	set(webupdate.StateRunning, "")
-	comparable, comparison := false, 0
-	if updater.ValidRelease(version.Value) {
-		var err error
-		if comparison, err = updater.CompareReleases(version.Value, target); err != nil {
-			set(webupdate.StateFailed, err.Error())
-			return false, err
-		}
-		comparable = true
-	}
-	if comparable && comparison >= 0 {
-		set(webupdate.StateFailed, "requested version is not newer than the installed version")
-		return false, nil
-	}
-	updateCtx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-	defer cancel()
-	if err := installRelease(updateCtx, target, os.Getenv("GITHUB_TOKEN"), comparable, comparison); err != nil {
-		set(webupdate.StateFailed, err.Error())
-		return false, err
-	}
-	set(webupdate.StateSucceeded, "")
-	return true, nil
-}
-
 func runReleaseInstaller(ctx context.Context, target, token string, args ...string) error {
-	script, err := fetchInstaller(ctx, &http.Client{Timeout: 15 * time.Second}, token, target)
+	policy, err := releaseTrustFromEnvironment()
 	if err != nil {
 		return err
 	}
+	return runReleaseInstallerWithClient(ctx, target, token, policy, &http.Client{Timeout: 15 * time.Second}, version.Value, "/var/lib/payesh/payesh.db", args...)
+}
+
+func runReleaseInstallerWithClient(ctx context.Context, target, token string, policy releaseTrustPolicy, client *http.Client, currentCore, databasePath string, args ...string) error {
+	if policy.mode == "preview" {
+		fmt.Fprintln(os.Stderr, "warning: UNSIGNED PREVIEW update; publisher authenticity is not independently verified")
+	}
+	if policy.mode == "production" {
+		prepared, err := prepareProductionRelease(ctx, client, token, target, currentCore, policy, databasePath)
+		if err != nil {
+			return err
+		}
+		return runPreparedReleaseInstaller(ctx, target, policy, prepared, args...)
+	}
+	script, err := fetchInstaller(ctx, client, token, target)
+	if err != nil {
+		return err
+	}
+	return executeReleaseInstaller(ctx, script, policy, args...)
+}
+
+func runPreparedReleaseInstaller(ctx context.Context, target string, policy releaseTrustPolicy, prepared preparedProductionRelease, args ...string) error {
+	if policy.mode != "production" || prepared.Manifest.Release != target || len(prepared.ChecksumsSHA256) != 64 || len(prepared.Installer) == 0 {
+		return errors.New("invalid prepared production release")
+	}
+	args = append(args, "--release-checksums-sha256", prepared.ChecksumsSHA256)
+	return executeReleaseInstaller(ctx, prepared.Installer, policy, args...)
+}
+
+func executeReleaseInstaller(ctx context.Context, script []byte, policy releaseTrustPolicy, args ...string) error {
 	dir, err := os.MkdirTemp("", "payesh-update-")
 	if err != nil {
 		return err
@@ -180,6 +181,10 @@ func runReleaseInstaller(ctx context.Context, target, token string, args ...stri
 	path := filepath.Join(dir, "install.sh")
 	if err := os.WriteFile(path, script, 0o600); err != nil {
 		return err
+	}
+	args = append(args, "--release-mode", policy.mode)
+	if policy.mode == "production" {
+		args = append(args, "--release-public-key", policy.publicKey, "--release-key-id", policy.keyID)
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
@@ -210,6 +215,13 @@ func installedRole(path string) (string, error) {
 func fetchInstaller(ctx context.Context, client *http.Client, token, releaseVersion string) ([]byte, error) {
 	if !updater.ValidRelease(releaseVersion) {
 		return nil, errors.New("invalid release version")
+	}
+	policy, err := releaseTrustFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	if policy.mode == "production" {
+		return fetchAuthenticatedInstaller(ctx, client, token, releaseVersion, policy)
 	}
 	url := "https://raw.githubusercontent.com/" + release.DefaultRepository + "/v" + releaseVersion + "/install.sh"
 	if token != "" {

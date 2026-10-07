@@ -27,6 +27,7 @@ var actionPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 // authenticated the TLS peer; acknowledgements are returned only after the
 // store transaction succeeds.
 type Hub struct {
+	Ports       *NodePorts
 	CA          *CertificateAuthority
 	Store       *monitoring.Store
 	mu          sync.Mutex
@@ -289,6 +290,13 @@ func (c *Connection) Renew(ctx context.Context, now time.Time) (NodeIdentity, er
 	c.stateMu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return NodeIdentity{}, err
+	}
+	// A hub that no longer owns the server must not extend its trust; the
+	// store's own writes are fenced separately, this stops the CA acting alone.
+	if c.hub.Store != nil {
+		if err := c.hub.Store.RequireServerAuthority(ctx, c.ServerID); err != nil {
+			return NodeIdentity{}, err
+		}
 	}
 	return c.hub.CA.Renew(identity, now)
 }

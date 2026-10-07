@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -72,7 +73,7 @@ func TestReleaseExecutorDownloadsVerifiesStagesActivatesAndIsIdempotent(t *testi
 	}
 	now := time.Date(2026, 9, 12, 10, 1, 0, 0, time.UTC)
 	var backupPath string
-	executor, err := NewReleaseExecutor(ExecutorConfig{
+	executor, err := NewReleaseExecutor(ExecutorConfig{DatabasePath: filepath.Join(root, "database.sqlite"),
 		Registry: registry, Source: fixtureSource{bundle: ReleaseBundle{Manifest: manifest, Signature: signature}}, CurrentCore: "1.0.0",
 		AcceptedStatePath: filepath.Join(root, "state", "accepted.json"), ReleaseRoot: releaseRoot, ActiveDir: active,
 		JournalPath: filepath.Join(root, "state", "journal.json"), BackupDir: filepath.Join(root, "backups"),
@@ -125,7 +126,7 @@ func TestReleaseExecutorDownloadsVerifiesStagesActivatesAndIsIdempotent(t *testi
 
 func TestNewReleaseExecutorRequiresBackupAndHealth(t *testing.T) {
 	root := t.TempDir()
-	_, err := NewReleaseExecutor(ExecutorConfig{CurrentCore: "1.0.0", ReleaseRoot: filepath.Join(root, "releases"), ActiveDir: filepath.Join(root, "releases", "current"), JournalPath: filepath.Join(root, "journal"), AcceptedStatePath: filepath.Join(root, "accepted"), BackupDir: filepath.Join(root, "backup")})
+	_, err := NewReleaseExecutor(ExecutorConfig{DatabasePath: filepath.Join(root, "database.sqlite"), CurrentCore: "1.0.0", ReleaseRoot: filepath.Join(root, "releases"), ActiveDir: filepath.Join(root, "releases", "current"), JournalPath: filepath.Join(root, "journal"), AcceptedStatePath: filepath.Join(root, "accepted"), BackupDir: filepath.Join(root, "backup")})
 	if err == nil {
 		t.Fatal("expected required trust/source/backup/health configuration error")
 	}
@@ -142,7 +143,7 @@ func TestReleaseExecutorRejectsRemoteTargetBeforeFetching(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := fixtureSource{}
-	executor, err := NewReleaseExecutor(ExecutorConfig{
+	executor, err := NewReleaseExecutor(ExecutorConfig{DatabasePath: filepath.Join(root, "database.sqlite"),
 		Registry: registry, Source: source, CurrentCore: "1.0.0", AcceptedStatePath: filepath.Join(root, "state", "accepted"),
 		ReleaseRoot: filepath.Join(root, "releases"), ActiveDir: filepath.Join(root, "releases", "current"), JournalPath: filepath.Join(root, "state", "journal"), BackupDir: filepath.Join(root, "backups"),
 		LocalServerID: "server-executor-test01",
@@ -160,4 +161,41 @@ func TestReleaseExecutorRejectsRemoteTargetBeforeFetching(t *testing.T) {
 func sha256Hex(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+func TestExecutorSchemaRefusalPrecedesArchiveDownloadAndStaging(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "database.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_meta(version INTEGER NOT NULL); INSERT INTO schema_meta VALUES(7)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	now := time.Now().UTC().Truncate(time.Second)
+	m, sig, registry, _ := signedManifest(t, now, "0.2.0")
+	releaseRoot := filepath.Join(root, "releases")
+	active := filepath.Join(releaseRoot, "current")
+	if err := os.MkdirAll(active, 0755); err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewReleaseExecutor(ExecutorConfig{DatabasePath: path, Registry: registry, Source: fixtureSource{bundle: ReleaseBundle{Manifest: m, Signature: sig}}, CurrentCore: "0.1.0", AcceptedStatePath: filepath.Join(root, "accepted.json"), ReleaseRoot: releaseRoot, ActiveDir: active, JournalPath: filepath.Join(root, "journal.json"), BackupDir: filepath.Join(root, "backup"), LocalServerID: "schema-executor-server", GOOS: "linux", GOARCH: "amd64", Backup: func(context.Context, string) error { t.Fatal("backup before schema refusal"); return nil }, Health: func(context.Context, string) error { t.Fatal("activation before schema refusal"); return nil }, Download: DownloadOptions{Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("archive request before schema refusal")
+		return nil, nil
+	})}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = executor.Execute(t.Context(), Execution{JobID: "schema-executor-job", Release: m.Release, Target: contracts.Server{ID: "schema-executor-server", Role: "node", ConnectionState: "connected"}})
+	var incompatible *IncompatibleError
+	if !errors.As(err, &incompatible) {
+		t.Fatalf("missing incompatibility refusal: %v", err)
+	}
+	for _, path := range []string{filepath.Join(releaseRoot, ".downloads"), filepath.Join(releaseRoot, m.Release), filepath.Join(root, "journal.json"), filepath.Join(root, "backup")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("preflight mutated staging: %s %v", path, err)
+		}
+	}
 }

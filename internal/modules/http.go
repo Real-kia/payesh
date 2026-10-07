@@ -172,7 +172,7 @@ func (s *Service) runAction(r *http.Request, serverID contracts.ServerID, module
 			if !found {
 				return contracts.ModuleInstallation{}, errors.New("server not found")
 			}
-			if s.Manager.LocalServerID != serverID || server.Role != "standalone" {
+			if s.Manager.LocalServerID != serverID || (server.Role != "standalone" && !(moduleID == ProcessModuleID && server.Role == "hub")) {
 				return contracts.ModuleInstallation{}, ErrModuleExecutorUnavailable
 			}
 			manifest, signature, archive, err := s.Sources.Load(r.Context(), *request.Source, moduleID, server.Architecture)

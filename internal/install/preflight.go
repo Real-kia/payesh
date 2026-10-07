@@ -115,6 +115,17 @@ func validateListenAddress(address string) error {
 	if strings.TrimSpace(address) != address || strings.ContainsAny(address, "\r\n\t\\\"'") {
 		return errors.New("address contains unsafe whitespace or quoting")
 	}
+	// The address is embedded in generated service definitions, including
+	// root-sourced OpenRC scripts and shell wrappers. Accept only characters that
+	// can appear in a hostname, IPv4 or bracketed IPv6 literal and a port.
+	for _, r := range address {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '_', r == ':', r == '[', r == ']':
+		default:
+			return errors.New("address contains characters that are not valid in a host:port listen address")
+		}
+	}
 	host, portText, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("must be host:port: %w", err)
@@ -323,7 +334,7 @@ func existingServerListen(root, role, init, listen string) bool {
 				}
 			}
 		}
-		if init == "openrc" && line == "command_args=\"-db=/var/lib/payesh/payesh.db -listen="+openRCArg(listen)+"\"" {
+		if init == "openrc" && strings.HasPrefix(line, "command_args=") && installedServerListen(root, init) == listen {
 			return true
 		}
 	}

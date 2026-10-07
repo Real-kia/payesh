@@ -5,10 +5,10 @@
 On your Linux server (x86_64 or arm64), run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview
 ```
 
-That's it. The installer:
+This explicitly selects the unsigned preview path. The installer:
 
 1. checks that the server is supported,
 2. downloads the latest Payesh release from GitHub and verifies every file
@@ -22,11 +22,19 @@ When it finishes, it prints the dashboard address and your login.
 Run this on the server that will become a node:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --role node
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --role node
 ```
 
 This installs the agent. To send data to a hub, enroll the node through the
 hub's **Add Server** flow; a node without enrollment collects locally only.
+
+The hub receives node connections on a separate TLS port, **9797** by default.
+Enable HTTPS on the hub and allow this port in its firewall before enrolling
+nodes (for example, `sudo ufw allow 9797/tcp`). Nodes need outbound access to
+the hub, without an incoming monitoring port of their own. Dashboard access
+normally uses port 8787. Both ports can be changed independently under
+**Settings → SSL / TLS**. See [node port migration](INSTALL_HTTP_FALLBACK.md#changing-ports)
+for existing nodes and retiring previous endpoints.
 
 ### Check for updates
 
@@ -35,10 +43,17 @@ version with the latest release. From the server shell:
 
 ```sh
 payesh update check
-sudo payesh update
+sudo env PAYESH_RELEASE_MODE=preview payesh update
 ```
 
-`payesh update` keeps the installed role and downloads verified release archives.
+`payesh update` keeps the installed role. Production mode is the default and
+requires the owner's external public-key anchor and matching key ID before any
+downloaded installer executes. Unsigned preview updates require the explicit
+environment setting above on the server shell. Browser updates require
+production trust configured in the root-managed `/etc/payesh-update.env`;
+the panel cannot enable preview mode. Browser requests retain a bounded
+authorization and recovery intent through installation and health verification. See the
+[production trust configuration](contracts/RELEASE_FORMAT.md#production-bootstrap-and-updates).
 
 ### Convert a hub to a node
 
@@ -49,10 +64,10 @@ The conversion refuses to run if the old hub still has node records or active
 certificates.
 
 ```sh
-sudo payesh role convert node --transport-url wss://NEW_HUB:8787/node/v1 \
+sudo payesh role convert node --transport-url wss://NEW_HUB:9797/node/v1 \
   --node-identity-file /root/new-node-identity.json \
   --hub-ca-file /root/new-hub-ca.pem --check
-sudo payesh role convert node --transport-url wss://NEW_HUB:8787/node/v1 \
+sudo payesh role convert node --transport-url wss://NEW_HUB:9797/node/v1 \
   --node-identity-file /root/new-node-identity.json \
   --hub-ca-file /root/new-hub-ca.pem
 ```
@@ -63,7 +78,7 @@ hub credentials.
 
 > Want to see if your server is supported first, without changing anything?
 > Add `-s -- --check` at the end:
-> `curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --check`
+> `curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --check`
 
 ## Open the dashboard
 
@@ -106,7 +121,7 @@ What it does and doesn't touch:
 
 You can also set the domain:
 
-- **during install:** `curl -fsSL …/install.sh | sudo sh -s -- --domain panel.example.com`
+- **during install:** `curl -fsSL …/install.sh | sudo sh -s -- --release-mode preview --domain panel.example.com`
 - **from the dashboard:** Settings → Domain & HTTPS
 
 Other commands:
@@ -138,7 +153,7 @@ working, and it is never shown again.
 Pass options after `sh -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --domain panel.example.com
+curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --domain panel.example.com
 ```
 
 | Option | What it does |
@@ -179,7 +194,7 @@ git tag v0.1.0 && git push origin v0.1.0
 
 These release bundles are unsigned (`signing_key_id` is
 `unavailable-local`). The installer verifies them against the release's
-`SHA256SUMS` over HTTPS, which catches corrupted or incomplete downloads
+`SHA256SUMS` over HTTPS only when `--release-mode preview` is explicitly selected, which catches corrupted or incomplete downloads
 but doesn't independently prove who published them. Signed releases are
 tracked in [contracts/RELEASE_FORMAT.md](contracts/RELEASE_FORMAT.md).
 
@@ -213,10 +228,15 @@ development listener publicly. Stop with Ctrl-C.
 
 ### Build a local release bundle
 
+Set `RELEASE_MIN_CORE` to the oldest core version actually supported by the
+candidate and verified by compatibility tests. It must be a semantic version no
+newer than the release; packaging refuses a missing declaration. The tag workflow
+uses the reviewed `PAYESH_RELEASE_MIN_CORE` repository variable.
+
 ```sh
 (cd web && npm ci --ignore-scripts --no-audit --no-fund)
 make web-check
-SOURCE_DATE_EPOCH=1768089600 make release-package
+SOURCE_DATE_EPOCH=1768089600 make release-package RELEASE_MIN_CORE="$RELEASE_MIN_CORE"
 make release-validate RELEASE_VERSION=0.1.0
 ```
 
@@ -249,5 +269,9 @@ This runs first install, upgrade, failed-verification recovery, and uninstall
 against a private filesystem fixture without touching the real host. For a
 live disposable host, `TestLiveSSHInstall` is opt-in via
 `PAYESH_LIVE_SSH_INSTALL=1` plus target, user, key, a confirmed host-key
-fingerprint, and a directory of verified artifacts (`PAYESH_SSH_BIND_ADDRESS`
-selects the source address on multi-interface machines).
+fingerprint, and a directory of verified artifacts. Node installation also
+requires `PAYESH_SSH_TRANSPORT_URL`, `PAYESH_SSH_NODE_IDENTITY_FILE`, and
+`PAYESH_SSH_HUB_TRUST_FILE`: supply the real enrolled identity and its hub trust
+anchor so the node can verify TLS reachability before installation. Missing
+transport settings fail the test rather than skip the check.
+`PAYESH_SSH_BIND_ADDRESS` selects the source address on multi-interface machines.

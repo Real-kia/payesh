@@ -2,10 +2,13 @@ package install
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"github.com/Real-kia/payesh/internal/monitoring"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -13,6 +16,44 @@ import (
 type testAccountManager struct{ calls int }
 
 func acceptArtifact(string, string) error { return nil }
+
+func TestLaterArtifactRejectionPreservesEntireInstalledGeneration(t *testing.T) {
+	root, artifacts := installFixture(t, "systemd")
+	opts := InstallOptions{Root: root, Role: "node", ArtifactDir: artifacts, Verify: acceptArtifact, AccountManager: &testAccountManager{}}
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	prior := make(map[string][]byte)
+	for _, name := range []string{"payesh-agent", "payesh-privd", "payesh"} {
+		data, err := os.ReadFile(filepath.Join(root, "usr/bin", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prior[name] = data
+		if err := os.WriteFile(filepath.Join(artifacts, name), []byte("candidate-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accounts, services := &testAccountManager{}, &testServiceManager{}
+	opts.AccountManager, opts.ServiceManager, opts.Start = accounts, services, true
+	rejected := errors.New("last artifact digest rejected")
+	opts.Verify = func(name, _ string) error {
+		if name == "payesh" {
+			return rejected
+		}
+		return nil
+	}
+	result, err := Install(context.Background(), opts)
+	if !errors.Is(err, rejected) || len(result.Installed) != 0 || accounts.calls != 0 || len(services.services) != 0 {
+		t.Fatalf("rejected candidate mutated installation: result=%+v err=%v accounts=%d services=%v", result, err, accounts.calls, services.services)
+	}
+	for name, expected := range prior {
+		actual, err := os.ReadFile(filepath.Join(root, "usr/bin", name))
+		if err != nil || string(actual) != string(expected) {
+			t.Fatalf("prior %s replaced: %v", name, err)
+		}
+	}
+}
 
 func (m *testAccountManager) Ensure(context.Context, string, string, string) (Account, error) {
 	m.calls++
@@ -179,24 +220,24 @@ func TestInstallUpgradeAllowsItsExistingListenAddress(t *testing.T) {
 	}
 }
 
-func TestInstallPartialArtifactFailureCanRetry(t *testing.T) {
+func TestInstallMissingArtifactFailsBeforeReplacementAndCanRetry(t *testing.T) {
 	root, artifactDir := installFixture(t, "systemd")
 	if err := os.Remove(filepath.Join(artifactDir, "payesh")); err != nil {
 		t.Fatal(err)
 	}
 	opts := InstallOptions{Root: root, Role: "node", ArtifactDir: artifactDir, Verify: acceptArtifact, AccountManager: &testAccountManager{}}
 	result, err := Install(context.Background(), opts)
-	if !errors.Is(err, ErrMissingArtifact) || len(result.Installed) != 2 {
-		t.Fatalf("partial result=%+v err=%v", result, err)
+	if !errors.Is(err, ErrMissingArtifact) || len(result.Installed) != 0 {
+		t.Fatalf("missing artifact result=%+v err=%v", result, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "usr/bin/payesh-agent")); err != nil {
-		t.Fatalf("first artifact was not retained: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "usr/bin/payesh-agent")); !os.IsNotExist(err) {
+		t.Fatalf("first artifact was installed before full validation: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(artifactDir, "payesh"), []byte("payesh-binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result, err = Install(context.Background(), opts)
-	if err != nil || !result.Resumed {
+	if err != nil || result.Resumed || len(result.Installed) != 3 {
 		t.Fatalf("retry result=%+v err=%v", result, err)
 	}
 }
@@ -492,5 +533,71 @@ func TestUpdatePreservesServiceSettingsAndHTTPS(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInstallRejectsNewerDatabaseBeforeInstalledGenerationMutation(t *testing.T) {
+	root, artifacts := installFixture(t, "systemd")
+	dbpath := filepath.Join(root, "var/lib/payesh/payesh.db")
+	if err := os.MkdirAll(filepath.Dir(dbpath), 0750); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_meta(version INTEGER NOT NULL);INSERT INTO schema_meta VALUES(` + strconv.Itoa(monitoring.CurrentSchemaVersion+1) + `)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	old := filepath.Join(root, "usr/bin/payesh")
+	if err := os.WriteFile(old, []byte("installed generation"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(dbpath)
+	accounts, services := &testAccountManager{}, &testServiceManager{}
+	_, err = Install(t.Context(), InstallOptions{Root: root, Role: "node", ArtifactDir: artifacts, Verify: acceptArtifact, AccountManager: accounts, ServiceManager: services})
+	if err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("candidate installer accepted newer database: %v", err)
+	}
+	if accounts.calls != 0 || len(services.services) != 0 {
+		t.Fatal("incompatible database reached activation")
+	}
+	after, _ := os.ReadFile(dbpath)
+	if string(before) != string(after) {
+		t.Fatal("installer mutated incompatible database")
+	}
+	body, _ := os.ReadFile(old)
+	if string(body) != "installed generation" {
+		t.Fatal("installer replaced prior generation")
+	}
+	for _, path := range []string{"etc/payesh-installation.json", "var/lib/payesh/install-state.json", "etc/systemd/system/payesh-agent.service"} {
+		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("installer wrote %s before schema refusal", path)
+		}
+	}
+}
+func TestInstallReadableOlderDatabaseDoesNotRunMigrations(t *testing.T) {
+	root, artifacts := installFixture(t, "systemd")
+	dbpath := filepath.Join(root, "var/lib/payesh/payesh.db")
+	if err := os.MkdirAll(filepath.Dir(dbpath), 0750); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_meta(version INTEGER NOT NULL);INSERT INTO schema_meta VALUES(5)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	before, _ := os.ReadFile(dbpath)
+	_, err = Install(t.Context(), InstallOptions{Root: root, Role: "node", ArtifactDir: artifacts, Verify: acceptArtifact, AccountManager: &testAccountManager{}, ServiceManager: &testServiceManager{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(dbpath)
+	if string(before) != string(after) {
+		t.Fatal("installer ran database migrations")
 	}
 }

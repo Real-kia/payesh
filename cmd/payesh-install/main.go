@@ -21,6 +21,7 @@ func main() {
 	role := flag.String("role", "node", "installation role: standalone, hub, node, or cli-only")
 	listen := flag.String("listen", "", "requested TCP listen address for web roles")
 	jsonOutput := flag.Bool("json", false, "emit a machine-readable result")
+	schemaCheck := flag.Bool("check-schema", false, "read-only check of installed database against this candidate's compiled schema registry")
 	apply := flag.Bool("install", false, "install verified artifacts from --artifact-dir")
 	artifactDir := flag.String("artifact-dir", "", "directory containing role-required verified artifacts")
 	flag.Var(&artifactDigests, "artifact-sha256", "expected artifact digest as name=64-hex-sha256; repeat for every required artifact")
@@ -33,6 +34,26 @@ func main() {
 	nodeIdentity := flag.String("node-identity-file", "", "enrolled node identity JSON")
 	hubCA := flag.String("hub-ca-file", "", "destination hub CA PEM")
 	flag.Parse()
+	if *schemaCheck {
+		if *apply || *uninstall || *start || *convertFrom != "" || *removeData || *removeInstaller || flag.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "--check-schema cannot be combined with installation or removal actions")
+			os.Exit(2)
+		}
+		switch *role {
+		case "node", "hub", "standalone", "cli-only":
+		default:
+			fmt.Fprintln(os.Stderr, "unsupported schema-check role")
+			os.Exit(2)
+		}
+		if err := install.CheckInstalledDatabaseSchema(context.Background(), *root); err != nil {
+			fmt.Fprintln(os.Stderr, "candidate database schema preflight:", err)
+			os.Exit(2)
+		}
+		if *jsonOutput {
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"schema_compatible": true})
+		}
+		return
+	}
 	var conversion *install.ConversionConfig
 	if *convertFrom != "" {
 		conversion = &install.ConversionConfig{FromRole: *convertFrom, TransportURL: *transportURL, NodeIdentityFile: *nodeIdentity, HubCAFile: *hubCA}
@@ -135,6 +156,10 @@ func main() {
 	if conversion != nil {
 		if err := install.CheckHubToNode(context.Background(), *root, *conversion); err != nil {
 			fmt.Fprintln(os.Stderr, "conversion preflight:", err)
+			os.Exit(1)
+		}
+		if err := install.CheckConversionTransport(context.Background(), *conversion); err != nil {
+			fmt.Fprintln(os.Stderr, "destination node transport:", err)
 			os.Exit(1)
 		}
 	}

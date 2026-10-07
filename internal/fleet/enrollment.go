@@ -106,6 +106,16 @@ func (s *EnrollmentService) serveTokenHTTP(w http.ResponseWriter, r *http.Reques
 		writeFleetError(w, http.StatusNotFound, "not_found", "server not found", false)
 		return
 	}
+	// A hub that handed the server to another hub must not mint pairing tokens
+	// for it; checked before the CA reserves anything.
+	if err := s.Store.RequireServerAuthority(r.Context(), serverID); err != nil {
+		if errors.Is(err, monitoring.ErrServerNotAuthoritative) {
+			writeFleetError(w, http.StatusConflict, "server_not_authoritative", "this hub no longer owns the server", false)
+			return
+		}
+		writeFleetError(w, http.StatusServiceUnavailable, "storage_unavailable", "server authority lookup failed", true)
+		return
+	}
 	now := s.now()
 	key := string(serverID) + "\x00" + request.IdempotencyKey
 

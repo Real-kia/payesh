@@ -22,7 +22,10 @@ func TestLiveSSHInstall(t *testing.T) {
 	fingerprint := os.Getenv("PAYESH_SSH_HOST_KEY_FINGERPRINT")
 	bindAddress := os.Getenv("PAYESH_SSH_BIND_ADDRESS")
 	artifactDir := os.Getenv("PAYESH_SSH_ARTIFACT_DIR")
-	if host == "" || user == "" || keyPath == "" || fingerprint == "" || artifactDir == "" {
+	transportURL := os.Getenv("PAYESH_SSH_TRANSPORT_URL")
+	identityPath := os.Getenv("PAYESH_SSH_NODE_IDENTITY_FILE")
+	trustPath := os.Getenv("PAYESH_SSH_HUB_TRUST_FILE")
+	if host == "" || user == "" || keyPath == "" || fingerprint == "" || artifactDir == "" || transportURL == "" || identityPath == "" || trustPath == "" {
 		t.Fatal("live SSH acceptance environment is incomplete")
 	}
 	port := 22
@@ -34,6 +37,14 @@ func TestLiveSSHInstall(t *testing.T) {
 		port = parsed
 	}
 	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := os.ReadFile(trustPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +61,8 @@ func TestLiveSSHInstall(t *testing.T) {
 		InstallerPath:              filepath.Join(artifactDir, "payesh-install"),
 		Artifacts:                  artifacts,
 		Role:                       "node",
-		Start:                      true,
+		TransportURL:               transportURL, NodeIdentityJSON: identity, HubTrustPEM: trust,
+		Start: true,
 		VerifyArtifact: func(name, path string) error {
 			_, err := ArtifactDigest(path, name == "web-assets")
 			return err

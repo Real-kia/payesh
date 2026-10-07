@@ -87,7 +87,7 @@ func TestLocalSignedHTTPReleaseExecutorRollsBackAndRecovers(t *testing.T) {
 	manifest.Artifacts[0].URL = server.URL + "/1.4.0/agent.tar.gz"
 
 	var healthFails bool = true
-	executor, err := NewReleaseExecutor(ExecutorConfig{
+	executor, err := NewReleaseExecutor(ExecutorConfig{DatabasePath: filepath.Join(root, "database.sqlite"),
 		Registry:    registry,
 		Source:      HTTPReleaseSource{BaseURL: server.URL},
 		CurrentCore: "1.0.0", AcceptedStatePath: filepath.Join(root, "state", "accepted.json"),

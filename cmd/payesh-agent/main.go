@@ -21,6 +21,8 @@ import (
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/privd"
 	"github.com/Real-kia/payesh/internal/transport"
+	"github.com/Real-kia/payesh/internal/version"
+	"github.com/Real-kia/payesh/internal/webupdate"
 )
 
 func main() {
@@ -40,7 +42,13 @@ func main() {
 	hubTrustFile := flag.String("hub-trust-file", envOrDefault("PAYESH_HUB_TRUST_FILE", "/var/lib/payesh/hub-ca.pem"), "hub TLS trust-anchor PEM")
 	spoolFile := flag.String("spool-file", envOrDefault("PAYESH_SPOOL_FILE", "/var/lib/payesh/agent.spool"), "bounded offline sample spool")
 	privdSocket := flag.String("privd-socket", os.Getenv("PAYESH_PRIVD_SOCKET"), "optional privileged-helper socket enabling authenticated action execution")
+	checkTransport := flag.Bool("check-transport", false, "verify the configured hub TLS node port and exit without collecting metrics")
+	printVersion := flag.Bool("version", false, "print the agent release version and exit")
 	flag.Parse()
+	if *printVersion {
+		fmt.Println(version.Value)
+		return
+	}
 
 	collectorEpoch := contracts.CollectorEpoch(*epoch)
 	if collectorEpoch == "" {
@@ -66,7 +74,7 @@ func main() {
 			os.Exit(2)
 		}
 		configuredNodeIdentity, err = transport.LoadNodeIdentity(configuredTransport.IdentityFile)
-		if errors.Is(err, os.ErrNotExist) && strings.TrimSpace(*bootstrapURL) != "" {
+		if errors.Is(err, os.ErrNotExist) && strings.TrimSpace(*bootstrapURL) != "" && !*checkTransport {
 			if strings.TrimSpace(*bootstrapJob) == "" || strings.TrimSpace(*bootstrapToken) == "" {
 				fmt.Fprintln(os.Stderr, "bootstrap requires --bootstrap-job and --bootstrap-token when node identity is absent")
 				os.Exit(2)
@@ -100,6 +108,24 @@ func main() {
 		// samples that the authenticated hub must reject.
 		identity = configuredNodeIdentity.ServerID
 	}
+	if *checkTransport {
+		if configuredTransportURL == "" {
+			fmt.Fprintln(os.Stderr, "transport check requires a hub transport URL")
+			os.Exit(2)
+		}
+		trustPEM, err := os.ReadFile(configuredTransport.TrustFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read hub trust anchor:", err)
+			os.Exit(1)
+		}
+		checker := &transport.AgentClient{URL: configuredTransport.URL, IdentityPath: configuredTransport.IdentityFile, Identity: configuredNodeIdentity, TrustPEM: trustPEM}
+		if err = checker.CheckEndpoint(context.Background()); err != nil {
+			fmt.Fprintln(os.Stderr, "hub node transport check failed; check the hub listener, firewall, DNS and TLS trust")
+			os.Exit(1)
+		}
+		fmt.Println("Hub node transport port is reachable and TLS is trusted.")
+		return
+	}
 	if identity == "" {
 		var err error
 		identity, err = collector.LoadOrCreateServerID(*identityFile)
@@ -129,16 +155,20 @@ func main() {
 			fmt.Fprintln(os.Stderr, "open sample spool:", err)
 			os.Exit(1)
 		}
-		capabilities := []string{"metrics", "traffic", "sampling-policy"}
+		capabilities := []string{"metrics", "traffic", "sampling-policy", transport.MigrationCapability}
 		var actionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 		if socket := strings.TrimSpace(*privdSocket); socket != "" {
 			capabilities = append(capabilities, "actions")
 			helper := privd.Client{SocketPath: socket}
 			actionHandler = helper.Execute
 		}
+		if webupdate.Supported(*root) {
+			capabilities = append(capabilities, "actions", "core-update")
+			actionHandler = webupdate.CoreActionHandler(filepath.Join(*root, "var/lib/payesh"), configuredNodeIdentity.ServerID, version.Value, actionHandler)
+		}
 		client := &transport.AgentClient{
 			URL: configuredTransport.URL, Identity: configuredNodeIdentity, IdentityPath: configuredTransport.IdentityFile, TrustPEM: trustPEM, Spool: spool,
-			Hello:          contracts.Hello{Version: "dev", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
+			Hello:          contracts.Hello{Version: version.Value, ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
 			ActionHandler:  actionHandler,
 			SamplingPolicy: func(seconds int) { hubSampleSeconds.Store(int64(seconds)) },
 		}

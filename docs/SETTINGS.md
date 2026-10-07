@@ -1,6 +1,7 @@
 # Settings
 
-Settings has three sections: SSL / TLS, Versions & updates, and User management.
+Settings has five sections: SSL / TLS, Versions & updates, Storage & sampling,
+Notifications, and User management.
 User management is visible to the owner, who can search, add, edit, and remove
 users and set their role and read/edit access. Sign out remains in the profile menu.
 
@@ -10,14 +11,43 @@ prereleases, and tags that are not application versions are excluded. Private
 repositories use the hub's GITHUB_TOKEN; an unavailable release history does not
 hide the installed version.
 
-SSL / TLS manages the domain, certificate, and dashboard port. Changing a port
-reserves its listening socket before persisting the change; occupied ports and
-invalid values are rejected without changing the current address. The browser
-opens the new address after the change. Existing endpoints remain available to
-previously enrolled nodes, and the saved endpoints are restored on restart.
-New node enrollments use the selected port. Port history is capped at 16 addresses.
-The configuration is stored in ports.json in the TLS state directory, separately
-from domain and certificate state, so certificate removal and renewal preserve it.
+SSL / TLS manages the domain, certificate, dashboard port, and a separate node
+transport port. The dashboard defaults to **8787**; TLS node transport defaults
+to **9797**. Nodes initiate an outbound connection to the hub. No inbound Payesh
+listener is required on the node.
+
+Changing either port reserves its listening socket before persisting the change.
+Occupied ports and invalid values are rejected without changing the current
+address. Changing the dashboard port opens the new browser address and does not
+change the separate node transport endpoint. Dashboard port history is stored
+in `ports.json` in the TLS state directory; old dashboard listeners remain
+available and are restored on restart.
+
+Changing the node port starts a verified migration. Agents advertising
+`transport-migration` test the new TLS/WebSocket endpoint, save it durably, and
+reconnect. Failed migrations retain the working endpoint. Offline nodes receive
+the proposal when they return; older agents must be upgraded. New installations
+use the current node endpoint and test reachability and TLS trust from the node
+before applying services.
+
+The node card shows progress and migration errors. Temporary settings-fetch
+failures offer a retry and recover automatically while SSL / TLS is open. A hub
+without this endpoint shows an upgrade message rather than an empty error. Previous node listeners remain
+available until every enrolled, non-revoked node has connected on the current
+port and an operator selects **Retire previous node endpoints**. Upgraded hubs
+may also retain node access through dashboard listeners for legacy agents;
+retirement disables that compatibility access. It does not close old dashboard
+listeners. Node listener history and observations are stored in
+`node-ports.json`; both port histories are capped at 16 entries.
+
+Enable managed HTTPS or configure a trusted node TLS certificate before adding
+nodes. Removing the managed domain also affects nodes using that certificate.
+Existing connections may remain open temporarily, but reconnects fail until
+managed HTTPS is restored or independent node TLS is configured.
+Migration changes the port on the same hostname; moving the hub to another
+hostname requires separate configuration. Open the new port in the firewall
+and update any forwarding rules before migration. Retire old firewall rules only
+after the endpoint retirement succeeds.
 
 Mutations retain session, CSRF, and read/edit permission checks. The hub does not
 change firewall rules when selecting a port.
@@ -30,7 +60,10 @@ The update panel checks releases automatically and offers an owner-only Update
 button when the update service is installed. An installed version newer than the
 latest public release is labeled **Beta · ahead of latest release**, and is never
 automatically downgraded. Older installations need one command-line update to
-install the browser update service.
+install the browser update service. Browser updates require production release
+trust configured by the operator. Requests expire after 30 minutes and remain
+durable through activation; the worker checks installed version and service
+health and uses the installation transaction for rollback and crash recovery.
 
 ## Storage and notifications
 

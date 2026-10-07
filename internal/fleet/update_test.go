@@ -107,4 +107,11 @@ func TestWebUpdateRequiresOwnerCSRFAndNewerVersion(t *testing.T) {
 	if err != nil || !ok || request.Version != "1.2.4" {
 		t.Fatalf("request=%+v found=%v err=%v", request, ok, err)
 	}
+	if request.JobID == "" || request.Deadline.IsZero() {
+		t.Fatalf("browser update bypasses durable worker activation: %+v", request)
+	}
+	retained, found, err := webupdate.Take(dir)
+	if err != nil || !found || retained != request {
+		t.Fatalf("browser activation intent lost before completion: %+v %v %v", retained, found, err)
+	}
 }

@@ -1,15 +1,19 @@
 #!/bin/sh
 # Payesh one-line installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh
+#   sudo sh ./install.sh --release-public-key /etc/payesh-release.pub --release-key-id OWNER_SUPPLIED_KEY_ID
+#   Legacy unsigned preview: curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview
 #
-# Downloads the Payesh release for this machine from GitHub Releases, checks
-# every archive against the release SHA256SUMS, and hands the verified files
+# Downloads the Payesh release for this machine from GitHub Releases, authenticates
+# SHA256SUMS with an externally configured Ed25519 anchor, checks every archive, and hands the verified files
 # to payesh-install, which creates the services and starts them.
 #
 # Options (flags, or the matching environment variable):
 #   --role ROLE        standalone (default), hub, node, or cli-only   PAYESH_ROLE
 #   --version X.Y.Z    release to install (default: latest)          PAYESH_VERSION
+#   --release-mode MODE production (default) or unsigned preview     PAYESH_RELEASE_MODE
+#   --release-public-key PATH externally trusted Ed25519 PUBLIC KEY PEM PAYESH_RELEASE_PUBLIC_KEY
+#   --release-key-id ID externally trusted signing key identifier    PAYESH_RELEASE_KEY_ID
 #   --listen ADDR      web listen address (default 0.0.0.0:8787)     PAYESH_LISTEN
 #   --domain NAME      get a free HTTPS certificate for NAME          PAYESH_DOMAIN
 #   --email ADDR       optional Let's Encrypt contact email           PAYESH_EMAIL
@@ -31,6 +35,7 @@
 # Private repository (temporary, for testing): export GITHUB_TOKEN with read
 # access to the repository and the installer downloads through the GitHub API.
 set -eu
+PAYESH_RELEASE_BOUND_METADATA_V1=1
 
 REPO="${PAYESH_REPO:-Real-kia/payesh}"
 ROLE="${PAYESH_ROLE:-}"
@@ -47,6 +52,10 @@ UNINSTALL=0
 REMOVE_DATA=0
 REMOVE_INSTALLER=0
 TOKEN="${GITHUB_TOKEN:-}"
+RELEASE_MODE="${PAYESH_RELEASE_MODE:-production}"
+RELEASE_PUBLIC_KEY="${PAYESH_RELEASE_PUBLIC_KEY:-}"
+RELEASE_KEY_ID="${PAYESH_RELEASE_KEY_ID:-}"
+RELEASE_CHECKSUMS_SHA256=""
 
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -58,6 +67,10 @@ while [ $# -gt 0 ]; do
 	--role=*) ROLE="${1#*=}"; shift ;;
 	--version) VERSION="${2:?--version needs a value}"; shift 2 ;;
 	--version=*) VERSION="${1#*=}"; shift ;;
+	--release-mode) RELEASE_MODE="${2:?--release-mode needs a value}"; shift 2 ;;
+	--release-public-key) RELEASE_PUBLIC_KEY="${2:?--release-public-key needs a value}"; shift 2 ;;
+	--release-checksums-sha256) RELEASE_CHECKSUMS_SHA256="${2:?--release-checksums-sha256 needs a value}"; shift 2 ;;
+	--release-key-id) RELEASE_KEY_ID="${2:?--release-key-id needs a value}"; shift 2 ;;
 	--listen) LISTEN="${2:?--listen needs a value}"; shift 2 ;;
 	--listen=*) LISTEN="${1#*=}"; shift ;;
 	--domain) DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
@@ -73,7 +86,7 @@ while [ $# -gt 0 ]; do
 	--remove-data) REMOVE_DATA=1; shift ;;
 	--remove-installer) REMOVE_INSTALLER=1; shift ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--release-mode production|preview] [--release-public-key PATH --release-key-id ID] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
@@ -121,6 +134,36 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 VERSION="${VERSION#v}"
+
+case "$RELEASE_MODE" in
+production)
+ [ -n "$RELEASE_PUBLIC_KEY" ] && [ -n "$RELEASE_KEY_ID" ] || die "production releases require an externally configured --release-public-key and --release-key-id; unsigned legacy releases require explicit --release-mode preview"
+ [ -f "$RELEASE_PUBLIC_KEY" ] && [ ! -L "$RELEASE_PUBLIC_KEY" ] || die "release public key must be a regular non-symlink PEM file"
+ case "$RELEASE_KEY_ID" in ''|*[!A-Za-z0-9._-]*|[._-]*|unavailable-local) die "invalid production release key ID" ;; esac
+ [ "${#RELEASE_KEY_ID}" -le 128 ] || die "release key ID is too long"
+ command -v openssl >/dev/null 2>&1 || die "production verification requires OpenSSL with Ed25519 pkeyutl -rawin support (OpenSSL 3 or newer)"
+ # Root may trust its own anchor, never a service-account-owned or writable file.
+ [ "$(stat -c %u "$RELEASE_PUBLIC_KEY")" = 0 ] || die "production public key must be owned by root"
+ key_mode="$(stat -c %a "$RELEASE_PUBLIC_KEY")"
+ [ "$((0$key_mode & 022))" -eq 0 ] || die "production public key must not be group/world writable"
+ key_dir="$(cd "$(dirname "$RELEASE_PUBLIC_KEY")" && pwd -P)"
+ while :; do
+  [ "$(stat -c %u "$key_dir")" = 0 ] || die "production anchor directories must be owned by root"
+  dir_mode="$(stat -c %a "$key_dir")"
+  if [ "$((0$dir_mode & 022))" -ne 0 ] && [ "$((0$dir_mode & 01000))" -eq 0 ]; then
+   die "production anchor directory is group/world writable without sticky ownership protection"
+  fi
+  [ "$key_dir" != / ] || break
+  key_dir="$(dirname "$key_dir")"
+ done
+ openssl pkey -pubin -in "$RELEASE_PUBLIC_KEY" -text -noout 2>/dev/null | head -n 1 | grep -q '^ED25519 Public-Key:' || die "production public key must be an Ed25519 PUBLIC KEY PEM"
+ ;;
+preview)
+ [ -z "$RELEASE_PUBLIC_KEY$RELEASE_KEY_ID" ] || die "preview mode does not accept production trust inputs"
+ warn "UNSIGNED PREVIEW: SHA256SUMS checks byte integrity only; release publisher authenticity is not verified"
+ ;;
+*) die "release mode must be production or preview" ;;
+esac
 
 # --- host checks -----------------------------------------------------------
 
@@ -178,6 +221,13 @@ mkdir -p "$WORK/archives" "$ARTIFACTS"
 
 # --- locate the release ----------------------------------------------------
 
+# Signature envelopes bind an exact version; resolve latest before downloading.
+if [ "$RELEASE_MODE" = production ] && [ "$VERSION" = latest ] && [ -z "$TOKEN" ]; then
+ download "https://api.github.com/repos/$REPO/releases/latest" "$WORK/latest.json" || die "could not resolve latest production release"
+ VERSION="$(tr ',' '\n' <"$WORK/latest.json" | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)"
+ [ -n "$VERSION" ] || die "latest release has no version"
+fi
+
 if [ -n "$TOKEN" ]; then
 	: # Use authenticated downloads without printing repository mode.
 	if [ "$VERSION" = latest ]; then
@@ -230,6 +280,28 @@ esac
 
 say "$ACTION Payesh ${VERSION:-latest} ($ROLE, linux/$ARCH) from github.com/$REPO"
 get_asset SHA256SUMS "$WORK/SHA256SUMS"
+if [ "$RELEASE_MODE" = production ]; then
+ case "$VERSION" in ''|*[!0-9A-Za-z.-]*) die "invalid production release version" ;; esac
+ get_asset SHA256SUMS.sig "$WORK/SHA256SUMS.sig"
+ [ "$(wc -c <"$WORK/SHA256SUMS" | tr -d ' ')" -le 1048576 ] || die "production checksum index is oversized"
+ signature="$(cat "$WORK/SHA256SUMS.sig")"
+ [ "${#signature}" -eq 86 ] || die "invalid bootstrap signature length"
+ case "$signature" in *[!A-Za-z0-9_-]*) die "invalid bootstrap signature encoding" ;; esac
+ [ "$(wc -c <"$WORK/SHA256SUMS.sig" | tr -d ' ')" -eq 86 ] || die "bootstrap signature must not contain whitespace"
+ printf '%s==' "$signature" | tr '_-' '/+' | openssl base64 -d -A >"$WORK/bootstrap.sig" || die "could not decode bootstrap signature"
+ [ "$(wc -c <"$WORK/bootstrap.sig" | tr -d ' ')" -eq 64 ] || die "invalid decoded bootstrap signature"
+ { printf 'payesh.checksums.v1\n%s\n%s\n' "$VERSION" "$RELEASE_KEY_ID"; cat "$WORK/SHA256SUMS"; } >"$WORK/bootstrap.payload"
+ openssl pkeyutl -verify -pubin -inkey "$RELEASE_PUBLIC_KEY" -rawin -in "$WORK/bootstrap.payload" -sigfile "$WORK/bootstrap.sig" >/dev/null 2>&1 || die "production release signature verification failed (or installed OpenSSL lacks Ed25519 support); refusing to extract or execute release files"
+ say "Production release checksum signature verified"
+fi
+
+# A root worker preflight authorized one exact manifest/index generation.
+if [ -n "$RELEASE_CHECKSUMS_SHA256" ]; then
+ [ "$RELEASE_MODE" = production ] || die "bound metadata requires production mode"
+ [ "${#RELEASE_CHECKSUMS_SHA256}" -eq 64 ] || die "invalid bound checksum index digest"
+ case "$RELEASE_CHECKSUMS_SHA256" in *[!0-9a-f]*) die "invalid bound checksum index digest" ;; esac
+ [ "$(sha256 < "$WORK/SHA256SUMS")" = "$RELEASE_CHECKSUMS_SHA256" ] || die "release metadata changed after authenticated preflight"
+fi
 
 for name in payesh-install $NEEDED; do
 	file="$name-linux-$ARCH.tar.gz"
@@ -297,6 +369,13 @@ if [ -n "$CONVERT_FROM" ]; then
 fi
 
 # --- install ---------------------------------------------------------------
+
+# Old signed installers without this read-only capability fail closed.
+# The candidate's own compiled registry is checked before any installed paths
+# (including the architecture matrix) or services are changed.
+if [ "$RELEASE_MODE" = production ]; then
+ "$INSTALLER" --check-schema || die "candidate database schema preflight failed or installer lacks support"
+fi
 
 if ! "$INSTALLER" "$@" >"$WORK/preflight"; then
 	cat "$WORK/preflight" >&2

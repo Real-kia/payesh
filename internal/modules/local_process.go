@@ -31,6 +31,9 @@ type ProcessRuntime struct {
 	mu       sync.Mutex
 	cancel   context.CancelFunc
 	done     chan struct{}
+	// processStarted observes child starts in the disposable lifecycle test.
+	// Production leaves it nil; a full observer never delays supervision.
+	processStarted chan<- *os.Process
 }
 
 func (p *ProcessRuntime) Socket() string {
@@ -115,7 +118,16 @@ func (p *ProcessRuntime) start(ctx context.Context, binary string) error {
 		cmd := exec.CommandContext(child, binary, "--server-id", string(p.ServerID), "--socket", p.Socket())
 		cmd.Stdout = io.Discard
 		cmd.Stderr = os.Stderr
-		return cmd, cmd.Start()
+		if err := cmd.Start(); err != nil {
+			return cmd, err
+		}
+		if p.processStarted != nil {
+			select {
+			case p.processStarted <- cmd.Process:
+			default:
+			}
+		}
+		return cmd, nil
 	}
 	cmd, e := start()
 	if e != nil {

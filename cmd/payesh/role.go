@@ -41,6 +41,9 @@ func roleCommand(ctx context.Context, args []string) error {
 	if err := install.CheckHubToNode(ctx, "/", cfg); err != nil {
 		return err
 	}
+	if err := install.CheckConversionTransport(ctx, cfg); err != nil {
+		return fmt.Errorf("destination node transport: %w", err)
+	}
 	if *check {
 		fmt.Println("Hub-to-node conversion is ready.")
 		return nil

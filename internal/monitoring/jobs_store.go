@@ -54,6 +54,11 @@ func (s *Store) CreateJob(ctx context.Context, job contracts.Job, requestHash st
 		}
 		return existing, false, nil
 	}
+	if job.TargetServerID != "" {
+		if err := requireServerCommandAuthorityTx(ctx, tx, job.TargetServerID); err != nil {
+			return contracts.Job{}, false, err
+		}
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`).Scan(&count); err != nil {
 		return contracts.Job{}, false, err
@@ -190,6 +195,9 @@ func (s *Store) ClaimEnrollmentJob(ctx context.Context, jobID string, serverID c
 	if job.Kind != "enrollment" || job.TargetServerID != serverID || job.Revision != expectedRevision || job.State != contracts.JobQueued {
 		return contracts.Job{}, ErrEnrollmentJobInvalid
 	}
+	if err := requireServerCommandAuthorityTx(ctx, tx, serverID); err != nil {
+		return contracts.Job{}, err
+	}
 	if !job.ExpiresAt.After(now) {
 		return contracts.Job{}, ErrEnrollmentJobExpired
 	}
@@ -292,6 +300,15 @@ func (s *Store) RequestJobCancellation(ctx context.Context, id, idempotencyKey s
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return contracts.Job{}, ErrJobRevisionConflict
+	}
+	// Atomically block queued or leased derivative activation before the
+	// cancellation is visible. The transport dispatcher cannot race a later
+	// scheduler tick and send new work for this cancelled rollout.
+	if job.Kind == "update" || job.Kind == "update-node" {
+		_, err = tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested=1,state=CASE WHEN state=? THEN ? ELSE ? END,revision=CAST(CAST(revision AS INTEGER)+1 AS TEXT),updated_at=? WHERE kind='core-update-action' AND state IN (?,?) AND json_extract(action_json,'$.arguments.job_id') IN (SELECT id FROM jobs WHERE id=? OR (kind='update-node' AND json_extract(action_json,'$.arguments.parent_job_id')=?))`, string(contracts.JobQueued), string(contracts.JobCancelled), string(contracts.JobCancelling), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), job.ID, job.ID)
+		if err != nil {
+			return contracts.Job{}, err
+		}
 	}
 	encoded, err := json.Marshal(job)
 	if err != nil {
@@ -449,7 +466,31 @@ func (s *Store) LeaseNextActionJob(ctx context.Context, serverID contracts.Serve
 		return JobLease{}, false, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, jobSelect+` WHERE target_server_id=? AND action_json IS NOT NULL AND expires_at>? AND cancel_requested=0 AND (state=? OR (state=? AND lease_expires_at IS NOT NULL AND lease_expires_at<=?)) ORDER BY created_at,id LIMIT 1`, string(serverID), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), FormatPersistedTime(now))
+	if err := requireServerCommandAuthorityTx(ctx, tx, serverID); err != nil {
+		return JobLease{}, false, err
+	}
+	// Recheck rollout authorization while claiming delivery. A producer may
+	// persist a derivative after a concurrent cancellation transaction has
+	// already cascaded to existing derivatives; such new intent is never leased.
+	// The guard also applies to expired-lease redelivery and fails closed for
+	// orphaned, mismatched or revoked core actions. Ordinary module actions
+	// do not acquire arbitrary dependencies on other jobs.
+	row := tx.QueryRowContext(ctx, jobSelect+` WHERE target_server_id=? AND kind<> 'update-node' AND action_json IS NOT NULL AND expires_at>? AND cancel_requested=0 AND (state=? OR (state=? AND lease_expires_at IS NOT NULL AND lease_expires_at<=?))
+	AND (
+	 (kind<>'core-update-action' AND json_extract(action_json,'$.action')<>'core.update')
+	 OR (kind='core-update-action' AND json_extract(action_json,'$.action')='core.update' AND EXISTS (
+	  SELECT 1 FROM jobs child JOIN jobs parent ON parent.id=json_extract(child.action_json,'$.arguments.parent_job_id')
+	  JOIN servers node ON node.id=child.target_server_id
+	  WHERE child.id=json_extract(jobs.action_json,'$.arguments.job_id')
+	   AND child.kind='update-node' AND parent.kind='update'
+	   AND child.target_server_id=jobs.target_server_id
+	   AND json_extract(child.action_json,'$.arguments.release')=json_extract(jobs.action_json,'$.arguments.release')
+	   AND child.state='running' AND parent.state IN ('queued','running')
+	   AND child.cancel_requested=0 AND parent.cancel_requested=0
+	   AND child.expires_at>? AND parent.expires_at>?
+	   AND node.connection_state<>'revoked'
+	 ))
+	) ORDER BY created_at,id LIMIT 1`, string(serverID), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), FormatPersistedTime(now), FormatPersistedTime(now), FormatPersistedTime(now))
 	job, found, err := scanJob(row)
 	if err != nil || !found {
 		return JobLease{}, found, err
@@ -499,6 +540,11 @@ func (s *Store) CompleteActionJob(ctx context.Context, jobID, leaseToken string,
 	}
 	if job.Result != nil {
 		return job, nil
+	}
+	if job.TargetServerID != "" {
+		if err := requireServerCommandAuthorityTx(ctx, tx, job.TargetServerID); err != nil {
+			return contracts.Job{}, err
+		}
 	}
 	if job.Action == nil || job.Action.RequestID != response.RequestID {
 		return contracts.Job{}, errors.New("action response request mismatch")

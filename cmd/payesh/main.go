@@ -70,6 +70,8 @@ func main() {
 		err = updateWorker(ctx, os.Args[2:])
 	case "role":
 		err = roleCommand(ctx, os.Args[2:])
+	case "cutover":
+		err = cutoverCommand(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version.Value)
 	case "help", "-h", "--help":
@@ -103,6 +105,7 @@ commands:
   run              start a command in a Payesh-owned cgroup (Linux only)
   backup           create a consistent online SQLite backup using VACUUM INTO
   role             convert an enrolled hub to a monitoring node
+  cutover          move one server's authority to another peer (identity, grant, serve, run, status)
   verify-backup    run PRAGMA integrity_check against a SQLite backup file
   domain           set the dashboard domain and get an automatic HTTPS certificate
   update           check GitHub Releases or install the latest local release

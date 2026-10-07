@@ -8,8 +8,10 @@ package release
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -31,13 +33,27 @@ func ValidateKeyID(keyID string) error {
 	return nil
 }
 
-// ReadPrivateKey reads a raw, hex, or base64-encoded Ed25519 seed/private key
+// ReadPrivateKey reads a PKCS8 PRIVATE KEY PEM or raw, hex, or base64 Ed25519 seed/private key
 // from an owner-only regular file. A 32-byte seed and 64-byte private key are
 // accepted; no key material is logged or persisted by this package.
 func ReadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	body, err := readRestrictedKeyFile(path, "private key")
 	if err != nil {
 		return nil, err
+	}
+	if block, rest := pem.Decode(body); block != nil {
+		if block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(rest)) != 0 {
+			return nil, errors.New("private key: expected one unencrypted PKCS8 PRIVATE KEY PEM block")
+		}
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("private key: invalid PKCS8 encoding: %w", err)
+		}
+		private, ok := parsed.(ed25519.PrivateKey)
+		if !ok {
+			return nil, errors.New("private key must use Ed25519")
+		}
+		return private, nil
 	}
 	decoded, err := decodeKeyMaterial(body, 32, 64)
 	if err != nil {
@@ -47,8 +63,8 @@ func ReadPrivateKey(path string) (ed25519.PrivateKey, error) {
 		return ed25519.NewKeyFromSeed(decoded), nil
 	}
 	private := ed25519.PrivateKey(append([]byte(nil), decoded...))
-	public, ok := private.Public().(ed25519.PublicKey)
-	if !ok || !bytes.Equal(private[ed25519.SeedSize:], public) {
+	derived := ed25519.NewKeyFromSeed(private[:ed25519.SeedSize])
+	if !bytes.Equal(private, derived) {
 		return nil, errors.New("private key: 64-byte key has an inconsistent public half")
 	}
 	return private, nil
@@ -62,11 +78,60 @@ func ReadPublicKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	if block, rest := pem.Decode(body); block != nil {
+		if block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
+			return nil, errors.New("public key: expected one PKIX PUBLIC KEY PEM block")
+		}
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("public key: %w", err)
+		}
+		key, ok := parsed.(ed25519.PublicKey)
+		if !ok {
+			return nil, errors.New("public key must use Ed25519")
+		}
+		return key, nil
+	}
 	decoded, err := decodeKeyMaterial(body, ed25519.PublicKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("public key: %w", err)
 	}
 	return ed25519.PublicKey(append([]byte(nil), decoded...)), nil
+}
+
+// ReadProductionPublicKey rejects replaceable anchors, including root-owned
+// files placed inside an unprivileged writable directory. Sticky system temp
+// directories preserve ownership-based replacement protection for fixtures.
+func ReadProductionPublicKey(path string) (ed25519.PublicKey, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return nil, errors.New("release anchor must be a regular non-symlink file, not group/world writable")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	for {
+		info, err := os.Stat(parent)
+		if err != nil {
+			return nil, err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || (stat.Uid != 0 && uint64(stat.Uid) != uint64(os.Getuid())) {
+			return nil, errors.New("release anchor directory must be owned by root or the current user")
+		}
+		if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return nil, errors.New("release anchor directory must not be group/world writable")
+		}
+		if parent == filepath.Dir(parent) {
+			break
+		}
+		parent = filepath.Dir(parent)
+	}
+	return ReadPublicKey(path)
 }
 
 func readRestrictedKeyFile(path, label string) ([]byte, error) {

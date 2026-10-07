@@ -10,8 +10,13 @@
 
   function formatClock(value: number): string {
     const date = new Date(value * 1000);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
   }
+
+  $effect(() => {
+    const updated: uPlot.AlignedData = [data.timestamps, data.cpu, data.memory];
+    plot?.setData(updated);
+  });
 
   onMount(() => {
     if (data.coverage === 'unavailable' || data.timestamps.length < 2) return;
@@ -29,16 +34,17 @@
       axes: [
         {
           stroke: muted,
+          space: 70,
           grid: { stroke: line, width: 1 },
           ticks: { stroke: line, width: 1 },
-          font: '11px inherit',
+          font: '12px Segoe UI, Arial, sans-serif',
           values: (_u, values) => values.map((value) => formatClock(Number(value)))
         },
         {
           stroke: muted,
           grid: { stroke: line, width: 1 },
           ticks: { stroke: line, width: 1 },
-          font: '11px inherit',
+          font: '12px Segoe UI, Arial, sans-serif',
           values: (_u, values) => values.map((value) => `${value}%`)
         }
       ],

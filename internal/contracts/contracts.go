@@ -839,13 +839,28 @@ type ModuleInvocationRequest struct {
 	Arguments     json.RawMessage `json:"arguments,omitempty"`
 }
 
+// ReleaseDatabaseSchema declares the candidate's readable input schemas and
+// schema produced by its complete forward migration path.
+type ReleaseDatabaseSchema struct {
+	MinReadable int `json:"min_readable,string"`
+	Current     int `json:"current,string"`
+}
+
+func (s ReleaseDatabaseSchema) Validate() error {
+	if s.MinReadable < 1 || s.Current < s.MinReadable {
+		return errors.New("invalid release database schema range")
+	}
+	return nil
+}
+
 type ReleaseManifest struct {
-	Format       string            `json:"format"`
-	Release      string            `json:"release"`
-	CreatedAt    time.Time         `json:"created_at"`
-	MinCore      string            `json:"min_core"`
-	Artifacts    []ReleaseArtifact `json:"artifacts"`
-	SigningKeyID string            `json:"signing_key_id"`
+	DatabaseSchema *ReleaseDatabaseSchema `json:"database_schema,omitempty"`
+	Format         string                 `json:"format"`
+	Release        string                 `json:"release"`
+	CreatedAt      time.Time              `json:"created_at"`
+	MinCore        string                 `json:"min_core"`
+	Artifacts      []ReleaseArtifact      `json:"artifacts"`
+	SigningKeyID   string                 `json:"signing_key_id"`
 }
 
 type ReleaseArtifact struct {
@@ -858,11 +873,25 @@ type ReleaseArtifact struct {
 	URL             string `json:"url"`
 }
 
+// CoreUpdateIntent contains only release/job intent. Installation paths and
+// publisher trust belong to root-owned local configuration.
+type CoreUpdateIntent struct {
+	JobID   string `json:"job_id"`
+	Release string `json:"release"`
+}
+
+type CoreUpdateResult struct {
+	JobID   string `json:"job_id"`
+	Release string `json:"release"`
+	State   string `json:"state"`
+}
+
 type ActionResponse struct {
-	RequestID string `json:"request_id"`
-	Accepted  bool   `json:"accepted"`
-	Revision  uint64 `json:"revision,string"`
-	Error     *Error `json:"error,omitempty"`
+	RequestID  string            `json:"request_id"`
+	Accepted   bool              `json:"accepted"`
+	Revision   uint64            `json:"revision,string"`
+	Error      *Error            `json:"error,omitempty"`
+	CoreUpdate *CoreUpdateResult `json:"core_update,omitempty"`
 }
 
 // Validate checks the transport-independent action envelope. The hub applies

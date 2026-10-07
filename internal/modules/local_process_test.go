@@ -63,7 +63,8 @@ func TestProcessModuleExecutableLifecycle(t *testing.T) {
 	manifest, _ := signedManifest(t, key, ProcessModuleID, archive)
 	manifest.UnpackedBytes = uint64(len(data))
 	signature := resignManifest(t, key, manifest)
-	p := &ProcessRuntime{Context: ctx, Store: m.Store, Root: root, ServerID: server.ID}
+	processStarted := make(chan *os.Process, 2)
+	p := &ProcessRuntime{Context: ctx, Store: m.Store, Root: root, ServerID: server.ID, processStarted: processStarted}
 	m.Executor = p
 	m.HealthCheck = nil
 	installed, e := m.Install(ctx, InstallRequest{ServerID: server.ID, ModuleID: ProcessModuleID, Manifest: manifest, ManifestSignatureB64: signature, Archive: archive})
@@ -85,6 +86,56 @@ func TestProcessModuleExecutableLifecycle(t *testing.T) {
 	}
 	if e := json.Unmarshal(w.Body.Bytes(), &body); e != nil || len(body.Items) == 0 {
 		t.Fatalf("no real process sample: %v", e)
+	}
+	// An unexpected child exit must produce a bounded outage, then restart the
+	// same verified executable without changing the enabled durable state.
+	var first *os.Process
+	select {
+	case first = <-processStarted:
+	default:
+		t.Fatal("process start was not observed")
+	}
+	if e := first.Kill(); e != nil {
+		t.Fatalf("kill disposable process module: %v", e)
+	}
+	deadline := time.After(3 * time.Second)
+	for {
+		w = httptest.NewRecorder()
+		p.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/servers/"+string(server.ID)+"/processes?limit=1", nil))
+		if w.Code == http.StatusServiceUnavailable {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("module did not become unavailable after child exit: %d", w.Code)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	var restarted *os.Process
+	select {
+	case restarted = <-processStarted:
+	case <-time.After(12 * time.Second):
+		t.Fatal("process module supervisor did not restart after unexpected exit")
+	}
+	if restarted.Pid == first.Pid {
+		t.Fatal("process module supervisor reused the exited process")
+	}
+	deadline = time.After(5 * time.Second)
+	for {
+		w = httptest.NewRecorder()
+		p.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/servers/"+string(server.ID)+"/processes?limit=1", nil))
+		if w.Code == http.StatusOK {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("restarted process module did not serve samples: %d %s", w.Code, w.Body.String())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	state, e := m.Store.GetModuleInstallation(ctx, server.ID, ProcessModuleID)
+	if e != nil || state.State != "enabled" || state.Revision != enabled.Revision {
+		t.Fatalf("unexpected durable state after automatic restart: %+v %v", state, e)
 	}
 	// Simulate restarting payesh-server while durable state is still enabled.
 	stopCtx, stopCancel := context.WithTimeout(ctx, 5*time.Second)

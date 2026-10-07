@@ -75,6 +75,10 @@ func WebSocketHandler(hub *Hub) http.Handler {
 			http.Error(w, "client certificate required", http.StatusUnauthorized)
 			return
 		}
+		if _, err := hub.CA.Verify(pemCertificate(r.TLS.PeerCertificates[0]), time.Now().UTC()); err != nil {
+			http.Error(w, "invalid node identity", http.StatusUnauthorized)
+			return
+		}
 		conn, rw, err := upgradeWebSocket(w, r)
 		if err != nil {
 			// upgradeWebSocket owns an HTTP error response until it returns a
@@ -199,6 +203,19 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				return
 			}
 			connection = opened
+			if hub.Ports != nil {
+				if err := hub.Ports.Observe(connection.ServerID, localPort(ws)); err != nil {
+					return
+				}
+			}
+			for _, capability := range hello.Capabilities {
+				if capability == MigrationCapability {
+					if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "hello_accepted", SentAt: time.Now().UTC()}); err != nil {
+						return
+					}
+					break
+				}
+			}
 			var dispatchCtx context.Context
 			var cancel context.CancelFunc
 			dispatchCtx, cancel = context.WithCancel(ctx)
@@ -211,6 +228,17 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				defer close(done)
 				dispatchNodeJobs(dispatchCtx, ws, hub, connection)
 			}()
+		case "transport_result":
+			if connection == nil {
+				return
+			}
+			var result transportMigrationResult
+			if err := decodeBody(envelope.Body, &result); err != nil {
+				return
+			}
+			if hub.Ports != nil {
+				hub.Ports.ReportFailure(connection.ServerID, result.Error)
+			}
 		case "heartbeat":
 			if connection == nil {
 				return
@@ -311,6 +339,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 // remain blocked on the websocket so the hub can receive heartbeats/samples,
 // while queued jobs need to be pushed proactively even when a node is idle.
 func dispatchNodeJobs(ctx context.Context, ws *webSocket, hub *Hub, connection *Connection) {
+	lastMigration := time.Time{}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -318,6 +347,14 @@ func dispatchNodeJobs(ctx context.Context, ws *webSocket, hub *Hub, connection *
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			if hub.Ports != nil && now.Sub(lastMigration) >= 30*time.Second {
+				lastMigration = now
+				if target := hub.Ports.migrationURL(connection); target != "" {
+					if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "transport_migrate", SentAt: now.UTC(), Body: mustJSON(transportMigration{URL: target})}); err != nil {
+						return
+					}
+				}
+			}
 			if job, ok := connection.NextJob(now); ok {
 				if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_request", Request: job.RequestID, SentAt: now.UTC(), Body: mustJSON(job)}); err != nil {
 					return
@@ -458,8 +495,11 @@ func LoadNodeIdentity(path string) (NodeIdentity, error) {
 // spool as the source of truth. A batch is appended before transmission, and
 // removed only after the hub's durable cumulative acknowledgement.
 type AgentClient struct {
-	URL      string
-	Identity NodeIdentity
+	endpointSync  func(*os.File) error
+	configuredURL string
+	previousURL   string
+	URL           string
+	Identity      NodeIdentity
 	// IdentityPath is optional. When configured, a successful in-band
 	// renewal is persisted atomically before the client reconnects with the
 	// replacement certificate.
@@ -476,6 +516,7 @@ type AgentClient struct {
 	SamplingPolicy func(int)
 	actionMu       sync.Mutex
 	actionResult   map[string]contracts.ActionResponse
+	actionRunning  map[string]bool
 }
 
 // Only advertise an extension to peers that explicitly support it. Older
@@ -507,6 +548,9 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 	if a == nil || a.URL == "" || a.Identity.ServerID == "" || a.Spool == nil {
 		return ErrAgentNotConfigured
 	}
+	if err := a.loadEndpoint(); err != nil {
+		return err
+	}
 	backoff := a.Backoff
 	if backoff.Base <= 0 {
 		backoff.Base = time.Second
@@ -515,7 +559,10 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 		backoff.Max = 60 * time.Second
 	}
 	for {
-		ws, err := a.dial(ctx)
+		dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
+		ws, err := a.dial(dialCtx)
+		cancelDial()
+
 		if err == nil {
 			backoff.Reset()
 			err = a.session(ctx, ws, batches)
@@ -524,8 +571,17 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 				return nil
 			}
 		}
+		if errors.Is(err, errTransportMigrated) {
+			continue
+		}
 		if ctx.Err() != nil {
 			return nil
+		}
+		if err != nil && a.previousURL != "" {
+			// Try both retained endpoints until one accepts our hello. Keep
+			// the verified candidate on disk until authentication succeeds;
+			// a transient failure must not strand us on a retired old port.
+			a.URL, a.previousURL = a.previousURL, a.URL
 		}
 		if batches == nil {
 			return err
@@ -539,6 +595,8 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 }
 
 func (a *AgentClient) session(ctx context.Context, ws *webSocket, batches <-chan contracts.SampleBatch) error {
+	ctx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
 	incoming := make(chan inboundEnvelope, 16)
 	readErr := make(chan error, 1)
 	go a.readIncoming(ctx, ws, incoming, readErr)
@@ -646,6 +704,22 @@ func (a *AgentClient) readIncoming(ctx context.Context, ws *webSocket, incoming 
 
 func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message inboundEnvelope) error {
 	envelope := message.envelope
+	if envelope.Message == "hello_accepted" {
+		if a.previousURL != "" {
+			if err := a.saveEndpoint(a.URL, ""); err != nil {
+				return err
+			}
+			a.previousURL = ""
+		}
+		return nil
+	}
+	if envelope.Message == "transport_migrate" {
+		var migration transportMigration
+		if err := decodeBody(envelope.Body, &migration); err != nil {
+			return err
+		}
+		return a.migrate(ctx, ws, migration.URL)
+	}
 	if envelope.Message != "action_request" {
 		return nil
 	}
@@ -655,6 +729,29 @@ func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message
 	}
 	if envelope.Request != "" && request.RequestID != envelope.Request {
 		return errors.New("action request id mismatch")
+	}
+	if request.Action == "core.update" {
+		// Core activation can restart this process and take several minutes.
+		// Keep the measurement/control reader responsive while the node-owned
+		// worker completes. Durable node intent handles reconnect redelivery.
+		a.actionMu.Lock()
+		if a.actionRunning == nil {
+			a.actionRunning = map[string]bool{}
+		}
+		if a.actionRunning[request.IdempotencyKey] {
+			a.actionMu.Unlock()
+			return nil
+		}
+		a.actionRunning[request.IdempotencyKey] = true
+		a.actionMu.Unlock()
+		go func() {
+			defer func() { a.actionMu.Lock(); delete(a.actionRunning, request.IdempotencyKey); a.actionMu.Unlock() }()
+			response := a.executeAction(ctx, request)
+			if ctx.Err() == nil && (response.Error == nil || response.Error.Code != "core_update_interrupted") {
+				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: mustJSON(response)})
+			}
+		}()
+		return nil
 	}
 	response := a.executeAction(ctx, request)
 	return ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: mustJSON(response)})
@@ -688,6 +785,9 @@ func (a *AgentClient) executeAction(ctx context.Context, request contracts.Actio
 		// The transport correlation belongs to the delivered request; a local
 		// executor cannot redirect a result to another job.
 		response.RequestID = request.RequestID
+	}
+	if request.Action == "core.update" {
+		return response
 	}
 	a.actionMu.Lock()
 	if len(a.actionResult) >= 1024 {
@@ -736,7 +836,7 @@ func (a *AgentClient) renewOverWebSocket(ctx context.Context, ws *webSocket, inc
 		case message := <-incoming:
 			envelope := message.envelope
 			if envelope.Request != requestID {
-				if envelope.Message == "action_request" {
+				if envelope.Message == "action_request" || envelope.Message == "transport_migrate" || envelope.Message == "hello_accepted" {
 					if err := a.handleIncoming(ctx, ws, message); err != nil {
 						return NodeIdentity{}, err
 					}
@@ -798,6 +898,9 @@ func BootstrapAgent(ctx context.Context, endpoint, jobID, token string, trustPEM
 	conn, err := (&tls.Dialer{Config: config}).DialContext(ctx, "tcp", u.Host)
 	if err != nil {
 		return NodeIdentity{}, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 	ws, err := clientUpgrade(conn, u.RequestURI())
 	if err != nil {
@@ -890,7 +993,7 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 				return err
 			case message := <-incoming:
 				envelope := message.envelope
-				if envelope.Message == "action_request" {
+				if envelope.Message == "action_request" || envelope.Message == "transport_migrate" || envelope.Message == "hello_accepted" {
 					if err := a.handleIncoming(ctx, ws, message); err != nil {
 						return err
 					}
@@ -924,7 +1027,11 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 }
 
 func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {
-	u, err := url.Parse(a.URL)
+	return a.dialURL(ctx, a.URL)
+}
+
+func (a *AgentClient) dialURL(ctx context.Context, endpoint string) (*webSocket, error) {
+	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "wss" || u.Host == "" {
 		return nil, fmt.Errorf("%w: URL must use wss", ErrAgentNotConfigured)
 	}
@@ -961,11 +1068,15 @@ func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {
 	if err != nil {
 		return nil, err
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 	ws, err := clientUpgrade(conn, u.RequestURI())
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return ws, nil
 }
 

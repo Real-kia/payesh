@@ -1,6 +1,10 @@
+<script context="module" lang="ts">
+  let modalCounter = 0;
+</script>
+
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
 
   export let open: boolean = false;
   export let title: string = '';
@@ -15,35 +19,73 @@
   export let onConfirm: () => void = () => {};
   export let onCancel: () => void = () => {};
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (open && e.key === 'Escape' && !busy) {
-      e.stopPropagation();
-      onCancel();
+  const titleId = `payesh-modal-title-${++modalCounter}`;
+  const descriptionId = `${titleId}-description`;
+  let dialog: HTMLDialogElement | undefined;
+  let pointerStartedOutside = false;
+
+  function cancel() {
+    if (!busy) onCancel();
+  }
+
+  function handleCancel(event: Event) {
+    // Keep the native dialog and the controlled open prop in sync. This also
+    // blocks Escape while an operation is in progress.
+    event.preventDefault();
+    cancel();
+  }
+
+  function focusInitialControl() {
+    if (!dialog) return;
+    const cancelButton = dialog.querySelector<HTMLButtonElement>('.modal-cancel-button:not(:disabled)');
+    const bodyControls = Array.from(dialog.querySelectorAll<HTMLElement>(
+      '.modal-body input:not([type="hidden"]):not(:disabled), .modal-body select:not(:disabled), .modal-body textarea:not(:disabled), .modal-body button:not(:disabled), .modal-body a[href], .modal-body [tabindex]:not([tabindex="-1"]):not(:disabled)'
+    ));
+    const bodyControl = bodyControls.find(control => control.getClientRects().length > 0);
+    const fallback = dialog.querySelector<HTMLButtonElement>('.modal-confirm-button:not(:disabled), .modal-close-button:not(:disabled)');
+    (cancelButton ?? bodyControl ?? fallback ?? dialog).focus();
+  }
+
+  async function openDialog() {
+    // Wait for conditional slot/buttons to be mounted before native focus
+    // selection. The prop can change again while this update is pending.
+    await tick();
+    if (!open || !dialog?.isConnected || dialog.open) return;
+    dialog.showModal();
+    focusInitialControl();
+  }
+
+  $: if (dialog) {
+    if (open && !dialog.open) {
+      // Native modal dialogs make the surrounding document inert, contain
+      // keyboard focus, and restore focus to the trigger when closed.
+      void openDialog();
+    } else if (!open && dialog.open) {
+      dialog.close();
     }
   }
 
-  onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
-  });
-
   onDestroy(() => {
-    window.removeEventListener('keydown', handleKeydown);
+    if (dialog?.open) dialog.close();
   });
 </script>
 
-{#if open}
-  <div class="modal-backdrop" role="presentation" on:click={() => { if (!busy) onCancel(); }} on:keydown={(e) => { if (e.key === 'Escape' && !busy) onCancel(); }}>
+<dialog
+  bind:this={dialog}
+  class="modal-backdrop"
+  aria-labelledby={titleId}
+  aria-describedby={description ? descriptionId : undefined}
+  aria-busy={busy}
+  on:cancel={handleCancel}
+  on:pointerdown={(event) => { pointerStartedOutside = event.target === dialog; }}
+  on:click={(event) => { if (event.target === dialog && pointerStartedOutside) cancel(); }}
+>
+  {#if open}
     <div
       class={`modal-card ${tone}`}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-title"
-      tabindex="-1"
-      on:click|stopPropagation
-      on:keydown|stopPropagation
     >
       <!-- CLOSE BUTTON -->
-      <button class="modal-close-button" type="button" aria-label="Close dialog" disabled={busy} on:click={onCancel}>
+      <button class="modal-close-button" type="button" aria-label="Close dialog" disabled={busy} on:click={cancel}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -58,9 +100,9 @@
           </div>
         {/if}
         <div class="modal-title-group">
-          <h3 id="modal-title" class="modal-title">{title}</h3>
+          <h3 id={titleId} class="modal-title">{title}</h3>
           {#if description}
-            <p class="modal-desc">{description}</p>
+            <p id={descriptionId} class="modal-desc">{description}</p>
           {/if}
         </div>
       </div>
@@ -73,12 +115,12 @@
       <!-- ACTIONS -->
       <div class="modal-actions">
         {#if !hideCancel}
-          <button class="button ghost" type="button" disabled={busy} on:click={onCancel}>
+          <button class="button ghost modal-cancel-button" type="button" disabled={busy} on:click={cancel}>
             {cancelText}
           </button>
         {/if}
         <button
-          class={`button ${tone === 'danger' ? 'danger' : 'primary'}`}
+          class={`button modal-confirm-button ${tone === 'danger' ? 'danger' : 'primary'}`}
           type="button"
           disabled={busy || confirmDisabled}
           on:click={onConfirm}
@@ -90,21 +132,36 @@
         </button>
       </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</dialog>
 
 <style>
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 1000;
-    background: rgba(3, 7, 18, 0.75);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    padding: 1.5rem;
+    box-sizing: border-box;
+    overflow: auto;
+  }
+
+  .modal-backdrop[open] {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
+  }
+
+  .modal-backdrop::backdrop {
+    background: rgba(3, 7, 18, 0.75);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     animation: backdrop-fade 0.18s ease-out;
   }
 
@@ -120,9 +177,11 @@
     box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05);
     width: 100%;
     max-width: 460px;
+    flex-shrink: 0;
+    max-height: 100%;
     padding: 1.5rem;
     position: relative;
-    overflow: hidden;
+    overflow: auto;
     display: flex;
     flex-direction: column;
     gap: 1.25rem;

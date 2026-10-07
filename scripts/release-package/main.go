@@ -12,6 +12,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/updater"
 	"io"
 	"os"
 	"os/exec"
@@ -33,12 +36,13 @@ type artifact struct {
 }
 
 type manifest struct {
-	Format       string     `json:"format"`
-	Release      string     `json:"release"`
-	CreatedAt    time.Time  `json:"created_at"`
-	MinCore      string     `json:"min_core"`
-	Artifacts    []artifact `json:"artifacts"`
-	SigningKeyID string     `json:"signing_key_id"`
+	DatabaseSchema *contracts.ReleaseDatabaseSchema `json:"database_schema,omitempty"`
+	Format         string                           `json:"format"`
+	Release        string                           `json:"release"`
+	CreatedAt      time.Time                        `json:"created_at"`
+	MinCore        string                           `json:"min_core"`
+	Artifacts      []artifact                       `json:"artifacts"`
+	SigningKeyID   string                           `json:"signing_key_id"`
 }
 
 type builtArtifact struct {
@@ -69,18 +73,32 @@ func main() {
 	baseURL := flags.String("base-url", os.Getenv("PAYESH_RELEASE_BASE_URL"), "published artifact URL prefix (defaults to the repository release URL)")
 	created := flags.String("created-at", os.Getenv("PAYESH_RELEASE_CREATED_AT"), "RFC3339 manifest timestamp (defaults to SOURCE_DATE_EPOCH or the HEAD commit time)")
 	includeWeb := flags.Bool("include-web", os.Getenv("PAYESH_SKIP_WEB") != "1", "include web/dist as the web-assets artifact")
+	minCore := flags.String("min-core", os.Getenv("PAYESH_RELEASE_MIN_CORE"), "required minimum supported installed core version; publisher compatibility declaration")
 	flags.Parse(os.Args[1:])
 
-	if err := run(*version, *out, *baseURL, *created, *includeWeb); err != nil {
+	if err := run(*version, *out, *baseURL, *created, *includeWeb, *minCore); err != nil {
 		fmt.Fprintln(os.Stderr, "release-package:", err)
 		os.Exit(1)
 	}
 }
 
-func run(version, output, baseURL, created string, includeWeb bool) error {
+func run(version, output, baseURL, created string, includeWeb bool, minimumCore ...string) error {
 	if !validVersion(version) {
 		return errors.New("version must be MAJOR.MINOR.PATCH with an optional prerelease suffix")
 	}
+	minCore := version // direct local callers conservatively support only this version
+	if len(minimumCore) > 0 {
+		minCore = minimumCore[0]
+	}
+	cmp, err := updater.CompareReleases(minCore, version)
+	if err != nil || cmp > 0 {
+		return errors.New("min-core must explicitly name a supported semantic core version no newer than release")
+	}
+	registry := monitoring.StoreSchemaRegistry()
+	if err := registry.Validate(); err != nil {
+		return err
+	}
+
 	when, err := releaseTime(created)
 	if err != nil {
 		return err
@@ -166,7 +184,7 @@ func run(version, output, baseURL, created string, includeWeb bool) error {
 		return all[i].path < all[j].path
 	})
 
-	m := manifest{Format: "payesh.release.v1", Release: version, CreatedAt: when, MinCore: version, SigningKeyID: "unavailable-local"}
+	m := manifest{Format: "payesh.release.v1", Release: version, CreatedAt: when, MinCore: minCore, DatabaseSchema: &contracts.ReleaseDatabaseSchema{MinReadable: registry.MinReadable, Current: registry.Current}, SigningKeyID: "unavailable-local"}
 	for _, built := range all {
 		path := filepath.Join(releaseDir, built.path)
 		digest, size, err := digestFile(path)
@@ -181,6 +199,13 @@ func run(version, output, baseURL, created string, includeWeb bool) error {
 	}
 	manifestBytes = append(manifestBytes, '\n')
 	if err := os.WriteFile(filepath.Join(releaseDir, "manifest.json"), manifestBytes, 0o644); err != nil {
+		return err
+	}
+	bootstrap, err := os.ReadFile(filepath.Join(root, "install.sh"))
+	if err != nil {
+		return fmt.Errorf("read release bootstrap: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(releaseDir, "install.sh"), bootstrap, 0o644); err != nil {
 		return err
 	}
 	if err := writeChecksums(releaseDir, m.Artifacts); err != nil {
@@ -406,6 +431,20 @@ func writeChecksums(dir string, artifacts []artifact) error {
 	for _, a := range artifacts {
 		lines = append(lines, a.SHA256+"  "+filepath.Base(a.URL))
 	}
+	if _, err := os.Stat(filepath.Join(dir, "install.sh")); err == nil {
+		digest, _, err := digestFile(filepath.Join(dir, "install.sh"))
+		if err != nil {
+			return err
+		}
+		lines = append(lines, digest+"  install.sh")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	digest, _, err := digestFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	lines = append(lines, digest+"  manifest.json")
 	sort.Strings(lines)
 	return os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }

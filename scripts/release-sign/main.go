@@ -8,7 +8,9 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,9 +18,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/release"
 	"github.com/Real-kia/payesh/internal/trust"
 )
@@ -34,24 +38,26 @@ type artifact struct {
 }
 
 type manifest struct {
-	Format       string      `json:"format"`
-	Release      string      `json:"release"`
-	CreatedAt    interface{} `json:"created_at"`
-	MinCore      string      `json:"min_core"`
-	Artifacts    []artifact  `json:"artifacts"`
-	SigningKeyID string      `json:"signing_key_id"`
+	DatabaseSchema *contracts.ReleaseDatabaseSchema `json:"database_schema,omitempty"`
+	Format         string                           `json:"format"`
+	Release        string                           `json:"release"`
+	CreatedAt      interface{}                      `json:"created_at"`
+	MinCore        string                           `json:"min_core"`
+	Artifacts      []artifact                       `json:"artifacts"`
+	SigningKeyID   string                           `json:"signing_key_id"`
 }
 
 // canonicalManifest is kept separate from the loose decoding type above so
 // timestamps retain the exact time.Time JSON representation used by the
 // package builder and validator.
 type canonicalManifest struct {
-	Format       string     `json:"format"`
-	Release      string     `json:"release"`
-	CreatedAt    timeValue  `json:"created_at"`
-	MinCore      string     `json:"min_core"`
-	Artifacts    []artifact `json:"artifacts"`
-	SigningKeyID string     `json:"signing_key_id"`
+	DatabaseSchema *contracts.ReleaseDatabaseSchema `json:"database_schema,omitempty"`
+	Format         string                           `json:"format"`
+	Release        string                           `json:"release"`
+	CreatedAt      timeValue                        `json:"created_at"`
+	MinCore        string                           `json:"min_core"`
+	Artifacts      []artifact                       `json:"artifacts"`
+	SigningKeyID   string                           `json:"signing_key_id"`
 }
 
 // timeValue delegates JSON parsing/marshaling to time.Time without exposing
@@ -68,7 +74,13 @@ func (t *timeValue) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (t timeValue) MarshalJSON() ([]byte, error) { return json.Marshal(t.raw) }
+func (t timeValue) MarshalJSON() ([]byte, error) {
+	value, err := time.Parse(time.RFC3339, t.raw)
+	if err != nil {
+		return nil, err
+	}
+	return value.MarshalJSON()
+}
 
 func main() {
 	flags := flag.NewFlagSet("release-sign", flag.ExitOnError)
@@ -122,6 +134,11 @@ func sign(dir, keyPath, keyID string) error {
 	if err := decodeStrict(body, &m); err != nil {
 		return fmt.Errorf("decode manifest: %w", err)
 	}
+	if m.DatabaseSchema != nil {
+		if err := m.DatabaseSchema.Validate(); err != nil {
+			return err
+		}
+	}
 	if m.Format != "payesh.release.v1" || m.Release == "" || m.MinCore == "" || m.rawCreatedAt() == "" || len(m.Artifacts) == 0 {
 		return errors.New("manifest is not a complete payesh.release.v1 bundle")
 	}
@@ -143,6 +160,76 @@ func sign(dir, keyPath, keyID string) error {
 		return fmt.Errorf("inspect signature destination: %w", statErr)
 	}
 	m.SigningKeyID = keyID
+	// Older local fixtures may contain only the canonical manifest. Production
+	// bootstrap requires a separately authenticated checksum index and script.
+	var bootstrapSignature []byte
+	var reboundChecksums, originalChecksums []byte
+	checksumPublished, complete := false, false
+	defer func() {
+		if checksumPublished && !complete {
+			_ = atomicWrite(filepath.Join(releaseDir, "SHA256SUMS"), originalChecksums, 0644, true)
+		}
+	}()
+	checksums, sumsErr := os.ReadFile(filepath.Join(releaseDir, "SHA256SUMS"))
+	if sumsErr == nil {
+		for _, name := range []string{"SHA256SUMS", "install.sh"} {
+			info, err := os.Lstat(filepath.Join(releaseDir, name))
+			if err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("%s must be a regular non-symlink file", name)
+			}
+		}
+		bootstrap, err := os.ReadFile(filepath.Join(releaseDir, "install.sh"))
+		if err != nil {
+			return fmt.Errorf("read bootstrap script: %w", err)
+		}
+		if err := release.VerifyChecksumFile(checksums, "install.sh", bootstrap); err != nil {
+			return err
+		}
+		entries, err := release.ParseChecksums(checksums)
+		if err != nil {
+			return err
+		}
+		expectedEntries := len(m.Artifacts) + 1
+		if m.DatabaseSchema != nil {
+			expectedEntries++
+		}
+		if len(entries) != expectedEntries {
+			return errors.New("bootstrap checksum inventory differs from manifest and install.sh")
+		}
+		for _, a := range m.Artifacts {
+			if entries[filepath.Base(a.URL)] != a.SHA256 {
+				return errors.New("bootstrap checksum inventory differs from manifest")
+			}
+		}
+		if m.DatabaseSchema != nil {
+			if err := release.VerifyChecksumFile(checksums, "manifest.json", body); err != nil {
+				return err
+			}
+			signedBody := append(prettyManifest(m), '\n')
+			digest := sha256.Sum256(signedBody)
+			entries["manifest.json"] = hex.EncodeToString(digest[:])
+			lines := make([]string, 0, len(entries))
+			for name, digest := range entries {
+				lines = append(lines, digest+"  "+name)
+			}
+			sort.Strings(lines)
+			originalChecksums = checksums
+			reboundChecksums = []byte(strings.Join(lines, "\n") + "\n")
+			checksums = reboundChecksums
+		}
+		payload, err := release.BootstrapPayload(m.Release, keyID, checksums)
+		if err != nil {
+			return err
+		}
+		bootstrapSignature = []byte(base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload)))
+		if _, err := os.Lstat(filepath.Join(releaseDir, "SHA256SUMS.sig")); !os.IsNotExist(err) {
+			return errors.New("SHA256SUMS.sig already exists or cannot be inspected")
+		}
+	} else if !os.IsNotExist(sumsErr) {
+		return sumsErr
+	} else if m.DatabaseSchema != nil {
+		return errors.New("schema-declared releases require authenticated bootstrap checksum inventory")
+	}
 	canonical, err := trust.Canonicalize(m)
 	if err != nil {
 		return fmt.Errorf("canonicalize manifest: %w", err)
@@ -151,6 +238,12 @@ func sign(dir, keyPath, keyID string) error {
 	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
 	// Publish the updated manifest first, then the signature. If signature
 	// publication fails, restore the original unsigned manifest atomically.
+	if len(reboundChecksums) > 0 {
+		if err := atomicWrite(filepath.Join(releaseDir, "SHA256SUMS"), reboundChecksums, 0644, true); err != nil {
+			return err
+		}
+		checksumPublished = true
+	}
 	if err := atomicWrite(manifestPath, append(prettyManifest(m), '\n'), manifestInfo.Mode().Perm(), true); err != nil {
 		return fmt.Errorf("write signed manifest: %w", err)
 	}
@@ -158,6 +251,14 @@ func sign(dir, keyPath, keyID string) error {
 		_ = atomicWrite(manifestPath, body, manifestInfo.Mode().Perm(), true)
 		return fmt.Errorf("write detached signature: %w", err)
 	}
+	if len(bootstrapSignature) > 0 {
+		if err := atomicWrite(filepath.Join(releaseDir, "SHA256SUMS.sig"), bootstrapSignature, 0o644, false); err != nil {
+			_ = os.Remove(sigPath)
+			_ = atomicWrite(manifestPath, body, manifestInfo.Mode().Perm(), true)
+			return fmt.Errorf("write bootstrap signature: %w", err)
+		}
+	}
+	complete = true
 	fmt.Printf("signed release=%s key_id=%s dir=%s\n", m.Release, keyID, releaseDir)
 	return nil
 }

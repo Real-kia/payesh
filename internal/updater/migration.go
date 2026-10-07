@@ -27,15 +27,17 @@ import (
 )
 
 const (
-	MigrationFormat                      = "payesh.migration.v1"
-	MigrationSchemaVersion               = 1
-	ExportSingleServer        ExportKind = "single-server"
-	ExportFullHub             ExportKind = "full-hub"
-	MigrationKDF                         = "pbkdf2-hmac-sha256"
-	MigrationKDFIterations               = 200000
-	MigrationMinKDFIterations            = 200000
-	MigrationMaxKDFIterations            = 1000000
-	maxMigrationBytes                    = 64 << 20
+	MigrationFormat                         = "payesh.migration.v1"
+	MigrationSchemaVersion                  = 1
+	MigrationReplayFormat                   = "payesh.migration.v2"
+	MigrationReplaySchemaVersion            = 2
+	ExportSingleServer           ExportKind = "single-server"
+	ExportFullHub                ExportKind = "full-hub"
+	MigrationKDF                            = "pbkdf2-hmac-sha256"
+	MigrationKDFIterations                  = 200000
+	MigrationMinKDFIterations               = 200000
+	MigrationMaxKDFIterations               = 1000000
+	maxMigrationBytes                       = 64 << 20
 )
 
 type ExportKind string
@@ -47,25 +49,34 @@ type ExportOptions struct {
 	// From/To optionally restrict raw history. A caller doing a role cutover
 	// normally leaves them empty so the complete retained range is transferred.
 	From, To time.Time
+	// ReplaySafe exports a complete schema-6 retained-state snapshot (v2).
+	// Range-filtered exports remain v1 because replay authority is not a range.
+	ReplaySafe bool
+	serverIDs  []contracts.ServerID
 }
 
 type ImportOptions struct {
 	Passphrase string
+	// PreviousArtifact explicitly authorizes a v2 tail reconciliation only when
+	// the destination still matches the exact previously imported scoped state.
+	PreviousArtifact []byte
 }
 
 type MigrationExport struct {
-	Format         string                    `json:"format"`
-	SchemaVersion  int                       `json:"schema_version"`
-	Kind           ExportKind                `json:"kind"`
-	ExportID       string                    `json:"export_id"`
-	CreatedAt      time.Time                 `json:"created_at"`
-	SourceServerID contracts.ServerID        `json:"source_server_id,omitempty"`
-	Servers        []contracts.Server        `json:"servers"`
-	Samples        []contracts.MetricSample  `json:"samples,omitempty"`
-	Gaps           []ExportGap               `json:"gaps,omitempty"`
-	Policies       []contracts.ControlPolicy `json:"policies,omitempty"`
-	TrafficPeriods []ExportTrafficPeriod     `json:"traffic_periods,omitempty"`
-	Rollups        []ExportRollup            `json:"rollups,omitempty"`
+	Format              string                    `json:"format"`
+	SchemaVersion       int                       `json:"schema_version"`
+	Kind                ExportKind                `json:"kind"`
+	ExportID            string                    `json:"export_id"`
+	CreatedAt           time.Time                 `json:"created_at"`
+	SourceServerID      contracts.ServerID        `json:"source_server_id,omitempty"`
+	Servers             []contracts.Server        `json:"servers"`
+	Samples             []contracts.MetricSample  `json:"samples,omitempty"`
+	Gaps                []ExportGap               `json:"gaps,omitempty"`
+	Policies            []contracts.ControlPolicy `json:"policies,omitempty"`
+	TrafficPeriods      []ExportTrafficPeriod     `json:"traffic_periods,omitempty"`
+	Rollups             []ExportRollup            `json:"rollups,omitempty"`
+	ReplayState         []ExportReplayTable       `json:"replay_state,omitempty"`
+	RetirementSaturated *bool                     `json:"retirement_saturated,omitempty"`
 	// Hub authority is included only in encrypted full-hub artifacts. These
 	// fields are intentionally absent from single-server exports.
 	BrowserAuthState   []byte `json:"browser_auth_state,omitempty"`
@@ -126,9 +137,14 @@ var migrationServerID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$`)
 // ExportMigration takes a read transaction, giving all rows one SQLite
 // snapshot even when the source is in WAL mode. It never exports auth state,
 // fleet identity state, job action payloads, enrollment authority, or private
-// keys. A single-server export is therefore safe to hand to a destination
-// node; a full-hub export is always encrypted.
+// keys in a single-server artifact. V1 full-hub artifacts include encrypted
+// browser/fleet identity state; opt-in v2 exports retained history and replay
+// state only, excluding that execution authority even for full-hub exports.
+// Full-hub artifacts of either version are always encrypted.
 func ExportMigration(ctx context.Context, source *sql.DB, opts ExportOptions) ([]byte, error) {
+	if opts.ReplaySafe && (!opts.From.IsZero() || !opts.To.IsZero()) {
+		return nil, errors.New("updater: replay-safe migration requires complete retained history")
+	}
 	if source == nil {
 		return nil, errors.New("updater: source database is required")
 	}
@@ -165,11 +181,19 @@ func ExportMigration(ctx context.Context, source *sql.DB, opts ExportOptions) ([
 		return nil, err
 	}
 	export := MigrationExport{Format: MigrationFormat, SchemaVersion: MigrationSchemaVersion, Kind: opts.Kind, ExportID: exportID, CreatedAt: time.Now().UTC()}
+	if opts.ReplaySafe {
+		export.Format, export.SchemaVersion = MigrationReplayFormat, MigrationReplaySchemaVersion
+	}
 	if opts.Kind == ExportSingleServer {
 		export.SourceServerID = opts.ServerID
 	}
 	if err := readMigrationRows(ctx, tx, &export, opts); err != nil {
 		return nil, err
+	}
+	if opts.ReplaySafe {
+		if err := validateMigrationExport(export); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("updater: commit migration snapshot: %w", err)
@@ -188,6 +212,14 @@ func readMigrationRows(ctx context.Context, tx *sql.Tx, out *MigrationExport, op
 		serverQuery += ` WHERE id=?`
 		args = append(args, string(opts.ServerID))
 	}
+	if len(opts.serverIDs) > 0 {
+		serverQuery = strings.Split(serverQuery, " WHERE ")[0] + " WHERE id IN (" + placeholders(len(opts.serverIDs)) + ")"
+		args = nil
+		for _, id := range opts.serverIDs {
+			args = append(args, string(id))
+		}
+	}
+	serverQuery += " ORDER BY id"
 	rows, err := tx.QueryContext(ctx, serverQuery, args...)
 	if err != nil {
 		return fmt.Errorf("updater: read server records: %w", err)
@@ -226,12 +258,18 @@ func readMigrationRows(ctx context.Context, tx *sql.Tx, out *MigrationExport, op
 	if err := readMigrationTraffic(ctx, tx, out, serverIDs); err != nil {
 		return err
 	}
-	if opts.Kind == ExportFullHub {
+	if opts.Kind == ExportFullHub && !opts.ReplaySafe {
 		if err := readMigrationAuthority(ctx, tx, out); err != nil {
 			return err
 		}
 	}
-	return readMigrationRollups(ctx, tx, out, serverIDs)
+	if err := readMigrationRollups(ctx, tx, out, serverIDs); err != nil {
+		return err
+	}
+	if opts.ReplaySafe {
+		return readReplayState(ctx, tx, out, serverIDs)
+	}
+	return nil
 }
 
 func readMigrationAuthority(ctx context.Context, tx *sql.Tx, out *MigrationExport) error {
@@ -293,7 +331,7 @@ func readMigrationGaps(ctx context.Context, tx *sql.Tx, out *MigrationExport, id
 	if len(ids) == 0 {
 		return nil
 	}
-	query := `SELECT server_id,collector_epoch,from_sequence,to_sequence,reason FROM coverage_gaps WHERE server_id IN (` + placeholders(len(ids)) + `) ORDER BY server_id,collector_epoch,length(from_sequence),from_sequence`
+	query := `SELECT server_id,collector_epoch,from_sequence,to_sequence,reason FROM coverage_gaps WHERE server_id IN (` + placeholders(len(ids)) + `) ORDER BY server_id,collector_epoch,length(from_sequence),from_sequence,length(to_sequence),to_sequence,reason`
 	rows, err := tx.QueryContext(ctx, query, ids...)
 	if err != nil {
 		return fmt.Errorf("updater: read coverage history: %w", err)
@@ -472,6 +510,13 @@ func ImportMigration(ctx context.Context, destination *sql.DB, artifact []byte, 
 		return ImportResult{}, fmt.Errorf("updater: begin migration import: %w", err)
 	}
 	defer tx.Rollback()
+	// Retries must also validate compatibility: a journal entry cannot authorize
+	// a successful result against malformed or newer destination metadata.
+	if export.Format == MigrationReplayFormat {
+		if err := requireReplaySchema(ctx, tx); err != nil {
+			return ImportResult{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS migration_imports (artifact_sha256 TEXT PRIMARY KEY, export_id TEXT NOT NULL, imported_at TEXT NOT NULL)`); err != nil {
 		return ImportResult{}, fmt.Errorf("updater: create migration journal: %w", err)
 	}
@@ -492,7 +537,15 @@ func ImportMigration(ctx context.Context, destination *sql.DB, artifact []byte, 
 			return ImportResult{}, fmt.Errorf("updater: destination schema is missing %s", table)
 		}
 	}
-	result, err := applyMigrationRows(ctx, tx, export)
+	var result ImportResult
+	if export.Format == MigrationReplayFormat {
+		result, err = applyReplayMigration(ctx, tx, export, opts)
+	} else {
+		if len(opts.PreviousArtifact) > 0 {
+			return ImportResult{}, errors.New("updater: v1 cannot reconcile a replay-safe tail")
+		}
+		result, err = applyMigrationRows(ctx, tx, export)
+	}
 	if err != nil {
 		return ImportResult{}, err
 	}
@@ -621,7 +674,7 @@ func applyMigrationAuthority(ctx context.Context, tx *sql.Tx, export MigrationEx
 }
 
 func validateMigrationExport(export MigrationExport) error {
-	if export.Format != MigrationFormat || export.SchemaVersion != MigrationSchemaVersion || (export.Kind != ExportSingleServer && export.Kind != ExportFullHub) || export.ExportID == "" || export.CreatedAt.IsZero() || len(export.Servers) == 0 {
+	if !((export.Format == MigrationFormat && export.SchemaVersion == MigrationSchemaVersion) || (export.Format == MigrationReplayFormat && export.SchemaVersion == MigrationReplaySchemaVersion)) || (export.Kind != ExportSingleServer && export.Kind != ExportFullHub) || export.ExportID == "" || export.CreatedAt.IsZero() || len(export.Servers) == 0 {
 		return errors.New("updater: invalid migration export header")
 	}
 	if export.Kind == ExportSingleServer && (len(export.Servers) != 1 || export.SourceServerID != export.Servers[0].ID) {
@@ -684,11 +737,26 @@ func validateMigrationExport(export MigrationExport) error {
 			return err
 		}
 	}
+	if export.Format == MigrationReplayFormat {
+		return validateReplayExport(export)
+	}
+	if len(export.ReplayState) > 0 || export.RetirementSaturated != nil {
+		return errors.New("updater: v1 contains unsupported replay authority")
+	}
 	return nil
 }
 
 func wrapMigrationPayload(payload []byte, kind ExportKind, passphrase string) ([]byte, error) {
-	envelope := migrationEnvelope{Format: MigrationFormat, Kind: kind}
+	var header struct {
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal(payload, &header); err != nil {
+		return nil, err
+	}
+	if header.Format != MigrationFormat && header.Format != MigrationReplayFormat {
+		return nil, errors.New("updater: invalid migration payload format")
+	}
+	envelope := migrationEnvelope{Format: header.Format, Kind: kind}
 	if kind == ExportSingleServer && passphrase == "" {
 		envelope.Payload = base64.RawStdEncoding.EncodeToString(payload)
 		return json.Marshal(envelope)
@@ -718,7 +786,7 @@ func wrapMigrationPayload(payload []byte, kind ExportKind, passphrase string) ([
 	if _, err := io.ReadFull(nonceReader, nonce); err != nil {
 		return nil, err
 	}
-	ciphertext := gcm.Seal(nil, nonce, payload, migrationAAD(kind, iterations))
+	ciphertext := gcm.Seal(nil, nonce, payload, migrationAAD(envelope.Format, kind, iterations))
 	envelope.Encrypted = true
 	envelope.KDF = MigrationKDF
 	envelope.Iterations = iterations
@@ -730,7 +798,7 @@ func wrapMigrationPayload(payload []byte, kind ExportKind, passphrase string) ([
 
 func unwrapMigrationPayload(artifact []byte, passphrase string) (MigrationExport, error) {
 	var envelope migrationEnvelope
-	if err := json.Unmarshal(artifact, &envelope); err != nil || envelope.Format != MigrationFormat || (envelope.Kind != ExportSingleServer && envelope.Kind != ExportFullHub) {
+	if err := json.Unmarshal(artifact, &envelope); err != nil || (envelope.Format != MigrationFormat && envelope.Format != MigrationReplayFormat) || (envelope.Kind != ExportSingleServer && envelope.Kind != ExportFullHub) {
 		return MigrationExport{}, errors.New("updater: invalid migration envelope")
 	}
 	encoded, err := base64.RawStdEncoding.DecodeString(envelope.Payload)
@@ -761,7 +829,7 @@ func unwrapMigrationPayload(artifact []byte, passphrase string) (MigrationExport
 		if err != nil {
 			return MigrationExport{}, err
 		}
-		encoded, err = gcm.Open(nil, nonce, encoded, migrationAAD(envelope.Kind, envelope.Iterations))
+		encoded, err = gcm.Open(nil, nonce, encoded, migrationAAD(envelope.Format, envelope.Kind, envelope.Iterations))
 		if err != nil {
 			return MigrationExport{}, errors.New("updater: migration decryption failed")
 		}
@@ -771,6 +839,9 @@ func unwrapMigrationPayload(artifact []byte, passphrase string) (MigrationExport
 	var export MigrationExport
 	if err := json.Unmarshal(encoded, &export); err != nil {
 		return MigrationExport{}, errors.New("updater: invalid migration document")
+	}
+	if export.Format != envelope.Format || export.Kind != envelope.Kind {
+		return MigrationExport{}, errors.New("updater: migration envelope/payload mismatch")
 	}
 	return export, nil
 }
@@ -787,8 +858,8 @@ func migrationKey(passphrase string, salt []byte, iterations int) ([32]byte, err
 	copy(key[:], derived)
 	return key, nil
 }
-func migrationAAD(kind ExportKind, iterations int) []byte {
-	return []byte(fmt.Sprintf("%s/%s/%s/%d", MigrationFormat, kind, MigrationKDF, iterations))
+func migrationAAD(format string, kind ExportKind, iterations int) []byte {
+	return []byte(fmt.Sprintf("%s/%s/%s/%d", format, kind, MigrationKDF, iterations))
 }
 func randomExportID() (string, error) {
 	b := make([]byte, 16)
@@ -883,4 +954,35 @@ func validateExportRollup(r ExportRollup) error {
 		return errors.New("updater: invalid export rollup")
 	}
 	return nil
+}
+
+// MigrationInfo describes a migration artifact without applying it.
+type MigrationInfo struct {
+	Format         string
+	Kind           ExportKind
+	ExportID       string
+	SourceServerID contracts.ServerID
+	ServerIDs      []contracts.ServerID
+}
+
+// InspectMigration validates an unencrypted artifact and reports which servers it
+// would write, so a receiving peer can refuse content outside what it was granted
+// before importing anything. Encrypted full-hub artifacts cannot be inspected
+// without their passphrase and are refused.
+func InspectMigration(artifact []byte) (MigrationInfo, error) {
+	if len(artifact) == 0 || len(artifact) > maxMigrationBytes {
+		return MigrationInfo{}, errors.New("updater: invalid migration artifact")
+	}
+	export, err := unwrapMigrationPayload(artifact, "")
+	if err != nil {
+		return MigrationInfo{}, err
+	}
+	if err := validateMigrationExport(export); err != nil {
+		return MigrationInfo{}, err
+	}
+	info := MigrationInfo{Format: export.Format, Kind: export.Kind, ExportID: export.ExportID, SourceServerID: export.SourceServerID}
+	for _, server := range export.Servers {
+		info.ServerIDs = append(info.ServerIDs, server.ID)
+	}
+	return info, nil
 }

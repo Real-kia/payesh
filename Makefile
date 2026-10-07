@@ -18,16 +18,17 @@ build-modules:
 	go build -trimpath -o dist/modules/process-monitoring ./cmd/payesh-process-module
 
 test:
-	go test ./...
+	go test ./cmd/... ./internal/... ./scripts/...
 
 lint: service-check
-	test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*'))"
-	go vet ./...
+	test -z "$$(gofmt -l $$(find cmd internal scripts -name '*.go'))"
+	go vet ./cmd/... ./internal/... ./scripts/...
 
 service-check:
 	test -s deploy/systemd/payesh-agent.service
 	test -s deploy/systemd/payesh-updater-watchdog.service
 	test -s deploy/systemd/payesh-server.service
+	test -s deploy/systemd/payesh-cutover-peer.service
 	test -s deploy/systemd/payesh-bandwidth-module@.service
 	test -s deploy/systemd/payesh-bandwidth-watchdog@.service
 	test -s deploy/systemd/payesh-cpu-controls@.service
@@ -35,6 +36,7 @@ service-check:
 	test -x deploy/openrc/payesh-agent
 	test -x deploy/openrc/payesh-updater-watchdog
 	test -x deploy/openrc/payesh-server
+	test -x deploy/openrc/payesh-cutover-peer
 	test -x deploy/openrc/payesh-bandwidth-module
 	test -x deploy/openrc/payesh-bandwidth-watchdog
 	test -x deploy/openrc/payesh-cpu-controls
@@ -93,7 +95,8 @@ resource-benchmark:
 # manifest and SHA256SUMS. Release signing remains an explicit owner action;
 # see docs/CONTRIBUTING.md.
 release-package:
-	go run ./scripts/release-package
+	@test -n "$(RELEASE_MIN_CORE)" || (echo "RELEASE_MIN_CORE must name the reviewed minimum supported core version" >&2; exit 2)
+	go run ./scripts/release-package -min-core "$(RELEASE_MIN_CORE)" $(if $(RELEASE_VERSION),-version "$(RELEASE_VERSION)")
 
 release-sign:
 	@test -n "$(RELEASE_SIGNING_KEY)" || (echo "RELEASE_SIGNING_KEY is required" >&2; exit 2)

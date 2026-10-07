@@ -11,7 +11,8 @@
   const rate = formatNetworkRate;
 
   $effect(() => {
-    if (plot) plot.setData([data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)] as uPlot.AlignedData);
+    const updated: uPlot.AlignedData = [data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)];
+    plot?.setData(updated);
   });
 
   onMount(() => {
@@ -29,17 +30,19 @@
       axes: [
         {
           stroke: muted,
+          space: 70,
           grid: { stroke: line, width: 1 },
           ticks: { stroke: line, width: 1 },
-          font: '11px inherit',
-          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+          font: '12px Segoe UI, Arial, sans-serif',
+          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }))
         },
         {
           stroke: muted,
+          size: 65,
           grid: { stroke: line, width: 1 },
           ticks: { stroke: line, width: 1 },
-          font: '11px inherit',
-          values: (_u, values) => values.map((v) => rate(Number(v)))
+          font: '12px Segoe UI, Arial, sans-serif',
+          values: (_u, values) => values.map((v) => (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
         }
       ],
       cursor: {

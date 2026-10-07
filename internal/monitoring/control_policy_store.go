@@ -165,6 +165,9 @@ func (s *Store) transitionControlPolicy(ctx context.Context, serverID contracts.
 		return contracts.ControlPolicy{}, err
 	}
 	defer tx.Rollback()
+	if err := requireServerCommandAuthorityTx(ctx, tx, serverID); err != nil {
+		return contracts.ControlPolicy{}, err
+	}
 	if useUniqueKey && next.State != contracts.ControlPolicyReverted && next.State != contracts.ControlPolicyFailed {
 		result, err := tx.ExecContext(ctx, `INSERT INTO control_policy_unique_keys(server_id,module_id,unique_key,target_kind,target_name) VALUES(?,?,?,?,?) ON CONFLICT(server_id,module_id,unique_key) DO UPDATE SET target_kind=excluded.target_kind,target_name=excluded.target_name WHERE control_policy_unique_keys.target_kind=? AND control_policy_unique_keys.target_name=?`, string(serverID), moduleID, uniqueKey, targetKind, targetName, targetKind, targetName)
 		if err != nil {

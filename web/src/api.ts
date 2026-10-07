@@ -51,6 +51,7 @@ export type Server = {
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
+export type NodeTransportStatus = { port: string; url?: string; previous_ports: string[]; legacy_dashboard: boolean; pending: number; total: number; migrated: number; next_cursor?: string; nodes: { id: string; name: string; state: 'migrated' | 'pending' | 'update-required' | 'failed'; error?: string }[] };
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
 export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'failed'; target?: string; message?: string; updated_at: string };
@@ -100,7 +101,7 @@ export type TrafficPeriod = {
   continuity: 'complete' | 'gap' | 'uncertain';
 };
 export type StorageSettings = { max_database_bytes: number; sample_seconds: number; pressure_sample_seconds: number; adaptive_sampling: boolean; notifications_enabled: boolean; revision: string; pressure_state: string };
-export type StorageStatus = { settings: StorageSettings; database_bytes: number; effective_sample_seconds: number };
+export type StorageStatus = { settings: StorageSettings; database_bytes: number; recovery_snapshot_bytes: number; effective_sample_seconds: number };
 export type StorageNotification = { id: string; kind: string; message: string; created_at: string; read: boolean };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
 export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
@@ -284,6 +285,18 @@ export class ApiClient {
 
   setHTTPSDomain(body: HTTPSSettingsRequest, options: QueryOptions = {}): Promise<HTTPSStatus> {
     return this.request<HTTPSStatus>('/settings/https', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  getNodeTransportSettings(params: { limit?: number; cursor?: string } = {}): Promise<NodeTransportStatus> {
+    return this.request<NodeTransportStatus>(`/settings/node-transport${queryString(params)}`);
+  }
+
+  setNodeTransportPort(port: number): Promise<NodeTransportStatus> {
+    return this.request<NodeTransportStatus>('/settings/node-transport', { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify({ port }) });
+  }
+
+  retireNodeTransportPorts(): Promise<NodeTransportStatus> {
+    return this.request<NodeTransportStatus>('/settings/node-transport', { method: 'DELETE', headers: this.mutationHeaders() });
   }
 
   setDashboardPort(port: number): Promise<HTTPSStatus> {

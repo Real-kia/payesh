@@ -283,6 +283,9 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 	}
 	if parent.State == contracts.JobCancelled || parent.State == contracts.JobCancelling {
 		for _, child := range children {
+			if err := s.cancelCoreAction(ctx, child); err != nil {
+				return parent, err
+			}
 			if terminal(child.State) {
 				continue
 			}
@@ -300,6 +303,11 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 		return parent, nil
 	}
 	if !parent.ExpiresAt.After(s.now()) {
+		for _, child := range children {
+			if err := s.cancelCoreAction(ctx, child); err != nil {
+				return parent, err
+			}
+		}
 		failed, transitionErr := s.Store.TransitionJob(ctx, parent.ID, parent.Revision, contracts.JobFailed, 100, updateError("expired", ErrUpdateExpired.Error(), false), s.now())
 		if transitionErr != nil {
 			return contracts.Job{}, transitionErr
@@ -327,6 +335,9 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 			continue
 		}
 		if child.State == contracts.JobCancelling || child.CancelRequested {
+			if err := s.cancelCoreAction(ctx, child); err != nil {
+				return parent, err
+			}
 			_, _ = s.Store.TransitionJob(ctx, child.ID, child.Revision, contracts.JobCancelled, 100, nil, s.now())
 			continue
 		}
@@ -340,14 +351,23 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 		if !found {
 			return s.failChildAndFinish(ctx, parent, children, child, "incompatible", "selected server no longer exists", false)
 		}
-		if reason, code := currentSkipReason(server, s.now()); reason != "" {
+		if reason, code := currentSkipReason(server, s.now()); reason != "" && !(child.State == contracts.JobRunning && code == "offline" && server.ConnectionState != "revoked") {
 			return s.failChildAndFinish(ctx, parent, children, child, code, reason, code == "offline")
 		}
 		active, queryErr := s.Store.ListActiveJobsForServer(ctx, server.ID, child.ID)
 		if queryErr != nil {
 			return contracts.Job{}, queryErr
 		}
-		if len(active) > 0 {
+		conflict := false
+		for _, job := range active {
+			// The transport action owned by this child is part of the update,
+			// not an independent operation that should block its reconciliation.
+			if job.ID == CoreUpdateActionID(child.ID) && job.Kind == "core-update-action" && job.Action != nil && job.Action.Action == "core.update" {
+				continue
+			}
+			conflict = true
+		}
+		if conflict {
 			// Leave the child queued. This is durable serialization: the next
 			// worker pass can run it once the conflicting operation completes.
 			return parent, ErrUpdateConflict
@@ -366,6 +386,9 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 			return s.completeChild(ctx, parent, children, claimed, updateError("executor_unavailable", ErrUpdateExecutorAbsent.Error(), true))
 		}
 		execErr := s.Executor.Execute(ctx, Execution{JobID: claimed.ID, ParentID: parent.ID, Release: releaseForChild(claimed), Target: server})
+		if errors.Is(execErr, ErrExecutionPending) {
+			return parent, nil
+		}
 		if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
 			return claimed, execErr
 		}
@@ -525,6 +548,9 @@ func (s *Scheduler) completeChild(ctx context.Context, parent contracts.Job, chi
 }
 
 func (s *Scheduler) failChildAndFinish(ctx context.Context, parent contracts.Job, children []contracts.Job, child contracts.Job, code, message string, retryable bool) (contracts.Job, error) {
+	if err := s.cancelCoreAction(ctx, child); err != nil {
+		return parent, err
+	}
 	return s.completeChild(ctx, parent, children, child, updateError(code, message, retryable))
 }
 
@@ -710,3 +736,28 @@ func (s *Scheduler) newID(prefix string) (string, error) {
 // ValidRelease is the scheduler-facing release identity check shared with
 // manifest validation. It intentionally accepts only semantic versions.
 func ValidRelease(version string) bool { return semverPattern.MatchString(version) }
+
+// Cancelling an orchestration job must also prevent its queued transport intent
+// from being leased. Already delivered activation is reconciled by its worker;
+// cancellation does not claim to undo a running installation.
+func (s *Scheduler) cancelCoreAction(ctx context.Context, child contracts.Job) error {
+	id := CoreUpdateActionID(child.ID)
+	for attempt := 0; attempt < 3; attempt++ {
+		action, found, err := s.Store.GetJob(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !found || terminal(action.State) || action.CancelRequested {
+			return nil
+		}
+		if action.Kind != "core-update-action" || action.TargetServerID != child.TargetServerID {
+			return errors.New("update action identity mismatch")
+		}
+		_, err = s.Store.RequestJobCancellation(ctx, id, "rollout-cancel-"+child.ID, action.Revision, s.now())
+		if errors.Is(err, monitoring.ErrJobRevisionConflict) {
+			continue
+		}
+		return err
+	}
+	return monitoring.ErrJobRevisionConflict
+}

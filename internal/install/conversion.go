@@ -27,6 +27,21 @@ type ConversionConfig struct {
 	HubCAFile        string
 }
 
+// CheckConversionTransport proves the destination accepts the enrolled identity
+// before a conversion stops services or changes identity/configuration files.
+// The probe sends no hello or samples and never claims a live node connection.
+func CheckConversionTransport(ctx context.Context, cfg ConversionConfig) error {
+	node, err := transport.LoadNodeIdentity(cfg.NodeIdentityFile)
+	if err != nil {
+		return fmt.Errorf("load enrolled identity: %w", err)
+	}
+	trust, err := os.ReadFile(cfg.HubCAFile)
+	if err != nil {
+		return fmt.Errorf("read hub trust: %w", err)
+	}
+	return transport.CheckNodeEndpoint(ctx, cfg.TransportURL, node, trust)
+}
+
 func CheckHubToNode(ctx context.Context, root string, cfg ConversionConfig) error {
 	if cfg.FromRole != "hub" && cfg.FromRole != "standalone" {
 		return errors.New("conversion source must be hub or standalone")
@@ -143,11 +158,11 @@ func writeNodeConversionConfig(root string, cfg ConversionConfig, account Accoun
 	}
 	var lines []string
 	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
-		if !strings.HasPrefix(line, "PAYESH_TRANSPORT_URL=") {
+		if !strings.HasPrefix(line, "PAYESH_TRANSPORT_URL=") && !strings.HasPrefix(line, "PAYESH_NODE_IDENTITY_FILE=") && !strings.HasPrefix(line, "PAYESH_HUB_TRUST_FILE=") {
 			lines = append(lines, line)
 		}
 	}
-	lines = append(lines, "PAYESH_TRANSPORT_URL="+cfg.TransportURL)
+	lines = append(lines, "PAYESH_TRANSPORT_URL="+cfg.TransportURL, "PAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json", "PAYESH_HUB_TRUST_FILE=/var/lib/payesh/hub-ca.pem")
 	if err := writeAtomic(envPath, []byte(strings.Join(lines, "\n")+"\n"), 0o640); err != nil {
 		return err
 	}

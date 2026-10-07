@@ -7,19 +7,30 @@ artifacts and preserve the contracts in `docs/contracts/`.
 Run the focused checks before handing work off:
 
 ```sh
-GOCACHE=/private/tmp/payesh-go-cache go test ./...
+go test ./...
+PAYESH_LIVE_TRANSPORT_ACCEPTANCE=1 go test -race ./cmd/... ./internal/... ./scripts/...
 make lint
 make contract-check
 make web-check
 git diff --check
 ```
 
+These checks require local socket access. Linux kernel and live SSH gates are
+opt-in and must run on disposable Linux hosts; skipped tests are not acceptance
+evidence. Follow the [release checklist](RELEASE_CHECKLIST.md) for operational
+gates and required results.
+
 For release packaging, install the locked web dependencies and set an explicit
 timestamp so another contributor can reproduce the same bytes:
 
+Set `RELEASE_MIN_CORE` to the oldest core version actually supported by the
+candidate and verified by compatibility tests. It must be a semantic version no
+newer than the release; packaging refuses a missing declaration. The tag workflow
+uses the reviewed `PAYESH_RELEASE_MIN_CORE` repository variable.
+
 ```sh
 (cd web && npm ci --ignore-scripts --no-audit --no-fund)
-SOURCE_DATE_EPOCH=1768089600 make release-package
+SOURCE_DATE_EPOCH=1768089600 make release-package RELEASE_MIN_CORE="$RELEASE_MIN_CORE"
 make release-validate RELEASE_VERSION=0.1.0
 ```
 

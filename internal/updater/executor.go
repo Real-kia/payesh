@@ -53,6 +53,7 @@ type ExecutorConfig struct {
 	ReleaseRoot       string // contains current and versioned release directories
 	ActiveDir         string
 	JournalPath       string
+	DatabasePath      string // explicit local database path; missing file means fresh installation
 	BackupDir         string
 	LocalServerID     contracts.ServerID
 	ArtifactName      string
@@ -92,6 +93,7 @@ func (c ExecutorConfig) validate() error {
 		return fmt.Errorf("%w: registry, source, backup, health, and current core are required", ErrExecutorConfig)
 	}
 	for name, value := range map[string]string{
+		"database":         c.DatabasePath,
 		"accepted state":   c.AcceptedStatePath,
 		"release root":     c.ReleaseRoot,
 		"active directory": c.ActiveDir,
@@ -200,6 +202,12 @@ func (e *ReleaseExecutor) Execute(ctx context.Context, execution Execution) erro
 	artifact, err := SelectArtifact(bundle.Manifest, artifactName, e.config.GOOS, e.config.GOARCH)
 	if err != nil {
 		return err
+	}
+	if err := VerifyManifest(e.config.Registry, bundle.Manifest, bundle.Signature, e.config.CurrentCore, state, now); err != nil {
+		return err
+	}
+	if err := CheckCandidateDatabaseSchema(ctx, bundle.Manifest, e.config.DatabasePath); err != nil {
+		return &IncompatibleError{Reason: err.Error(), Err: err}
 	}
 	jobDir := filepath.Join(e.config.ReleaseRoot, ".downloads", execution.JobID)
 	archivePath := filepath.Join(jobDir, "artifact.tar.gz")

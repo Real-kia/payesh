@@ -52,6 +52,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
     delete:
       operationId: logout
+      description: Revoke the current session, including sessions with read-only permission.
       security:
         - SessionCookie: []
           CSRFToken: []
@@ -60,6 +61,7 @@ paths:
       responses:
         '204': { description: Session expired }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /account/me:
     get:
       operationId: getCurrentAccount
@@ -510,11 +512,12 @@ paths:
       responses: { '200': { description: Verified release metadata, content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /updates:
     post:
+      summary: Owner-authorized signed fleet rollout
       operationId: startUpdate
       security: [{ SessionCookie: [], CSRFToken: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
-      responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' } }
   /updates/latest:
     get:
       operationId: checkLatestGitHubRelease
@@ -579,6 +582,83 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsRequest' } } } }
       responses: { '200': { description: Settings updated, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /settings/storage:
+    get:
+      operationId: getStorageSettings
+      summary: Read storage usage and sampling settings
+      security: [{ SessionCookie: [] }]
+      responses:
+        '200': { description: Live database and retained recovery snapshot usage, content: { application/json: { schema: { $ref: '#/components/schemas/StorageStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      operationId: updateStorageSettings
+      summary: Change owner storage and sampling settings
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StorageSettings' } } } }
+      responses:
+        '200': { description: Updated storage settings and current usage, content: { application/json: { schema: { $ref: '#/components/schemas/StorageStatus' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /settings/node-transport:
+    description: |
+      TLS node listener settings, separate from dashboard access. Available when
+      the hub has a node listener. Port changes retain previous endpoints until
+      every non-revoked enrolled node is observed on the current listener.
+      Node details are paginated; total, migrated and pending always describe
+      the entire non-revoked fleet. Responses enforce the 1 MiB size limit.
+      Cursors anchor an enrolled node ID in current name/ID order; removed or
+      revoked anchors are rejected. Restart pagination when the fleet changes.
+    get:
+      operationId: getNodeTransportSettings
+      security: [{ SessionCookie: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 256 }, description: Opaque next_cursor returned by the preceding page. }
+      responses:
+        '400': { description: Invalid page limit or malformed/stale cursor, content: { text/plain: { schema: { type: string } } } }
+        '200': { description: Current listener and migration status, content: { application/json: { schema: { $ref: '#/components/schemas/NodeTransportStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/NodeTransportStatusUnavailable' }
+    patch:
+      operationId: changeNodeTransportPort
+      summary: Reserve a TLS node port and begin migration; requires edit permission
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      x-max-request-bytes: 1024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port]
+              additionalProperties: false
+              properties:
+                port: { type: integer, minimum: 1, maximum: 65535 }
+      responses:
+        '200': { description: Listener changed; migration may still be pending, content: { application/json: { schema: { $ref: '#/components/schemas/NodeTransportStatus' } } } }
+        '400': { description: Malformed JSON or unknown request fields, content: { text/plain: { schema: { type: string } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Invalid port, unavailable listener, missing public TLS URL, history limit or persistence failure; code is node_port_unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+        '500': { $ref: '#/components/responses/NodeTransportStatusUnavailable' }
+    delete:
+      operationId: retirePreviousNodeTransportEndpoints
+      summary: Close historical node listeners after migration; requires edit permission
+      description: Also disables legacy node access on dashboard listeners. Does not delete nodes or the current listener.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      responses:
+        '200': { description: Historical endpoints retired, content: { application/json: { schema: { $ref: '#/components/schemas/NodeTransportStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Pending nodes still need historical endpoints or persistence failed; code is node_port_unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+        '500': { $ref: '#/components/responses/NodeTransportStatusUnavailable' }
   /settings/https:
     get:
       operationId: getHTTPSSettings
@@ -727,6 +807,15 @@ components:
       required: true
       schema: { type: string, minLength: 1, maxLength: 256 }
   responses:
+    NodeTransportStatusUnavailable:
+      description: Failed to read migration status or status exceeded the response-size limit; the response has only a message field.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [message]
+            properties:
+              message: { type: string }
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
     Forbidden: { description: CSRF token or owner authorization rejected, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
@@ -743,6 +832,31 @@ components:
       description: Whole seconds to wait before the next login attempt.
       schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
+    NodeTransportStatus:
+      type: object
+      required: [port, previous_ports, legacy_dashboard, nodes, pending, total, migrated]
+      properties:
+        port: { type: string, pattern: '^[0-9]{1,5}$', description: Current local listener port encoded as a decimal string. }
+        url: { type: string, format: uri, description: Advertised wss node endpoint; omitted until a public TLS URL is available. }
+        previous_ports: { type: array, maxItems: 15, items: { type: string, pattern: '^[0-9]{1,5}$' } }
+        legacy_dashboard: { type: boolean, description: Legacy node routes remain enabled on dashboard listeners. }
+        nodes:
+          type: array
+          maxItems: 200
+          description: One page of non-revoked enrolled nodes; omitted pages are included in aggregate totals.
+          items: { $ref: '#/components/schemas/NodeTransportMigration' }
+        pending: { type: integer, minimum: 0, description: Number of non-revoked enrolled nodes across the entire fleet whose state is not migrated. }
+        total: { type: integer, minimum: 0, description: Total non-revoked enrolled nodes across the entire fleet. }
+        migrated: { type: integer, minimum: 0, description: Total enrolled nodes observed on the current listener across the entire fleet. }
+        next_cursor: { type: string, maxLength: 256, description: Opaque cursor for the next page; absent at the end. }
+    NodeTransportMigration:
+      type: object
+      required: [id, name, state]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        state: { type: string, enum: [migrated, pending, update-required, failed] }
+        error: { type: string, maxLength: 500, description: Last reported migration failure, if any. }
     ProcessSnapshot:
       type: object
       required: [sampled_at, interval_seconds, total, matched, truncated, network_accounting, items]
@@ -937,6 +1051,23 @@ components:
         cancel_requested: { type: boolean }
         progress: { type: integer, minimum: 0, maximum: 100 }
         error: { $ref: '#/components/schemas/APIError' }
+        result: { $ref: '#/components/schemas/ActionResponse' }
+    ActionResponse:
+      type: object
+      required: [request_id, accepted, revision]
+      properties:
+        request_id: { type: string, maxLength: 128 }
+        accepted: { type: boolean }
+        revision: { $ref: '#/components/schemas/DecimalUint64' }
+        error: { $ref: '#/components/schemas/APIError' }
+        core_update: { $ref: '#/components/schemas/CoreUpdateResult' }
+    CoreUpdateResult:
+      type: object
+      required: [job_id, release, state]
+      properties:
+        job_id: { type: string, maxLength: 128 }
+        release: { type: string, maxLength: 64 }
+        state: { type: string, enum: [succeeded] }
     CancelJobRequest:
       type: object
       required: [idempotency_key, expected_revision]
@@ -1181,6 +1312,25 @@ components:
       type: object
       required: [server_id, eligible, checks]
       properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, eligible: { type: boolean }, checks: { type: array, maxItems: 32, items: { type: string, maxLength: 512 } }, required_staging_bytes: { $ref: '#/components/schemas/DecimalUint64' }, required_backup_bytes: { $ref: '#/components/schemas/DecimalUint64' } }
+    StorageSettings:
+      type: object
+      required: [max_database_bytes, sample_seconds, pressure_sample_seconds, adaptive_sampling, notifications_enabled, revision, pressure_state]
+      properties:
+        max_database_bytes: { type: integer, format: int64, minimum: 128000000, maximum: 64000000000, description: Storage limit including live SQLite files and retained schema recovery snapshots. }
+        sample_seconds: { type: integer, minimum: 5, maximum: 3600 }
+        pressure_sample_seconds: { type: integer, minimum: 5, maximum: 3600 }
+        adaptive_sampling: { type: boolean }
+        notifications_enabled: { type: boolean }
+        revision: { $ref: '#/components/schemas/DecimalUint64' }
+        pressure_state: { type: string, enum: [normal, warning, saving] }
+    StorageStatus:
+      type: object
+      required: [settings, database_bytes, recovery_snapshot_bytes, effective_sample_seconds]
+      properties:
+        settings: { $ref: '#/components/schemas/StorageSettings' }
+        database_bytes: { type: integer, format: int64, minimum: 0, description: Physical live SQLite database and journal files; excludes retained recovery snapshots. }
+        recovery_snapshot_bytes: { type: integer, format: int64, minimum: 0, default: 0, description: Retained schema recovery snapshot bytes counted toward the storage limit. }
+        effective_sample_seconds: { type: integer, minimum: 5, maximum: 3600 }
     Settings:
       type: object
       properties: { sampling_interval_seconds: { type: integer, minimum: 5, maximum: 3600 }, retention_days: { type: integer, minimum: 1, maximum: 3650 }, timezone: { type: string, maxLength: 64 } }

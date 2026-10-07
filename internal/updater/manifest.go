@@ -5,6 +5,7 @@
 package updater
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/dbschema"
 	"github.com/Real-kia/payesh/internal/trust"
 )
 
@@ -63,8 +65,16 @@ func VerifyManifest(registry *trust.Registry, manifest contracts.ReleaseManifest
 }
 
 func validateManifest(m contracts.ReleaseManifest, currentCore string, now time.Time) error {
+	if m.DatabaseSchema != nil {
+		if err := m.DatabaseSchema.Validate(); err != nil {
+			return err
+		}
+	}
 	if m.Format != contracts.ReleaseFormat || !validSemver(m.Release) || !validSemver(m.MinCore) || m.SigningKeyID == "" {
 		return errors.New("updater: invalid release manifest identity")
+	}
+	if compareSemver(m.MinCore, m.Release) > 0 {
+		return errors.New("updater: manifest minimum core is newer than release")
 	}
 	if !validSemver(currentCore) || compareSemver(currentCore, m.MinCore) < 0 {
 		return errors.New("updater: current core is below the manifest minimum")
@@ -203,4 +213,33 @@ func compareSemver(a, b string) int {
 		return -1
 	}
 	return strings.Compare(am[4], bm[4])
+}
+
+// CheckCandidateDatabaseSchema reads the existing database without running the
+// current binary's migrations. Missing declarations never authorize opening an
+// existing database with candidate code. A missing database is a fresh install.
+func CheckCandidateDatabaseSchema(ctx context.Context, manifest contracts.ReleaseManifest, path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("updater: database preflight requires an explicit absolute path")
+	}
+	if manifest.DatabaseSchema != nil {
+		if err := manifest.DatabaseSchema.Validate(); err != nil {
+			return err
+		}
+	}
+	version, exists, err := dbschema.ReadInstalledSchemaVersion(ctx, path)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if manifest.DatabaseSchema == nil {
+		return errors.New("updater: candidate lacks authenticated database schema compatibility")
+	}
+	schema := manifest.DatabaseSchema
+	if version < schema.MinReadable || version > schema.Current {
+		return fmt.Errorf("updater: database schema %d is outside candidate readable range %d..%d", version, schema.MinReadable, schema.Current)
+	}
+	return nil
 }

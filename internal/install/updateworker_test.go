@@ -29,12 +29,10 @@ func TestWebRolesInstallAndRemoveUpdateWorker(t *testing.T) {
 				if _, err := Install(context.Background(), InstallOptions{Root: root, Role: role, ArtifactDir: artifacts, Verify: acceptArtifact}); err != nil {
 					t.Fatal(err)
 				}
-				if webupdate.Supported(root) != (role != "node") {
+				if !webupdate.Supported(root) {
 					t.Fatalf("worker installed for wrong role %s", role)
 				}
-				if role == "node" {
-					return
-				}
+
 				body, err := os.ReadFile(servicePath(root, init, updateWorkerService))
 				if err != nil {
 					t.Fatal(err)
@@ -45,7 +43,7 @@ func TestWebRolesInstallAndRemoveUpdateWorker(t *testing.T) {
 				if strings.Contains(string(body), "/etc/payesh/payesh.env") || strings.Contains(string(body), "command=\"/bin/sh\"") || strings.Contains(string(body), "/var/log/payesh") {
 					t.Fatal("root worker must not source the service-account configuration")
 				}
-				if init == "systemd" && !strings.Contains(string(body), "EnvironmentFile=-/etc/payesh-update.env") {
+				if !strings.Contains(string(body), "/etc/payesh-update.env") {
 					t.Fatal("wrong root-owned environment file")
 				}
 				if err := removeUpdateWorker(context.Background(), root, init, nil); err != nil {
