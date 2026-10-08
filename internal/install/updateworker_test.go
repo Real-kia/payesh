@@ -26,7 +26,7 @@ func TestWebRolesInstallAndRemoveUpdateWorker(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := Install(context.Background(), InstallOptions{Root: root, Role: role, ArtifactDir: artifacts, Verify: acceptArtifact}); err != nil {
+				if _, err := Install(context.Background(), InstallOptions{Root: root, Role: role, Listen: "127.0.0.1:0", ArtifactDir: artifacts, Verify: acceptArtifact}); err != nil {
 					t.Fatal(err)
 				}
 				if !webupdate.Supported(root) {

@@ -62,6 +62,7 @@ REMOVE_DATA=0
 REMOVE_INSTALLER=0
 TOKEN="${GITHUB_TOKEN:-}"
 RELEASE_MODE="${PAYESH_RELEASE_MODE:-production}"
+RELEASE_MODE_EXPLICIT=0
 RELEASE_PUBLIC_KEY="${PAYESH_RELEASE_PUBLIC_KEY:-}"
 RELEASE_KEY_ID="${PAYESH_RELEASE_KEY_ID:-}"
 RELEASE_CHECKSUMS_SHA256=""
@@ -76,7 +77,8 @@ while [ $# -gt 0 ]; do
 	--role=*) ROLE="${1#*=}"; shift ;;
 	--version) VERSION="${2:?--version needs a value}"; shift 2 ;;
 	--version=*) VERSION="${1#*=}"; shift ;;
-	--release-mode) RELEASE_MODE="${2:?--release-mode needs a value}"; shift 2 ;;
+	--release-mode) RELEASE_MODE="${2:?--release-mode needs a value}"; RELEASE_MODE_EXPLICIT=1; shift 2 ;;
+	--release-mode=*) RELEASE_MODE="${1#*=}"; RELEASE_MODE_EXPLICIT=1; shift ;;
 	--release-public-key) RELEASE_PUBLIC_KEY="${2:?--release-public-key needs a value}"; shift 2 ;;
 	--release-checksums-sha256) RELEASE_CHECKSUMS_SHA256="${2:?--release-checksums-sha256 needs a value}"; shift 2 ;;
 	--release-key-id) RELEASE_KEY_ID="${2:?--release-key-id needs a value}"; shift 2 ;;
@@ -142,7 +144,22 @@ if [ -n "$JOIN_URL$JOIN_JOB$JOIN_TOKEN$JOIN_CA_SHA256" ]; then
 fi
 
 UPDATING=0
-STATE_FILE=/var/lib/payesh/install-state.json
+STATE_FILE="${PAYESH_STATE_FILE:-/var/lib/payesh/install-state.json}"
+UPDATE_ENV="${PAYESH_UPDATE_ENV:-/etc/payesh-update.env}"
+if [ -f "$UPDATE_ENV" ]; then
+	if [ -z "$RELEASE_PUBLIC_KEY" ]; then
+		val="$(sed -n 's/^PAYESH_RELEASE_PUBLIC_KEY=//p' "$UPDATE_ENV" | head -n 1 | tr -d '"'\''')"
+		[ -z "$val" ] || RELEASE_PUBLIC_KEY="$val"
+	fi
+	if [ -z "$RELEASE_KEY_ID" ]; then
+		val="$(sed -n 's/^PAYESH_RELEASE_KEY_ID=//p' "$UPDATE_ENV" | head -n 1 | tr -d '"'\''')"
+		[ -z "$val" ] || RELEASE_KEY_ID="$val"
+	fi
+	if [ "$RELEASE_MODE_EXPLICIT" = 0 ] && [ -z "${PAYESH_RELEASE_MODE:-}" ]; then
+		val="$(sed -n 's/^PAYESH_RELEASE_MODE=//p' "$UPDATE_ENV" | head -n 1 | tr -d '"'\''')"
+		[ -z "$val" ] || RELEASE_MODE="$val"
+	fi
+fi
 if [ -f "$STATE_FILE" ]; then
  UPDATING=1
  if [ -z "$ROLE" ]; then
@@ -153,6 +170,12 @@ ROLE="${ROLE:-standalone}"
 ACTION=Installing
 DONE=installed
 if [ "$UPDATING" = 1 ]; then ACTION=Updating; DONE=updated; fi
+
+if [ "$RELEASE_MODE_EXPLICIT" = 0 ] && [ -z "${PAYESH_RELEASE_MODE:-}" ]; then
+ if [ -z "$RELEASE_PUBLIC_KEY" ] && [ -z "$RELEASE_KEY_ID" ]; then
+  RELEASE_MODE=preview
+ fi
+fi
 
 case "$ROLE" in
 standalone | hub | node | cli-only) ;;

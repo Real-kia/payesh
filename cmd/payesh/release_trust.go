@@ -24,9 +24,26 @@ import (
 type releaseTrustPolicy struct{ mode, publicKey, keyID string }
 
 func releaseTrustFromEnvironment() (releaseTrustPolicy, error) {
-	p := releaseTrustPolicy{os.Getenv("PAYESH_RELEASE_MODE"), os.Getenv("PAYESH_RELEASE_PUBLIC_KEY"), os.Getenv("PAYESH_RELEASE_KEY_ID")}
+	mode := os.Getenv("PAYESH_RELEASE_MODE")
+	pubKey := os.Getenv("PAYESH_RELEASE_PUBLIC_KEY")
+	keyID := os.Getenv("PAYESH_RELEASE_KEY_ID")
+	if mode == "" && pubKey == "" && keyID == "" {
+		envPath := os.Getenv("PAYESH_UPDATE_ENV")
+		if envPath == "" {
+			envPath = "/etc/payesh-update.env"
+		}
+		m, pk, kid := loadTrustEnvFile(envPath)
+		if m != "" || pk != "" || kid != "" {
+			mode, pubKey, keyID = m, pk, kid
+		}
+	}
+	p := releaseTrustPolicy{mode, pubKey, keyID}
 	if p.mode == "" {
-		p.mode = "production"
+		if p.publicKey != "" || p.keyID != "" {
+			p.mode = "production"
+		} else {
+			p.mode = "preview"
+		}
 	}
 	switch p.mode {
 	case "production":
@@ -85,6 +102,40 @@ func checkAnchorProtection(path string, info os.FileInfo) error {
 
 func anchorOwnerAllowed(owner uint32, euid int) bool {
 	return owner == 0 || int(owner) == euid
+}
+
+func loadTrustEnvFile(path string) (mode, pubKey, keyID string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", ""
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return "", "", ""
+	}
+	if err := checkAnchorProtection(path, info); err != nil {
+		return "", "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), "\"'")
+		switch strings.TrimSpace(key) {
+		case "PAYESH_RELEASE_MODE":
+			mode = val
+		case "PAYESH_RELEASE_PUBLIC_KEY":
+			pubKey = val
+		case "PAYESH_RELEASE_KEY_ID":
+			keyID = val
+		}
+	}
+	return mode, pubKey, keyID
 }
 
 // fetchAuthenticatedInstaller authenticates checksum metadata before a remote

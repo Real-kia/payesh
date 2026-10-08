@@ -82,15 +82,13 @@ activation in the audit log.
 
 ## Production bootstrap and updates
 
-The shell installer and CLI/root web update worker default to `production`.
-Missing external trust inputs, missing signatures, unknown/mismatched key IDs,
+When configured with release signing keys, the shell installer and update worker
+enforce production verification: missing signatures, unknown/mismatched key IDs,
 tampered metadata or scripts fail before executing downloaded release code.
-Legacy unsigned releases remain available through the shell installer or an
-explicit local CLI update using `--release-mode preview` or
-`PAYESH_RELEASE_MODE=preview`; this prints an unsigned-preview warning.
-Browser and fleet worker updates refuse preview mode and retain durable
-activation intent through installed-version/service health checks and recovery.
-Preview means byte integrity, not publisher trust.
+When no external trust anchor is configured, installs, CLI updates, and local
+web worker updates default to preview mode, verifying SHA256 checksums for byte integrity.
+Remote fleet worker updates still require production release authentication.
+Explicit production mode can be forced using `--release-mode production` or `PAYESH_RELEASE_MODE=production`.
 
 Each newly packaged release also includes its exact `install.sh` in
 `SHA256SUMS`. The owner signing command writes `SHA256SUMS.sig` in the same

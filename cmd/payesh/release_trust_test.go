@@ -93,7 +93,7 @@ func TestUpdateAuthenticatesInstallerBeforeReturningExecutableBytes(t *testing.T
 }
 
 func TestProductionMissingAnchorFailsBeforeNetwork(t *testing.T) {
-	t.Setenv("PAYESH_RELEASE_MODE", "")
+	t.Setenv("PAYESH_RELEASE_MODE", "production")
 	t.Setenv("PAYESH_RELEASE_PUBLIC_KEY", "")
 	t.Setenv("PAYESH_RELEASE_KEY_ID", "")
 	client := &http.Client{Transport: trustRoundTripper(func(*http.Request) (*http.Response, error) {
@@ -106,6 +106,20 @@ func TestProductionMissingAnchorFailsBeforeNetwork(t *testing.T) {
 	t.Setenv("PAYESH_RELEASE_MODE", "preview")
 	if p, err := releaseTrustFromEnvironment(); err != nil || p.mode != "preview" {
 		t.Fatalf("explicit preview: %+v %v", p, err)
+	}
+}
+
+func TestDefaultReleaseTrustIsPreviewWithoutAnchor(t *testing.T) {
+	t.Setenv("PAYESH_RELEASE_MODE", "")
+	t.Setenv("PAYESH_RELEASE_PUBLIC_KEY", "")
+	t.Setenv("PAYESH_RELEASE_KEY_ID", "")
+	t.Setenv("PAYESH_UPDATE_ENV", filepath.Join(t.TempDir(), "nonexistent.env"))
+	p, err := releaseTrustFromEnvironment()
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if p.mode != "preview" {
+		t.Fatalf("expected preview mode, got: %s", p.mode)
 	}
 }
 
@@ -307,5 +321,34 @@ func TestReleaseAnchorRejectsWritableDirectory(t *testing.T) {
 	}
 	if _, err := releaseTrustFromEnvironment(); err == nil {
 		t.Fatal("anchor in a group/world-writable directory accepted")
+	}
+}
+
+func TestReleaseTrustFromUpdateEnvFile(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "release.pub")
+	if err := os.WriteFile(key, pub, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(dir, "payesh-update.env")
+	envContent := fmt.Sprintf("PAYESH_RELEASE_MODE=production\nPAYESH_RELEASE_PUBLIC_KEY=%s\nPAYESH_RELEASE_KEY_ID=test-release\n", key)
+	if err := os.WriteFile(envFile, []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAYESH_RELEASE_MODE", "")
+	t.Setenv("PAYESH_RELEASE_PUBLIC_KEY", "")
+	t.Setenv("PAYESH_RELEASE_KEY_ID", "")
+	t.Setenv("PAYESH_UPDATE_ENV", envFile)
+
+	policy, err := releaseTrustFromEnvironment()
+	if err != nil {
+		t.Fatalf("expected policy from env file: %v", err)
+	}
+	if policy.mode != "production" || policy.publicKey != key || policy.keyID != "test-release" {
+		t.Fatalf("unexpected policy loaded: %+v", policy)
 	}
 }

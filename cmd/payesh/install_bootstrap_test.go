@@ -110,3 +110,71 @@ func TestShellBootstrapAuthenticatesBeforeExecutingInstaller(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyUpdateWithoutTrustAnchorDefaultsToPreview(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	assets := filepath.Join(dir, "assets")
+	os.Mkdir(bin, 0o755)
+	os.Mkdir(assets, 0o755)
+	write := func(path string, body []byte, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(path, body, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(bin, "uname"), []byte("#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n"), 0o755)
+	write(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 0\n"), 0o755)
+	write(filepath.Join(bin, "stat"), []byte("#!/bin/sh\ncase \"$2\" in %u) echo 0;; %a) echo 644;; esac\n"), 0o755)
+	write(filepath.Join(bin, "curl"), []byte("#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) dest=$2; shift 2;; *) url=$1; shift;; esac; done\ncp \"$TEST_ASSETS/${url##*/}\" \"$dest\"\n"), 0o755)
+	var sums []byte
+	for _, name := range []string{"payesh-install", "payesh"} {
+		body := []byte("#!/bin/sh\nif [ \"$1\" = --check-schema ]; then exit 0; fi\nprintf installed >\"$TEST_MARKER\"\nprintf '{}\\n'\n")
+		var b bytes.Buffer
+		gz := gzip.NewWriter(&b)
+		tw := tar.NewWriter(gz)
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write(body)
+		tw.Close()
+		gz.Close()
+		filename := name + "-linux-amd64.tar.gz"
+		write(filepath.Join(assets, filename), b.Bytes(), 0o644)
+		digest := sha256.Sum256(b.Bytes())
+		sums = append(sums, []byte(hex.EncodeToString(digest[:])+"  "+filename+"\n")...)
+	}
+	write(filepath.Join(assets, "SHA256SUMS"), sums, 0o644)
+	stateFile := filepath.Join(dir, "install-state.json")
+	write(stateFile, []byte(`{"role":"cli-only"}`), 0o644)
+	marker := filepath.Join(dir, "installed")
+
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--role", "cli-only", "--version", "1.2.3")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TEST_ASSETS="+assets, "TEST_MARKER="+marker, "PAYESH_STATE_FILE="+stateFile, "PAYESH_RELEASE_MODE=", "PAYESH_RELEASE_PUBLIC_KEY=", "PAYESH_RELEASE_KEY_ID=", "GITHUB_TOKEN=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("legacy update failed: err=%v output=%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected marker to be written: %v", err)
+	}
+}
+
+func TestFreshInstallExplicitProductionRequiresTrustAnchor(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	os.Mkdir(bin, 0o755)
+	write := func(path string, body []byte, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(path, body, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(bin, "uname"), []byte("#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n"), 0o755)
+	write(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 0\n"), 0o755)
+
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--role", "cli-only", "--version", "1.2.3", "--release-mode", "production")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "PAYESH_STATE_FILE="+filepath.Join(dir, "nonexistent"), "PAYESH_RELEASE_MODE=", "PAYESH_RELEASE_PUBLIC_KEY=", "PAYESH_RELEASE_KEY_ID=", "GITHUB_TOKEN=")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "production releases require an externally configured") {
+		t.Fatalf("expected failure for unauthenticated explicit production install: err=%v output=%s", err, out)
+	}
+}

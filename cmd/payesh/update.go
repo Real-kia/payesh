@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -187,8 +188,15 @@ func executeReleaseInstaller(ctx context.Context, script []byte, policy releaseT
 		args = append(args, "--release-public-key", policy.publicKey, "--release-key-id", policy.keyID)
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
+	var errBuf bytes.Buffer
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
+	cmd.Env = os.Environ()
 	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
+			return fmt.Errorf("installer update failed: %w (%s)", err, msg)
+		}
 		return fmt.Errorf("installer update failed: %w", err)
 	}
 	return nil

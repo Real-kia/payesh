@@ -35,15 +35,15 @@ type fleetUpdateHooks struct {
 }
 
 func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Request, recoverInstallation func(context.Context, webupdate.InstallationTransaction) (bool, error), installationPhase func(webupdate.InstallationTransaction) (string, error), hooks fleetUpdateHooks) (bool, error) {
-	production := func() error {
+	checkTrust := func() (releaseTrustPolicy, error) {
 		policy, err := releaseTrustFromEnvironment()
 		if err != nil {
-			return err
+			return policy, err
 		}
-		if policy.mode != "production" {
-			return errors.New("remote fleet updates require production release authentication; preview mode refused")
+		if !strings.HasPrefix(req.JobID, "web-local-") && policy.mode != "production" {
+			return policy, errors.New("remote fleet updates require production release authentication; preview mode refused")
 		}
-		return nil
+		return policy, nil
 	}
 	txn := webupdate.InstallationTransaction{Root: "/", JobID: req.JobID, Services: func(ctx context.Context, action, role, init string) error {
 		var services []string
@@ -81,7 +81,7 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 	// Missing trust authorizes neither activation nor recovery service actions.
 	// Preserve unresolved or unreadable journals so provisioning repair can
 	// resume recovery instead of losing the only retry intent.
-	if policyErr := production(); policyErr != nil {
+	if _, policyErr := checkTrust(); policyErr != nil {
 		phase, phaseErr := installationPhase(txn)
 		if (phaseErr != nil && !errors.Is(phaseErr, os.ErrNotExist)) || (phaseErr == nil && phase != "committed" && phase != "rolled-back") {
 			return false, webupdate.InstallationRollbackError(policyErr, errors.New("recovery requires a valid release trust configuration"))
@@ -113,7 +113,8 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		return webupdate.InstallationRollbackError(cause, nil)
 	}
 	install := func(ctx context.Context, target string) error {
-		if err := production(); err != nil {
+		policy, err := checkTrust()
+		if err != nil {
 			return err
 		}
 		readScope := hooks.Scope
@@ -125,19 +126,28 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 			return err
 		}
 		var preparedRelease preparedProductionRelease
-		var preparedPolicy releaseTrustPolicy
-		if hooks.CandidatePreflight != nil {
-			if err := hooks.CandidatePreflight(ctx, target); err != nil {
-				return err
+		var previewScript []byte
+		if policy.mode == "production" {
+			if hooks.CandidatePreflight != nil {
+				if err := hooks.CandidatePreflight(ctx, target); err != nil {
+					return err
+				}
+			} else {
+				preparedRelease, err = prepareProductionRelease(ctx, &http.Client{Timeout: 15 * time.Second}, os.Getenv("GITHUB_TOKEN"), target, version.Value, policy, "/var/lib/payesh/payesh.db")
+				if err != nil {
+					return err
+				}
 			}
 		} else {
-			preparedPolicy, err = releaseTrustFromEnvironment()
-			if err != nil {
-				return err
-			}
-			preparedRelease, err = prepareProductionRelease(ctx, &http.Client{Timeout: 15 * time.Second}, os.Getenv("GITHUB_TOKEN"), target, version.Value, preparedPolicy, "/var/lib/payesh/payesh.db")
-			if err != nil {
-				return err
+			if hooks.CandidatePreflight != nil {
+				if err := hooks.CandidatePreflight(ctx, target); err != nil {
+					return err
+				}
+			} else {
+				previewScript, err = fetchInstaller(ctx, &http.Client{Timeout: 15 * time.Second}, os.Getenv("GITHUB_TOKEN"), target)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		// Authorization can expire while authenticated metadata is fetched.
@@ -158,13 +168,19 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		if err := txn.MarkActivating(); err != nil {
 			return rollback(err)
 		}
-		if err := runPreparedReleaseInstaller(ctx, target, preparedPolicy, preparedRelease, "--role", scope.Role, "--version", target); err != nil {
-			return rollback(err)
+		if policy.mode == "production" {
+			if err := runPreparedReleaseInstaller(ctx, target, policy, preparedRelease, "--role", scope.Role, "--version", target); err != nil {
+				return rollback(err)
+			}
+		} else {
+			if err := executeReleaseInstaller(ctx, previewScript, policy, "--role", scope.Role, "--version", target); err != nil {
+				return rollback(err)
+			}
 		}
 		return nil
 	}
 	health := func(ctx context.Context, target string) error {
-		if err := production(); err != nil {
+		if _, err := checkTrust(); err != nil {
 			return err
 		}
 		init := "openrc"

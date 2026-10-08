@@ -64,16 +64,14 @@ version with the latest release. From the server shell:
 
 ```sh
 payesh update check
-sudo env PAYESH_RELEASE_MODE=preview payesh update
+sudo payesh update
 ```
 
-`payesh update` keeps the installed role. Production mode is the default and
-requires the owner's external public-key anchor and matching key ID before any
-downloaded installer executes. Unsigned preview updates require the explicit
-environment setting above on the server shell. Browser updates require
-production trust configured in the root-managed `/etc/payesh-update.env`;
-the panel cannot enable preview mode. Browser requests retain a bounded
-authorization and recovery intent through installation and health verification. See the
+`payesh update` keeps the installed role. When production trust keys are
+configured, downloaded releases and their checksums are cryptographically verified
+before execution. Without configured signing keys, updates proceed in preview
+mode with SHA256 byte integrity checks. Updates can also be triggered directly
+from the web dashboard under **Settings → Updates**. See the
 [production trust configuration](contracts/RELEASE_FORMAT.md#production-bootstrap-and-updates).
 
 ### Convert a hub to a node
