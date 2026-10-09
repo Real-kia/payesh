@@ -94,6 +94,54 @@
     <circle cx="12" cy="12" r="10" />
     <line x1="15" y1="9" x2="9" y2="15" />
     <line x1="9" y1="9" x2="15" y2="15" />
+  {:else if name === 'arrow-right'}
+    <path d="M5 12h14M12 5l7 7-7 7" />
+  {:else if name === 'search'}
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5" />
+  {:else if name === 'menu'}
+    <path d="M4 6h16M4 12h16M4 18h16" />
+  {:else if name === 'monitor'}
+    <rect width="20" height="14" x="2" y="3" rx="2" />
+    <path d="M8 21h8M12 17v4" />
+  {:else if name === 'palette'}
+    <circle cx="13.5" cy="6.5" r="1.5" />
+    <circle cx="17.5" cy="10.5" r="1.5" />
+    <circle cx="8.5" cy="7.5" r="1.5" />
+    <circle cx="6.5" cy="12.5" r="1.5" />
+    <path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.3A5.7 5.7 0 0 0 22 9.7C22 5.4 17.5 2 12 2Z" />
+  {:else if name === 'download'}
+    <path d="M12 4v12M6 10l6 6 6-6M4 20h16" />
+  {:else if name === 'upload'}
+    <path d="M12 20V8M6 14l6-6 6 6M4 4h16" />
+  {:else if name === 'database'}
+    <ellipse cx="12" cy="5" rx="8" ry="3" />
+    <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+  {:else if name === 'users'}
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />
+  {:else if name === 'globe'}
+    <circle cx="12" cy="12" r="10" />
+    <path d="M2 12h20M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10Z" />
+  {:else if name === 'lock'}
+    <rect width="18" height="11" x="3" y="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  {:else if name === 'clock'}
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 6v6l4 2" />
+  {:else if name === 'copy'}
+    <rect width="13" height="13" x="9" y="9" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  {:else if name === 'hard-drive'}
+    <path d="M22 12H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z" />
+    <path d="M6 16h.01M10 16h.01" />
+  {:else if name === 'pencil'}
+    <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <path d="m15 5 4 4" />
+  {:else if name === 'memory'}
+    <rect width="20" height="12" x="2" y="6" rx="2" />
+    <path d="M6 10v4M10 10v4M14 10v4M18 10v4M6 18v2M18 18v2" />
   {/if}
 </svg>
 

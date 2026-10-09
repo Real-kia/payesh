@@ -32,3 +32,33 @@ fixtures are then loaded from `src/preview/fixtures.ts`; development mode no
 longer silently substitutes fixtures for an unavailable API. Set
 `VITE_PAYESH_API_BASE` when the API is mounted somewhere other than
 `/api/v1`.
+
+## Structure
+
+- `src/App.svelte` is the shell: navigation, routing, session state, fleet
+  data loading and the shared dialogs.
+- `src/pages/` holds one component per page; `pages/server/` and
+  `pages/settings/` hold the server detail tabs and settings sections. Pages
+  that own their data (logs, settings sections, traffic usage) load it
+  themselves and stop their timers when they close.
+- `src/components/` holds shared pieces such as the sidebar, server table,
+  status pill and package dialog.
+- `src/styles/theme.css` defines every colour, radius, shadow and motion token
+  for the light and dark themes and the accent palettes; `src/styles/ui.css`
+  defines shared primitives (buttons, panels, pills, forms, skeletons).
+  Component styles use only these tokens.
+- `public/theme-init.js` applies the saved appearance before the bundle loads,
+  so the first frame already has the right theme.
+- Views that are not needed for the first screen (server charts, logs,
+  settings sections, the package dialog, install progress) are loaded on
+  demand through the `lazy` table in `App.svelte`, keeping the initial bundle
+  small. If a chunk cannot be fetched, for example after the dashboard was
+  updated underneath an open tab, the view offers a reload.
+
+Motion is CSS only and kept cheap: entrance and hover effects animate
+`opacity` and `transform`. Only transient states loop (spinners, installs,
+running jobs, followed logs); steady states such as a healthy server stay
+still, and the live indicator pulses once per data refresh, so an idle
+dashboard lets the browser stop drawing frames. Both the operating system's
+reduced-motion setting and Settings → General → Animations → Reduced turn
+motion off.

@@ -1,0 +1,393 @@
+/* --------------------------------------------------------------------------
+   Shared UI primitives: buttons, panels, pills, states, forms, feedback.
+   Page-specific styles live next to their markup.
+   -------------------------------------------------------------------------- */
+
+/* Typography ---------------------------------------------------------------- */
+h1 { margin: 0 0 6px; font-size: 24px; font-weight: 650; letter-spacing: -0.025em; line-height: 1.2; color: var(--ink); }
+h2 { margin: 0 0 4px; font-size: 16px; font-weight: 620; letter-spacing: -0.012em; line-height: 1.3; color: var(--ink); }
+h3 { margin: 22px 0 10px; font-size: 13px; font-weight: 650; letter-spacing: 0.01em; color: var(--ink); }
+.lede { margin: 0; font-size: 14px; color: var(--muted); }
+.eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+
+/* Buttons ------------------------------------------------------------------- */
+.button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--line-strong); }
+.button:active:not(:disabled) { transform: translateY(1px) scale(0.985); }
+.button.small { min-height: 30px; padding: 0 12px; font-size: 12px; gap: 6px; }
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+:root[data-theme='dark'] .button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.button.ghost { background: transparent; color: var(--ink-secondary); box-shadow: none; }
+.button.ghost:hover:not(:disabled) { background: var(--surface-muted); color: var(--ink); }
+.button.danger { background: var(--danger-bg); border-color: transparent; color: var(--danger); box-shadow: none; }
+.button.danger:hover:not(:disabled) { background: var(--danger); color: #fff; border-color: var(--danger); }
+.button.full-width { width: 100%; }
+.button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+.icon-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+}
+.icon-button:hover { color: var(--ink); background: var(--surface-muted); border-color: var(--line-strong); }
+.icon-button:active { transform: scale(0.94); }
+
+.text-button, .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.back-link { margin-bottom: 18px; color: var(--muted); }
+.back-link:hover { color: var(--ink); }
+.back-link svg { transition: transform var(--dur) var(--ease-out); }
+.back-link:hover svg { transform: translateX(-3px); }
+.text-button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.link-button { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* Spinners ------------------------------------------------------------------ */
+.loading-spinner, .version-spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+.loading-spinner { width: 30px; height: 30px; }
+.version-spinner { width: 14px; height: 14px; }
+
+/* Surfaces ------------------------------------------------------------------ */
+.panel {
+  padding: var(--panel-pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.panel + .panel { margin-top: var(--gap); }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.panel-heading h2 { margin: 0; }
+.panel-heading .muted { font-size: 12px; }
+
+/* Status pills -------------------------------------------------------------- */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.status-pill { justify-self: start; }
+.status-pill > span { display: inline-block; }
+.status-pill > span::first-letter { text-transform: uppercase; }
+.status-dot { position: relative; width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: currentColor; }
+.status-pill.healthy, .status-pill.succeeded, .status-pill.complete { background: var(--success-bg); color: var(--success); }
+.status-pill.stale, .status-pill.pending, .status-pill.queued, .status-pill.uncertain { background: var(--warning-bg); color: var(--warning); }
+.status-pill.unreachable, .status-pill.failed, .status-pill.recovery-required { background: var(--danger-bg); color: var(--danger); }
+.status-pill.installing, .status-pill.running { background: var(--info-bg); color: var(--info); }
+.status-pill.disabled, .status-pill.unsupported, .status-pill.cancelled { background: var(--surface-muted); color: var(--muted); }
+/* Only transient states animate continuously. A steady "healthy" dot stays
+   still so a dashboard full of healthy servers lets the browser go idle. */
+.status-pill.installing .status-dot::after,
+.status-pill.running .status-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: ping 2.4s var(--ease-out) infinite;
+}
+.status-pill.installing .status-dot, .status-pill.running .status-dot { animation: breathe 1.6s ease-in-out infinite; }
+.status-pill.failed .status-dot, .status-pill.unreachable .status-dot { box-shadow: 0 0 0 2px var(--danger-bg); }
+
+.live-ping { position: relative; width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--success); }
+/* Pulses once when it appears; re-mount it (e.g. on each data refresh) to pulse again. */
+.live-ping::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.2s var(--ease-out) 2; }
+
+/* Feedback ------------------------------------------------------------------ */
+.notice {
+  position: fixed;
+  z-index: 1100;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 16px 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--success);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  font-size: 13px;
+  animation: slide-in-right var(--dur-slow) var(--ease-spring);
+}
+.notice > :first-child { color: var(--success); flex-shrink: 0; }
+
+.partial-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px var(--page-pad-x) 0;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 13px;
+  animation: rise-in var(--dur) var(--ease-out);
+}
+.partial-warning > span { flex: 1; }
+.form-error { margin: 10px 0 0; color: var(--danger); font-size: 12.5px; }
+.success-text { color: var(--success); }
+.error-text { color: var(--danger); }
+.warning-text { color: var(--warning); }
+
+/* States -------------------------------------------------------------------- */
+.state-panel {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 72px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: center;
+  animation: fade-in var(--dur-slow) var(--ease-out);
+}
+.state-panel h2 { margin: 6px 0 0; }
+.state-panel p { max-width: 52ch; margin: 0; color: var(--muted); }
+.state-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+.state-icon.positive { color: var(--success); background: var(--success-bg); }
+.error-state .state-icon { color: var(--danger); background: var(--danger-bg); }
+.unavailable-panel {
+  display: grid;
+  gap: 6px;
+  padding: 22px 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 13px;
+}
+.unavailable-panel strong { color: var(--ink); }
+.unavailable-panel .button { justify-self: start; margin-top: 6px; }
+.unavailable-panel.large { padding: 48px 24px; text-align: center; justify-items: center; }
+
+/* Skeleton placeholders: one cheap gradient sweep per element. */
+.skeleton {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface-muted) 25%, var(--surface-hover) 37%, var(--surface-muted) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+:root[data-theme='dark'] .skeleton { background-image: linear-gradient(90deg, var(--surface-muted) 25%, var(--line) 37%, var(--surface-muted) 63%); }
+
+/* Progress ------------------------------------------------------------------ */
+.progress, .job-progress {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+}
+.progress span, .job-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, var(--blue)));
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* Tabs ---------------------------------------------------------------------- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.tabs button {
+  position: relative;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 550;
+  transition: color var(--transition-fast);
+}
+.tabs button::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform var(--dur) var(--ease-out);
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.active { color: var(--ink); font-weight: 650; }
+.tabs button.active::after { transform: scaleX(1); }
+
+/* Segmented control --------------------------------------------------------- */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  transition: background-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.segmented button:hover { color: var(--ink); }
+.segmented button[aria-pressed='true'], .segmented button.active {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Forms --------------------------------------------------------------------- */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 18px;
+  margin: 18px 0;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink);
+}
+.form-grid label:first-child { grid-column: 1 / -1; }
+.form-grid input, .form-grid textarea, .form-grid select { width: 100%; padding: 9px 12px; }
+.form-grid small { color: var(--muted); font-size: 11.5px; font-weight: 400; }
+.form-grid label > span > small { color: var(--muted); font-weight: 400; }
+.form-wide { grid-column: 1 / -1; }
+.setup-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.settings-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 10px; margin-top: 16px; }
+.job-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* Key/value rows ------------------------------------------------------------ */
+.settings-meta-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  margin: 14px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.meta-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); }
+.meta-row > :last-child { color: var(--ink); text-align: right; }
+
+/* Legend & chart helpers ---------------------------------------------------- */
+.legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.legend-dot.teal, .legend-dot.accent { background: var(--accent); }
+.legend-dot.purple { background: var(--purple); }
+.legend-dot.blue { background: var(--blue); }
+
+/* Entrance motion ------------------------------------------------------------
+   .stagger children rise in one after another (set --i per child). */
+.stagger > * { animation: rise-in var(--dur-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms); }
+
+@media (max-width: 640px) {
+  .button, .icon-button { min-height: 40px; }
+  .icon-button { width: 40px; height: 40px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .meta-row { flex-wrap: wrap; overflow-wrap: anywhere; }
+  .notice { left: 16px; right: 16px; bottom: 16px; max-width: none; }
+}
+
+/* Section headings with an icon (settings and detail panels) ---------------- */
+.panel-heading .title { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.panel-heading .title > div { display: grid; gap: 2px; min-width: 0; }
+.section-icon { display: grid; flex-shrink: 0; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); background: var(--accent-bg); color: var(--accent); }

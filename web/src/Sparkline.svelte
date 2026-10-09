@@ -1,5 +1,15 @@
+<script lang="ts" module>
+  let instance = 0;
+</script>
+
 <script lang="ts">
   let { tone, values = [] }: { tone: 'teal' | 'purple' | 'blue'; values?: Array<number | null> } = $props();
+
+  // Each sparkline needs its own gradient id; a shared id breaks when the
+  // first matching <svg> in the document is hidden or removed.
+  const gradientId = `spark-grad-${++instance}`;
+
+  type Point = { x: number; y: number };
 
   function segments(series: Array<number | null>): { line: string; area: string }[] {
     const numeric = series.filter((value): value is number => value !== null && Number.isFinite(value));
@@ -8,15 +18,14 @@
     const max = Math.max(...numeric);
     const span = max - min || 1;
     const output: { line: string; area: string }[] = [];
-    let current: { x: number; y: number }[] = [];
+    let current: Point[] = [];
 
     const flush = () => {
       if (current.length > 1) {
         const line = current.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
         const firstX = current[0].x.toFixed(1);
         const lastX = current[current.length - 1].x.toFixed(1);
-        const area = `${firstX},42 ${line} ${lastX},42`;
-        output.push({ line, area });
+        output.push({ line, area: `${firstX},42 ${line} ${lastX},42` });
       }
       current = [];
     };
@@ -33,32 +42,28 @@
     flush();
     return output;
   }
+
+  const drawn = $derived(segments(values));
 </script>
 
-<svg viewBox="0 0 160 42" preserveAspectRatio="none" aria-hidden="true">
+<svg viewBox="0 0 160 42" preserveAspectRatio="none" aria-hidden="true" class={tone}>
   <defs>
-    <linearGradient id={`grad-${tone}`} x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" class={`grad-stop-0 ${tone}`} />
-      <stop offset="100%" class={`grad-stop-100 ${tone}`} />
+    <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" class="stop-top" />
+      <stop offset="100%" class="stop-bottom" />
     </linearGradient>
   </defs>
-  {#each segments(values) as seg}
-    <polygon points={seg.area} fill={`url(#grad-${tone})`} />
-    <polyline points={seg.line} class={`spark-line ${tone}`} />
+  {#each drawn as seg}
+    <polygon points={seg.area} fill={`url(#${gradientId})`} />
+    <polyline points={seg.line} class="spark-line" />
   {/each}
 </svg>
 
 <style>
-  svg { height: 100%; width: 100%; overflow: visible; }
-  .spark-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-  .teal { stroke: var(--teal); }
-  .purple { stroke: var(--purple); }
-  .blue { stroke: var(--blue); }
-
-  .grad-stop-0.teal { stop-color: var(--teal); stop-opacity: 0.25; }
-  .grad-stop-100.teal { stop-color: var(--teal); stop-opacity: 0.0; }
-  .grad-stop-0.purple { stop-color: var(--purple); stop-opacity: 0.25; }
-  .grad-stop-100.purple { stop-color: var(--purple); stop-opacity: 0.0; }
-  .grad-stop-0.blue { stop-color: var(--blue); stop-opacity: 0.25; }
-  .grad-stop-100.blue { stop-color: var(--blue); stop-opacity: 0.0; }
+  svg { height: 100%; width: 100%; overflow: visible; --spark: var(--accent); }
+  svg.purple { --spark: var(--purple); }
+  svg.blue { --spark: var(--blue); }
+  .spark-line { fill: none; stroke: var(--spark); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .stop-top { stop-color: var(--spark); stop-opacity: 0.28; }
+  .stop-bottom { stop-color: var(--spark); stop-opacity: 0; }
 </style>

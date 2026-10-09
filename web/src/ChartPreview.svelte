@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
+  import { chartColors, gradientFill } from './lib/chart';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
   let { label = 'Resource chart', range = '15m', data, timezone = 'UTC' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string } = $props();
@@ -20,11 +21,9 @@
 
   onMount(() => {
     if (data.coverage === 'unavailable' || data.timestamps.length < 2) return;
-    const styles = getComputedStyle(host);
-    const muted = styles.getPropertyValue('--muted').trim() || '#94a3b8';
-    const line = styles.getPropertyValue('--line').trim() || 'rgba(255, 255, 255, 0.08)';
-    const teal = styles.getPropertyValue('--teal').trim() || '#10b981';
-    const purple = styles.getPropertyValue('--purple').trim() || '#8b5cf6';
+    const { muted, line, surface, read } = chartColors(host);
+    const teal = read('--accent', '#2f6bd8');
+    const purple = read('--purple', '#7a55c7');
     const chartData: uPlot.AlignedData = [data.timestamps, data.cpu, data.memory];
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : `${raw.toFixed(2)}%`;
     plot = new uPlot({
@@ -36,15 +35,15 @@
           stroke: muted,
           space: 70,
           grid: { stroke: line, width: 1 },
-          ticks: { stroke: line, width: 1 },
-          font: '12px Segoe UI, Arial, sans-serif',
+          ticks: { show: false },
+          font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
           values: (_u, values) => values.map((value) => formatClock(Number(value)))
         },
         {
           stroke: muted,
           grid: { stroke: line, width: 1 },
-          ticks: { stroke: line, width: 1 },
-          font: '12px Segoe UI, Arial, sans-serif',
+          ticks: { show: false },
+          font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
           values: (_u, values) => values.map((value) => `${value}%`)
         }
       ],
@@ -53,7 +52,7 @@
         points: {
           size: 7,
           width: 2,
-          fill: '#fff'
+          fill: surface
         }
       },
       series: [
@@ -62,7 +61,7 @@
           label: 'CPU',
           stroke: teal,
           width: 2,
-          fill: 'rgba(16, 185, 129, 0.08)',
+          fill: gradientFill(teal),
           points: { show: false },
           value
         },
@@ -70,7 +69,7 @@
           label: 'Memory',
           stroke: purple,
           width: 2,
-          fill: 'rgba(139, 92, 246, 0.08)',
+          fill: gradientFill(purple),
           points: { show: false },
           value
         }
@@ -86,7 +85,11 @@
 
 <style>
   .chart-host { min-height: 220px; width: 100%; }
-  :global(.uplot) { background: transparent; font-family: inherit; }
-  :global(.uplot .u-axis) { color: var(--muted); font-size: 11px; }
-  :global(.uplot .u-cursor-x), :global(.uplot .u-cursor-y) { border-color: var(--muted); opacity: 0.4; }
+  .chart-host :global(.uplot) { background: transparent; font-family: inherit; }
+  .chart-host :global(.u-axis) { color: var(--muted); }
+  .chart-host :global(.u-cursor-x), .chart-host :global(.u-cursor-y) { border-color: var(--muted); opacity: 0.45; }
+  .chart-host :global(.u-legend) { margin-top: 6px; color: var(--muted); font-size: 12px; }
+  .chart-host :global(.u-legend .u-marker) { width: 9px; height: 9px; border-radius: 50%; }
+  .chart-host :global(.u-legend th) { font-weight: 500; }
+  .chart-host :global(.u-legend .u-value) { color: var(--ink); font-variant-numeric: tabular-nums; }
 </style>

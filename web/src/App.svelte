@@ -1,32 +1,56 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import ProcessTable from './ProcessTable.svelte';
-  import ChartPreview from './ChartPreview.svelte';
-  import Sparkline from './Sparkline.svelte';
-  import TrafficChart from './TrafficChart.svelte';
-  import CircleChart from './CircleChart.svelte';
-  import { networkRates, networkRollupRate, formatNetworkRate } from './network';
+  import { networkRates, networkRollupRate } from './network';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type NodeTransportStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type StorageStatus, type StorageNotification, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
-  import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
-  import { getSavedTimezone, saveTimezone, getAvailableTimezones, formatTimeInTz, formatDateTimeInTz, formatHeartbeatInTz, formatLogTimeInTz } from './timezone';
+  import type { InstallProgressData, InstallStage } from './InstallProgress.svelte';
+  import Sidebar from './components/Sidebar.svelte';
+  import StatusPill from './components/StatusPill.svelte';
+  import ServerTable from './components/ServerTable.svelte';
+  import OverviewPage from './pages/OverviewPage.svelte';
+  import MonitoringPage from './pages/MonitoringPage.svelte';
+  import AlertsPage from './pages/AlertsPage.svelte';
+  import PackagesPage from './pages/PackagesPage.svelte';
+  import JoinCommandPanel from './components/JoinCommandPanel.svelte';
+  import SshCredentialFields from './components/SshCredentialFields.svelte';
+  import CommandPalette, { type Command } from './components/CommandPalette.svelte';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type StorageNotification, type Module, type Server as ApiServer } from './api';
+  import type { DisplayState, PreviewChartData, PreviewServer } from './preview/fixtures';
+  import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
+  import { PREVIEW_MODE } from './lib/env';
+  import { operationKey } from './lib/ops';
+  import { displayAddress, stateLabel, sumNetworkRate } from './lib/format';
+  import { applyAppearance, loadAppearance, resolveTheme, saveAppearance, type Appearance } from './lib/appearance';
+  import type { ConfirmOptions, DialogTone } from './lib/dialogs';
 
-  type Theme = 'light' | 'dark';
   type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'logs' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
   type DetailTab = 'resources' | 'network' | 'packages' | 'processes' | 'logs' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
-  type LogWindow = '1h' | '6h' | '24h' | '7d';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
+  type SettingsSection = 'general' | 'users' | 'updates' | 'tls' | 'storage' | 'notifications';
 
-  // Development builds use the real API by default. Opt into fixtures
-  // explicitly so a local preview can never accidentally mask API failures.
-  const PREVIEW_MODE = import.meta.env.VITE_PAYESH_PREVIEW === 'true';
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   // Plain HTTP to anything but this machine sends the password unencrypted.
   const insecureConnection = typeof window !== 'undefined' && window.location.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const totalTrafficBytes = '1526000000000';
   const totalAllowanceBytes = '2500000000000';
+
+  let appearance: Appearance = loadAppearance();
+  // The resolved scheme; charts are re-created when it changes so they pick
+  // up the new colours.
+  let theme: 'light' | 'dark' = resolveTheme(appearance.mode);
+
+  function setAppearance(next: Appearance) {
+    appearance = next;
+    theme = resolveTheme(next.mode);
+    saveAppearance(next);
+    applyAppearance(next, true);
+  }
+
+  function toggleTheme() {
+    setAppearance({ ...appearance, mode: theme === 'light' ? 'dark' : 'light' });
+  }
 
   let currentTimezone = getSavedTimezone();
   function changeTimezone(tz: string) {
@@ -40,67 +64,21 @@
     );
   }
 
-  let alertsPage = 0;
-  let alertsPageSize = 25;
-  $: totalAlertPages = Math.max(1, Math.ceil(alerts.length / alertsPageSize));
-  $: pagedAlerts = alerts.slice(alertsPage * alertsPageSize, (alertsPage + 1) * alertsPageSize);
-
   let servers: PreviewServer[] = [];
   let displayServers: PreviewServer[] = [];
-  let previewLogEntries: PreviewLogEntry[] = [];
   let activePage: Page = 'overview';
-  let mobileNavOpen = false;
   let selectedServerId = '';
   let detailTab: DetailTab = 'resources';
   let chartRange: ChartRange = '15m';
-  const trafficDefaultEnd = new Date(Math.floor(Date.now() / 3600000) * 3600000);
-  let trafficFrom = new Date(trafficDefaultEnd.getTime() - 86400000).toISOString().slice(0, 16);
-  let trafficTo = trafficDefaultEnd.toISOString().slice(0, 16);
-  let trafficUsage: TrafficUsage | null = null;
-  let trafficUsageBusy = false;
-  let trafficUsageError = '';
-  let trafficUsageServerId = '';
-  let trafficUsageController: AbortController | null = null;
-  $: if (selectedServerId !== trafficUsageServerId) {
-    trafficUsageController?.abort();
-    trafficUsageServerId = selectedServerId;
-    trafficUsage = null;
-    trafficUsageError = '';
-  }
 
-  async function loadTrafficUsage(): Promise<void> {
-    trafficUsage = null;
-    trafficUsageError = '';
-    const from = new Date(trafficFrom + 'Z');
-    const to = new Date(trafficTo + 'Z');
-    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || to <= from || to.getTime() - from.getTime() > 90 * 86400000 || from.getTime() % 3600000 || to.getTime() % 3600000 || to.getTime() > Math.floor(Date.now() / 3600000) * 3600000) {
-      trafficUsageError = 'Choose completed UTC hours, from before to, spanning at most 90 days.';
-      return;
-    }
-    const id = selectedServer.id;
-    const controller = new AbortController();
-    trafficUsageController?.abort();
-    trafficUsageController = controller;
-    trafficUsageBusy = true;
-    const timeout = window.setTimeout(() => controller.abort(), 15000);
-    try {
-      const result = await apiClient.queryTrafficUsage(id, { from: from.toISOString(), to: to.toISOString(), signal: controller.signal });
-      if (trafficUsageController === controller && !controller.signal.aborted && selectedServer.id === id) trafficUsage = result;
-    } catch (error) {
-      if (trafficUsageController === controller && selectedServer.id === id) trafficUsageError = error instanceof ApiError ? error.message : 'Traffic history could not be loaded. Please retry.';
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally {
-      window.clearTimeout(timeout);
-      if (trafficUsageController === controller) trafficUsageBusy = false;
-    }
-  }
-
-  let theme: Theme = initialTheme();
   let previewState: PreviewState = 'loading';
   let previewLoadFailed = false;
   let apiError = '';
   let partialWarning = '';
   let authExpired = false;
+  function focusInput(input: HTMLInputElement) {
+    void tick().then(() => { input.focus(); input.select(); });
+  }
   function focusLogin(input: HTMLInputElement) {
     const focus = () => {
       if (input.isConnected && !document.querySelector('dialog:modal')) input.focus();
@@ -110,126 +88,12 @@
     document.addEventListener('close', focus, true);
     return { destroy: () => document.removeEventListener('close', focus, true) };
   }
-  let logState: PreviewState = 'ready';
-  let logError = '';
-  let logEntries: PreviewLogEntry[] = [];
-  type FleetLogEntry = {
-    id: string;
-    serverId: string;
-    serverName: string;
-    timestamp: string;
-    level: 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
-    text: string;
-    source: string;
-    cursor: string;
-  };
-
-  let fleetLogServerFilter: string = 'all';
-  let fleetLogLevelFilter: 'all' | 'error' | 'warn' | 'info' = 'all';
-  let fleetLogSearchQuery: string = '';
-  let fleetLogWindow: '1h' | '6h' | '24h' | '7d' = '24h';
-  let fleetLogFetchLimit: number = 100;
-  let fleetLogPage: number = 0;
-  let fleetLogPageSize: number = 100;
-  let fleetLogEntries: FleetLogEntry[] = [];
-  let fleetLogState: PreviewState = 'loading';
-  let fleetLogError = '';
-  let fleetLogAbortController: AbortController | null = null;
-
-  $: errorCount = fleetLogEntries.filter((e) => e.level === 'ERROR').length;
-  $: warnCount = fleetLogEntries.filter((e) => e.level === 'WARN').length;
-  $: infoCount = fleetLogEntries.filter((e) => e.level === 'INFO').length;
-
-  $: filteredFleetLogs = fleetLogEntries.filter((entry) => {
-    if (fleetLogLevelFilter === 'error' && entry.level !== 'ERROR') return false;
-    if (fleetLogLevelFilter === 'warn' && entry.level !== 'WARN') return false;
-    if (fleetLogLevelFilter === 'info' && entry.level !== 'INFO') return false;
-    if (fleetLogSearchQuery.trim()) {
-      const q = fleetLogSearchQuery.toLowerCase();
-      if (!entry.text.toLowerCase().includes(q) && !entry.serverName.toLowerCase().includes(q) && !entry.source.toLowerCase().includes(q)) {
-        return false;
-      }
-    }
-    return true;
-  });
-
-  $: totalFleetLogPages = Math.max(1, Math.ceil(filteredFleetLogs.length / fleetLogPageSize));
-  $: if (fleetLogPage >= totalFleetLogPages) {
-    fleetLogPage = Math.max(0, totalFleetLogPages - 1);
-  }
-  let prevFleetLogFilterKey = '';
-  $: {
-    const key = `${fleetLogLevelFilter}:${fleetLogSearchQuery}:${fleetLogServerFilter}:${fleetLogPageSize}`;
-    if (prevFleetLogFilterKey && prevFleetLogFilterKey !== key) {
-      fleetLogPage = 0;
-    }
-    prevFleetLogFilterKey = key;
-  }
-  $: pagedFleetLogs = filteredFleetLogs.slice(
-    fleetLogPage * fleetLogPageSize,
-    (fleetLogPage + 1) * fleetLogPageSize
-  );
   let apiAbortController: AbortController | null = null;
-  let nodeTransportStatus: NodeTransportStatus | null = null;
-  let nodePort = '';
-  let nodePortBusy = false;
-  let nodePortError = '';
-  let nodeTransportLoadError = '';
-  let nodeTransportLoading = false;
-  let nodePortPoll: ReturnType<typeof setTimeout> | null = null;
-  let nodePageCursor = '';
-  let nodePageHistory: string[] = [];
-  let httpsStatus: HTTPSStatus | null = null;
-  let httpsStatusLoading = false;
-  const browserHTTPS = typeof window !== 'undefined' && window.location.protocol === 'https:';
-  let storageStatus: StorageStatus | null = null;
-  $: recoverySnapshotBytes = storageStatus?.recovery_snapshot_bytes ?? 0;
-  $: storageUsageBytes = (storageStatus?.database_bytes ?? 0) + recoverySnapshotBytes;
-  let databaseLimitGB = 1;
-  let samplingSeconds = 15;
-  let pressureSamplingSeconds = 60;
-  let adaptiveSampling = true;
-  let storageNotificationsEnabled = true;
-  let storageBusy = false;
-  let storageError = '';
-  let storageSaved = '';
   let notificationItems: StorageNotification[] = [];
   let notificationError = '';
   let notificationBusy = false;
   $: unreadNotifications = notificationItems.filter(item => !item.read).length;
 
-  async function loadStorageSettings(): Promise<void> {
-    storageBusy = true; storageError = ''; storageSaved = '';
-    try {
-      storageStatus = await apiClient.getStorageSettings();
-      databaseLimitGB = storageStatus.settings.max_database_bytes / 1000000000;
-      samplingSeconds = storageStatus.settings.sample_seconds;
-      pressureSamplingSeconds = storageStatus.settings.pressure_sample_seconds;
-      adaptiveSampling = storageStatus.settings.adaptive_sampling;
-      storageNotificationsEnabled = storageStatus.settings.notifications_enabled;
-    } catch (error) {
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-      storageError = error instanceof ApiError ? error.message : 'Storage settings could not be loaded.';
-    }
-    finally { storageBusy = false; }
-  }
-  async function saveStorageSettings(): Promise<void> {
-    if (!storageStatus) return;
-    storageBusy = true; storageError = ''; storageSaved = '';
-    try {
-      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: storageNotificationsEnabled });
-      storageSaved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
-      showSettingsSavedDialog(
-        'Storage & sampling updated',
-        `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${storageNotificationsEnabled ? 'Enabled' : 'Disabled'}\n\nCollection settings take effect on the next sampling cycle.`
-      );
-      await loadNotifications();
-    } catch (error) {
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-      storageError = error instanceof ApiError ? error.message : 'Storage settings could not be saved.';
-    }
-    finally { storageBusy = false; }
-  }
   async function loadNotifications(): Promise<void> {
     if (notificationBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || document.hidden) return;
     notificationBusy = true; notificationError = '';
@@ -239,19 +103,6 @@
       notificationError = error instanceof ApiError ? error.message : 'Notifications could not be loaded.';
     }
     finally { notificationBusy = false; }
-  }
-  let storageRefreshBusy = false;
-  async function refreshStorageUsage(): Promise<void> {
-    if (PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || activePage !== 'settings' || settingsSection !== 'storage' || storageBusy || storageRefreshBusy || !storageStatus || document.hidden) return;
-    storageRefreshBusy = true;
-    try {
-      const result = await apiClient.getStorageSettings();
-      if (storageStatus && result.settings.revision === storageStatus.settings.revision) storageStatus = { ...storageStatus, database_bytes: result.database_bytes, recovery_snapshot_bytes: result.recovery_snapshot_bytes ?? 0, effective_sample_seconds: result.effective_sample_seconds, settings: { ...storageStatus.settings, pressure_state: result.settings.pressure_state } };
-    } catch (error) {
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-      // Keep the last measurement for other failures; Refresh reports errors.
-    }
-    finally { storageRefreshBusy = false; }
   }
   async function markNotificationsRead(): Promise<void> {
     try {
@@ -264,19 +115,7 @@
       notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.';
     }
   }
-  let settingsSection: 'general' | 'users' | 'updates' | 'tls' | 'storage' | 'notifications' = 'general';
-  let addingUser = false;
-  let userSearch = '';
-  let dashboardPort = '';
-  let portBusy = false;
-  let portError = '';
-  let httpsDomain = '';
-  let httpsEmail = '';
-  let httpsToken = '';
-  let httpsBusy = false;
-  let httpsError = '';
-  let httpsPoll: ReturnType<typeof setTimeout> | null = null;
-  let logAbortController: AbortController | null = null;
+  let settingsSection: SettingsSection = 'general';
   let notice = '';
   let signOutError = '';
   let setupStep = 1;
@@ -298,17 +137,7 @@
   let authError = '';
   let myAccount: Account | null = PREVIEW_MODE ? { username: 'admin', role: 'owner', permission: 'edit' } : null;
   let accounts: Account[] = myAccount ? [myAccount] : [];
-  let accountUsername = '';
-  let accountPassword = '';
-  let accountRole: 'admin' | 'member' = 'member';
-  let accountPermission: 'read' | 'edit' = 'read';
   let accountError = '';
-  let accountBusy = false;
-  let editingAccount = '';
-  let editUsername = '';
-  let editPassword = '';
-  let editRole: 'owner' | 'admin' | 'member' = 'member';
-  let editPermission: 'read' | 'edit' = 'read';
   let setupCompleted = false;
   let latestJob: Job | null = null;
   let activeInstall: InstallProgressData | null = null;
@@ -320,19 +149,12 @@
   let updateStatus: UpdateStatus | null = null;
   let updateCheckBusy = false;
   let updateCheckError = '';
-  const RELEASES_PER_PAGE = 5;
-  let releasePage = 0;
   let updateApplyBusy = false;
   let updateApplyError = '';
   let updateProgress: UpdateProgress | null = null;
   let updatePollTimer: number | undefined;
   let dismissedUpdate = '';
   try { dismissedUpdate = window.localStorage.getItem('payesh-dismissed-update') ?? ''; } catch { /* non-critical */ }
-  $: installedAhead = !!updateStatus && (updateStatus.installed_ahead ?? isNewerVersion(updateStatus.current, updateStatus.latest));
-  $: releaseList = updateStatus?.releases ?? [];
-  $: releasePageCount = Math.max(1, Math.ceil(releaseList.length / RELEASES_PER_PAGE));
-  $: if (releasePage > releasePageCount - 1) releasePage = releasePageCount - 1;
-  $: visibleReleases = releaseList.slice(releasePage * RELEASES_PER_PAGE, (releasePage + 1) * RELEASES_PER_PAGE);
   $: webUpdate = updateProgress?.web_update ?? updateStatus?.web_update ?? null;
   $: webUpdateActive = webUpdate?.state === 'queued' || webUpdate?.state === 'running';
   $: showUpdateBanner = !PREVIEW_MODE && sessionState === 'authenticated' && !!updateStatus?.update_available && dismissedUpdate !== updateStatus.latest && !webUpdateActive;
@@ -345,13 +167,6 @@
   let installKeyPassphrase = '';
   let installFingerprint = '';
   let installBusy = false;
-  function chooseInstallAuth(method: 'password' | 'key'): void {
-    if (installAuthMethod === method) return;
-    installAuthMethod = method;
-    installPassword = '';
-    installKey = '';
-    installKeyPassphrase = '';
-  }
   let nodeControlPort = '22';
   let nodeControlUser = 'root';
   let nodeControlPassword = '';
@@ -363,24 +178,20 @@
   let labelBusy = false;
   let newServerName = '';
   let createServerBusy = false;
-  let joinName = '';
-  let joinBusy = false;
-  let joinError = '';
-  let joinCommand = '';
-  let joinExpiresAt = '';
-  let joinCopied = false;
   let deleteServerBusy = false;
   let modules: Module[] = [];
   let modulesState: PreviewState = 'loading';
   let modulesError = '';
+  // Server the Packages page should target (set when coming from a server).
   let packageServerId = '';
-  let moduleInstallations: ModuleInstallation[] = [];
-  let packageBusy = '';
   let packageDialog: Module | null = null;
-  let packageStep: 'target' | 'source' | 'progress' = 'target';
-  let packageStatusBusy = false;
-  let packageStatusFailed = false;
-  let packageError = '';
+  let packageDialogServerId = '';
+  // Bumped after a package changes so open package lists reload.
+  let packagesRefreshKey = 0;
+  // The server Packages tab shows catalog names and versions; fetch the
+  // (locally cached) catalog the first time it is needed.
+  let catalogRequested = false;
+  $: if (!PREVIEW_MODE && activePage === 'server' && detailTab === 'packages' && !catalogRequested) { catalogRequested = true; void loadModules(); }
   let alerts: AlertState[] = [];
   let alertsState: PreviewState = 'loading';
   let alertsError = '';
@@ -389,7 +200,7 @@
     open: boolean;
     title: string;
     description: string;
-    tone: 'danger' | 'warning' | 'info' | 'primary';
+    tone: DialogTone;
     icon: string;
     confirmText: string;
     cancelText: string;
@@ -411,6 +222,24 @@
     action: undefined
   };
 
+
+  // Views that are not needed for the first screen load on demand, which keeps
+  // the initial bundle small (charts pull in uPlot, for example).
+  const lazy = {
+    ResourcesPanel: () => import('./pages/server/ResourcesPanel.svelte'),
+    NetworkPanel: () => import('./pages/server/NetworkPanel.svelte'),
+    PackagesPanel: () => import('./pages/server/PackagesPanel.svelte'),
+    LogsPage: () => import('./pages/LogsPage.svelte'),
+    GeneralSettings: () => import('./pages/settings/GeneralSettings.svelte'),
+    StorageSettings: () => import('./pages/settings/StorageSettings.svelte'),
+    NotificationsSettings: () => import('./pages/settings/NotificationsSettings.svelte'),
+    UsersSettings: () => import('./pages/settings/UsersSettings.svelte'),
+    UpdatesSettings: () => import('./pages/settings/UpdatesSettings.svelte'),
+    TlsSettings: () => import('./pages/settings/TlsSettings.svelte'),
+    PackageDialog: () => import('./components/PackageDialog.svelte'),
+    InstallProgress: () => import('./InstallProgress.svelte'),
+  };
+
   const ACTIVE_INSTALL_STORAGE_KEY = 'payesh_active_install';
 
   function saveActiveInstall(data: InstallProgressData | null) {
@@ -423,16 +252,7 @@
     }
   }
 
-  function openConfirmModal(opts: {
-    title: string;
-    description: string;
-    tone?: 'danger' | 'warning' | 'info' | 'primary';
-    icon?: string;
-    confirmText?: string;
-    cancelText?: string;
-    hideCancel?: boolean;
-    action: () => Promise<void> | void;
-  }) {
+  function openConfirmModal(opts: ConfirmOptions) {
     modalDialog = {
       open: true,
       title: opts.title,
@@ -546,9 +366,35 @@
 
   $: selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0];
   $: displayServers = servers;
-  $: healthyCount = displayServers.filter((server) => server.displayState === 'healthy').length;
+  $: hubVersion = servers.find((server) => server.role !== 'node')?.version ?? '';
   $: attentionCount = displayServers.filter((server) => server.displayState !== 'healthy').length;
-  $: connectedCount = displayServers.filter((server) => server.connectionState === 'connected').length;
+  const pageTitles: Record<Page, string> = { overview: 'Overview', monitoring: 'Server monitoring', servers: 'Servers', server: 'Server', alerts: 'Alerts', logs: 'Logs', packages: 'Packages', settings: 'Settings', 'add-server': 'Add server', 'install-progress': 'Installation', onboarding: 'Setup' };
+  $: pageTitle = activePage === 'server' ? (selectedServer?.name || 'Server details') : activePage === 'install-progress' && activeInstall ? activeInstall.serverName : pageTitles[activePage];
+  const settingsSections: { id: SettingsSection; label: string; icon: string }[] = [
+    { id: 'general', label: 'General', icon: 'settings' },
+    { id: 'tls', label: 'SSL / TLS', icon: 'lock' },
+    { id: 'updates', label: 'Versions & updates', icon: 'download' },
+    { id: 'storage', label: 'Storage & sampling', icon: 'database' },
+    { id: 'notifications', label: 'Notifications', icon: 'bell' },
+    { id: 'users', label: 'User management', icon: 'users' }
+  ];
+
+  let paletteOpen = false;
+  $: paletteCommands = [
+    ...(['overview', 'monitoring', 'servers', 'alerts', 'logs', 'packages', 'settings'] as Page[]).map((page): Command => ({ id: `page:${page}`, label: pageTitles[page], icon: page === 'monitoring' ? 'activity' : page === 'logs' ? 'terminal' : page, group: 'Pages', run: () => navigate(page) })),
+    ...settingsSections.filter((section) => section.id !== 'users' || myAccount?.role === 'owner').map((section): Command => ({ id: `settings:${section.id}`, label: section.label, icon: section.icon, group: 'Settings', keywords: section.id === 'general' ? 'appearance theme accent timezone density animations' : section.id, run: () => openSettings(section.id) })),
+    ...(myAccount?.permission !== 'read' ? [{ id: 'action:add-server', label: 'Add a server', icon: 'plus', group: 'Actions', keywords: 'install ssh join new node', run: () => openAddServer() } satisfies Command] : []),
+    { id: 'action:theme', label: `Switch to ${theme === 'light' ? 'dark' : 'light'} theme`, icon: theme === 'light' ? 'moon' : 'sun', group: 'Actions', keywords: 'theme dark light mode appearance', run: toggleTheme } satisfies Command,
+    ...(!PREVIEW_MODE && sessionState === 'authenticated' ? [{ id: 'action:sign-out', label: 'Sign out', icon: 'log-out', group: 'Actions', keywords: 'logout exit', run: () => promptSignOut() } satisfies Command] : [])
+  ];
+
+  function onGlobalKey(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+      if (!PREVIEW_MODE && authExpired) return;
+      event.preventDefault();
+      paletteOpen = !paletteOpen;
+    }
+  }
   $: fleetDownload = sumNetworkRate(displayServers, 'download');
   $: fleetUpload = sumNetworkRate(displayServers, 'upload');
   $: firingAlertCount = alerts.filter((alert) => alert.state === 'firing').length;
@@ -559,21 +405,9 @@
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
   $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
-  function initialTheme(): Theme {
-    if (typeof window === 'undefined') return 'dark';
-    const saved = window.localStorage.getItem('payesh-theme');
-    if (saved === 'light' || saved === 'dark') return saved;
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-
-  function applyTheme(persist = false) {
-    if (typeof document !== 'undefined') document.documentElement.dataset.theme = theme;
-    if (persist && typeof window !== 'undefined') window.localStorage.setItem('payesh-theme', theme);
-  }
-
   function saveUiState() {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('payesh-ui-state', JSON.stringify({ activePage, selectedServerId, detailTab }));
+    try { window.localStorage.setItem('payesh-ui-state', JSON.stringify({ activePage, selectedServerId, detailTab })); } catch { /* non-critical */ }
   }
 
   function pageLocation(page: Page, serverId = selectedServerId): string {
@@ -608,28 +442,33 @@
     installKeyPassphrase = '';
     installFingerprint = '';
     jobError = '';
-    joinName = ''; joinError = ''; joinCommand = ''; joinExpiresAt = ''; joinCopied = false;
     if (!activeInstall || !['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)) {
       saveActiveInstall(null);
     }
     navigate('add-server');
   }
 
-  function navigate(page: Page, serverId = selectedServerId) {
-    const fromMobileMenu = mobileNavOpen;
-    mobileNavOpen = false;
+  function navigate(page: Page, serverId = selectedServerId, fromMobileMenu = false) {
+    const changed = page !== activePage || serverId !== selectedServerId;
     activePage = page;
     if (fromMobileMenu) void tick().then(() => document.querySelector<HTMLElement>('main h1')?.focus());
     selectedServerId = serverId;
     saveUiState();
     if (typeof window !== 'undefined') {
       window.history.pushState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
+      if (changed) window.scrollTo({ top: 0 });
     }
     if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
-    if (page === 'logs') void loadFleetLogs();
-    if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); if (settingsSection === 'storage') void loadStorageSettings(); void loadNotifications(); }
+    if (page === 'settings' && !PREVIEW_MODE) { void loadAccounts(); void checkLatestUpdate(); void loadNotifications(); }
+  }
+
+  function openSettings(section: SettingsSection) {
+    settingsSection = section;
+    if (section === 'updates' && !PREVIEW_MODE) void checkLatestUpdate();
+    if (section === 'notifications') void loadNotifications();
+    if (activePage !== 'settings') navigate('settings');
   }
 
   async function checkLatestUpdate(): Promise<void> {
@@ -660,20 +499,28 @@
   }
 
   function openUpdateSettings(): void {
-    settingsSection = 'updates';
-    navigate('settings');
+    openSettings('updates');
   }
 
-  async function startWebUpdate(target: string): Promise<void> {
-    if (updateApplyBusy || webUpdateActive) return;
-    if (!window.confirm(`Update Payesh to v${target}? The dashboard will restart and be unavailable for a short time.`)) return;
-    updateApplyBusy = true; updateApplyError = '';
-    try {
-      const state = await apiClient.applyWebUpdate(target);
-      updateProgress = { current: updateStatus?.current ?? '', web_update_supported: true, web_update: state };
-      pollUpdateProgress(target);
-    } catch (error) { updateApplyError = error instanceof Error ? error.message : 'Could not start the update.'; }
-    finally { updateApplyBusy = false; }
+  function startWebUpdate(target: string): void {
+    if (updateApplyBusy || webUpdateActive || !target) return;
+    openConfirmModal({
+      title: `Update Payesh to v${target}?`,
+      description: 'The dashboard will restart and be unavailable for a short time. It reloads automatically when the update finishes.',
+      tone: 'primary',
+      icon: 'refresh',
+      confirmText: 'Start update',
+      cancelText: 'Not now',
+      action: async () => {
+        updateApplyBusy = true; updateApplyError = '';
+        try {
+          const state = await apiClient.applyWebUpdate(target);
+          updateProgress = { current: updateStatus?.current ?? '', web_update_supported: true, web_update: state };
+          pollUpdateProgress(target);
+        } catch (error) { updateApplyError = error instanceof Error ? error.message : 'Could not start the update.'; }
+        finally { updateApplyBusy = false; }
+      }
+    });
   }
 
   function pollUpdateProgress(target: string): void {
@@ -708,195 +555,9 @@
     } catch (error) { accountError = error instanceof Error ? error.message : 'Could not load accounts.'; }
   }
 
-  async function saveAccount(): Promise<void> {
-    if (!accountUsername.trim() || !accountPassword || accountBusy) return;
-    accountBusy = true; accountError = '';
-    try {
-      const createdUser = accountUsername.trim();
-      await apiClient.createAccount({ username: createdUser, password: accountPassword, role: accountRole, permission: accountPermission });
-      accountUsername = ''; accountPassword = ''; addingUser = false;
-      await loadAccounts(); showNotice('User added.');
-      showSettingsSavedDialog('User created', `User "${createdUser}" was created with role "${accountRole}" and ${accountPermission === 'read' ? 'read-only' : 'read/write'} access.`);
-    } catch (error) { accountError = error instanceof Error ? error.message : 'Could not add account.'; }
-    finally { accountBusy = false; }
-  }
-
-  function startEditingAccount(account: Account): void {
-    editingAccount = account.username; editUsername = account.username; editPassword = '';
-    editRole = account.role; editPermission = account.permission; accountError = '';
-  }
-
-  async function editAccount(account: Account): Promise<void> {
-    if (accountBusy) return;
-    accountBusy = true;
-    accountError = '';
-    try {
-      await apiClient.updateAccount(account.username, { username: editUsername.trim(), ...(editPassword ? { password: editPassword } : {}), ...(account.role === 'owner' ? {} : { role: editRole, permission: editPermission }) });
-      const changedOwnPassword = account.role === 'owner' && editPassword !== '';
-      const updatedUser = editUsername.trim();
-      editingAccount = ''; editPassword = '';
-      if (changedOwnPassword) {
-        sessionState = 'signed-out'; authExpired = true; navigate('overview');
-        showSettingsSavedDialog('Password changed', 'Your account password has been changed. Please sign in again.');
-      } else {
-        await loadAccounts();
-        showNotice('User updated.');
-        showSettingsSavedDialog('User updated', `User "${updatedUser}" has been updated successfully.`);
-      }
-    } catch (error) { accountError = error instanceof Error ? error.message : 'Could not update account.'; }
-    finally { accountBusy = false; }
-  }
-
-  function removeAccount(account: Account): void {
-    openConfirmModal({ title: `Remove ${account.username}?`, description: 'Their active sessions will be revoked.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Remove user', cancelText: 'Cancel', action: async () => {
-      accountError = '';
-      try {
-        await apiClient.deleteAccount(account.username);
-        await loadAccounts();
-        showNotice('User removed.');
-        showSettingsSavedDialog('User removed', `User "${account.username}" has been removed from the fleet.`);
-      }
-      catch (error) { accountError = error instanceof Error ? error.message : 'Could not remove user.'; }
-    } });
-  }
-
-  async function loadNodeTransport(): Promise<void> {
-    if (nodeTransportLoading) return;
-    if (nodePortPoll) { clearTimeout(nodePortPoll); nodePortPoll = null; }
-    nodeTransportLoading = true;
-    let keepPolling = true;
-    try {
-      const previouslyObservedPort = nodeTransportStatus?.port;
-      nodeTransportStatus = await apiClient.getNodeTransportSettings({ cursor: nodePageCursor || undefined });
-      nodeTransportLoadError = '';
-      if (!nodePort || nodePort === previouslyObservedPort) nodePort = nodeTransportStatus.port;
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 400 && nodePageCursor) {
-        nodePageCursor = ''; nodePageHistory = [];
-        nodeTransportLoadError = 'The node list changed. Reloading the first page.';
-      } else if (error instanceof ApiError && error.status === 404) {
-        nodeTransportLoadError = 'This hub version does not support separate node port settings. Update the hub to use this feature.';
-        keepPolling = false;
-      } else {
-        nodeTransportLoadError = error instanceof Error ? error.message : 'Could not read node transport settings.';
-        if (error instanceof ApiError && error.authExpired) { authExpired = true; keepPolling = false; }
-      }
-    } finally {
-      nodeTransportLoading = false;
-      if (keepPolling && activePage === 'settings' && settingsSection === 'tls') {
-        nodePortPoll = setTimeout(() => void loadNodeTransport(), nodeTransportLoadError ? 10000 : 5000);
-      }
-    }
-  }
-
-  async function saveNodePort(): Promise<void> {
-    if (nodePortBusy || !nodeTransportStatus || Number(nodePort) === Number(nodeTransportStatus.port)) return;
-    nodePortBusy = true; nodePortError = '';
-    try {
-      nodeTransportStatus = await apiClient.setNodeTransportPort(Number(nodePort));
-      nodePort = nodeTransportStatus.port;
-      nodePageCursor = ''; nodePageHistory = [];
-      showNotice('Node port opened. Nodes will verify the new connection and migrate automatically.');
-      showSettingsSavedDialog('Node port updated', `Node transport port updated to ${nodePort}. Connected nodes will migrate to this port automatically.`);
-    } catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not change node port.'; }
-    finally { nodePortBusy = false; }
-  }
-
-  async function changeNodePage(next: boolean): Promise<void> {
-    if (nodeTransportLoading || nodePortBusy) return;
-    if (next && nodeTransportStatus?.next_cursor) {
-      nodePageHistory = [...nodePageHistory, nodePageCursor];
-      nodePageCursor = nodeTransportStatus.next_cursor;
-    } else if (!next && nodePageHistory.length) {
-      nodePageCursor = nodePageHistory.at(-1)!;
-      nodePageHistory = nodePageHistory.slice(0, -1);
-    } else return;
-    await loadNodeTransport();
-  }
-
-  function retireNodePorts(): void {
-    openConfirmModal({ title: 'Retire previous node endpoints?', description: 'All enrolled nodes have connected to the current node port. Previous node ports and node access through the dashboard will be disabled.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Retire endpoints', cancelText: 'Cancel', action: async () => {
-      nodePortBusy = true; nodePortError = '';
-      try {
-        nodeTransportStatus = await apiClient.retireNodeTransportPorts();
-        nodePageCursor = ''; nodePageHistory = [];
-        showNotice('Previous node endpoints retired.');
-        showSettingsSavedDialog('Endpoints retired', 'Previous node transport endpoints have been retired.');
-      }
-      catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not retire previous endpoints.'; }
-      finally { nodePortBusy = false; }
-    } });
-  }
-
-  async function loadHTTPS(): Promise<void> {
-    void loadNodeTransport();
-    if (httpsPoll) { clearTimeout(httpsPoll); httpsPoll = null; }
-    httpsStatusLoading = true; httpsError = '';
-    try {
-      httpsStatus = await apiClient.getHTTPSSettings();
-      if (!dashboardPort) dashboardPort = httpsStatus.https_port ?? '8787';
-      if (!httpsDomain && httpsStatus.domain) httpsDomain = httpsStatus.domain;
-      if (httpsStatus.state === 'pending' && activePage === 'settings') httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
-      else httpsBusy = false;
-      // HTTPS just came up while this page is on plain HTTP: move to it. The
-      // session cookie belongs to this address, so the user signs in again.
-      if (httpsStatus.state === 'active' && insecureConnection && httpsStatus.domain) {
-        notice = `HTTPS is ready. Opening ${httpsURL(httpsStatus)} …`;
-        setTimeout(() => { window.location.href = httpsURL(httpsStatus!) + window.location.pathname; }, 1500);
-      }
-    } catch (error) {
-      httpsBusy = false;
-      httpsError = error instanceof Error ? error.message : 'Could not read HTTPS settings.';
-    } finally { httpsStatusLoading = false; }
-  }
-
-  async function saveHTTPS(): Promise<void> {
-    if (PREVIEW_MODE || httpsBusy) return;
-    httpsError = '';
-    httpsBusy = true;
-    try {
-      httpsStatus = await apiClient.setHTTPSDomain({ domain: httpsDomain.trim(), email: httpsEmail.trim() || undefined, cloudflare_api_token: httpsToken.trim() || undefined });
-      showSettingsSavedDialog('SSL / TLS updated', `Domain "${httpsDomain.trim()}" has been configured for HTTPS.\n\nAutomatic certificate request and validation have started.`);
-      httpsToken = '';
-      httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
-    } catch (error) {
-      httpsBusy = false;
-      httpsError = error instanceof Error ? error.message : 'Could not start the certificate request.';
-    }
-  }
-
-  async function saveDashboardPort(): Promise<void> {
-    portBusy = true; portError = '';
-    try {
-      httpsStatus = await apiClient.setDashboardPort(Number(dashboardPort));
-      const target = new URL(window.location.href);
-      target.port = dashboardPort;
-      if (httpsStatus.state === 'active' && httpsStatus.domain) { target.hostname = httpsStatus.domain; target.protocol = 'https:'; }
-      window.location.assign(target.toString());
-    } catch (error) { portError = error instanceof Error ? error.message : 'Could not change port.'; }
-    finally { portBusy = false; }
-  }
-
-  function httpsURL(status: HTTPSStatus): string {
-    const port = status.https_port && status.https_port !== '443' ? `:${status.https_port}` : '';
-    return `https://${status.domain}${port}`;
-  }
-
-  function promptRemoveHTTPS() {
-    openConfirmModal({
-      title: 'Remove domain?',
-      description: 'The certificate is deleted and the dashboard goes back to plain HTTP. Logins will no longer be encrypted, and nodes using this certificate will lose their TLS connection.',
-      tone: 'warning',
-      icon: 'alert-triangle',
-      confirmText: 'Remove domain',
-      cancelText: 'Keep HTTPS',
-      action: async () => {
-        await apiClient.removeHTTPSDomain();
-        httpsDomain = ''; httpsEmail = ''; httpsToken = '';
-        await loadHTTPS();
-        showSettingsSavedDialog('Domain removed', 'Custom domain and SSL certificate have been removed. The dashboard returned to default HTTP.');
-      }
-    });
+  function handleOwnPasswordChanged(): void {
+    sessionState = 'signed-out'; authExpired = true; navigate('overview');
+    showSettingsSavedDialog('Password changed', 'Your account password has been changed. Please sign in again.');
   }
 
   async function loadModules(force = false): Promise<void> {
@@ -934,315 +595,9 @@
     }
   }
 
-  type PackageInstallStep = {
-    id: string;
-    name: string;
-    status: 'pending' | 'running' | 'done' | 'failed';
-  };
-
-  type PackageInstallLog = {
-    time: string;
-    text: string;
-    level: 'info' | 'warn' | 'error';
-  };
-
-  let packageInstallProgress = 0;
-  let packageInstallStage: 'idle' | 'running' | 'success' | 'error' = 'idle';
-  let packageInstallSteps: PackageInstallStep[] = [];
-  let packageInstallLogs: PackageInstallLog[] = [];
-  let serverInstalledModules: ModuleInstallation[] = [];
-  let serverPackagesLoading = false;
-  let serverPackagesError = '';
-
-  async function loadServerModules(): Promise<void> {
-    if (!packageServerId || packageServerId === 'all') { moduleInstallations = []; return; }
-    packageError = '';
-    packageStatusBusy = true; packageStatusFailed = false;
-    moduleInstallations = [];
-    const target = packageServerId;
-
-    if (PREVIEW_MODE) {
-      moduleInstallations = [
-        { server_id: target, module_id: 'port-traffic', version: '0.1.0', state: 'enabled', revision: '1', updated_at: new Date().toISOString() },
-        { server_id: target, module_id: 'process-monitoring', version: '1.0.0', state: 'installed-disabled', revision: '1', updated_at: new Date().toISOString() },
-      ];
-      packageStatusBusy = false;
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 10000);
-    try {
-      const result = await apiClient.listServerModules(target, { signal: controller.signal });
-      if (target === packageServerId) moduleInstallations = result.items;
-    } catch (error) {
-      if (target !== packageServerId) return;
-      packageStatusFailed = true;
-      packageError = error instanceof DOMException && error.name === 'AbortError' ? 'Package status took too long to load. The cached catalog is still available.' : error instanceof Error ? error.message : 'Unable to load package state.';
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally {
-      window.clearTimeout(timeout);
-      if (target === packageServerId) packageStatusBusy = false;
-    }
-  }
-
-  async function loadSelectedServerPackages(serverId: string): Promise<void> {
-    if (!serverId) return;
-    serverPackagesLoading = true;
-    serverPackagesError = '';
-    if (PREVIEW_MODE) {
-      serverInstalledModules = [
-        { server_id: serverId, module_id: 'port-traffic', version: '0.1.0', state: 'enabled', revision: '2', updated_at: new Date(Date.now() - 3600000).toISOString() },
-        { server_id: serverId, module_id: 'process-monitoring', version: '1.0.0', state: 'installed-disabled', revision: '1', updated_at: new Date(Date.now() - 86400000).toISOString() }
-      ];
-      serverPackagesLoading = false;
-      return;
-    }
-    try {
-      const result = await apiClient.listServerModules(serverId);
-      serverInstalledModules = result.items;
-    } catch (err) {
-      serverPackagesError = err instanceof Error ? err.message : 'Unable to load installed packages.';
-    } finally {
-      serverPackagesLoading = false;
-    }
-  }
-
-  $: if (activePage === 'server' && selectedServer && detailTab === 'packages') {
-    void loadSelectedServerPackages(selectedServer.id);
-  }
-
-  function openPackageDialog(module: Module, preselectedServerId?: string) {
+  function openPackageDialog(module: Module, serverId = packageServerId) {
     packageDialog = module;
-    packageStep = 'target';
-    packageError = '';
-    packageSource = 'github';
-    packageLocation = '';
-    packageVersion = '';
-    packageManifest = '';
-    packageSignature = '';
-    packageInstallProgress = 0;
-    packageInstallStage = 'idle';
-    packageInstallSteps = [];
-    packageInstallLogs = [];
-
-    if (preselectedServerId) {
-      packageServerId = preselectedServerId;
-    } else {
-      const master = servers.find((s) => s.role === 'standalone' || s.role === 'hub') ?? servers[0];
-      packageServerId = master ? master.id : 'all';
-    }
-    moduleInstallations = [];
-    if (packageServerId && packageServerId !== 'all') {
-      void loadServerModules();
-    }
-  }
-
-  function moduleState(moduleId: string): ModuleInstallation | undefined {
-    return moduleInstallations.find((item) => item.module_id === moduleId);
-  }
-
-  $: isTargetAlreadyInstalled = packageServerId !== 'all' && (
-    moduleState(packageDialog?.id ?? '')?.state === 'enabled' ||
-    moduleState(packageDialog?.id ?? '')?.state === 'installed-disabled'
-  );
-
-  let packageSource: PackageSource['kind'] = 'github';
-  let packageLocation = '';
-  let packageVersion = '';
-  let packageManifest = '';
-  let packageSignature = '';
-
-  async function startPackageInstall(module: Module): Promise<void> {
-    if (!packageServerId || packageBusy) return;
-    packageBusy = `${module.id}:install`;
-    packageStep = 'progress';
-    packageInstallStage = 'running';
-    packageInstallProgress = 10;
-    packageInstallLogs = [];
-    packageError = '';
-
-    const addLog = (text: string, level: 'info' | 'warn' | 'error' = 'info') => {
-      const time = new Date().toTimeString().slice(0, 8);
-      packageInstallLogs = [...packageInstallLogs, { time, text, level }];
-    };
-
-    const targetServers = packageServerId === 'all'
-      ? servers
-      : servers.filter((s) => s.id === packageServerId);
-
-    if (targetServers.length === 0) {
-      packageInstallStage = 'error';
-      packageError = 'No target server available.';
-      packageBusy = '';
-      return;
-    }
-
-    const releaseVer = packageVersion.trim() || module.release || module.latest_version || '0.1.0';
-    const isAll = packageServerId === 'all';
-    addLog(`Starting package install/update for ${module.name} (v${releaseVer})...`);
-    addLog(`Target: ${isAll ? `All nodes (${targetServers.length} servers)` : targetServers[0].name}`);
-
-    packageInstallSteps = [
-      { id: 'step-arch', name: 'Target Eligibility & Arch Check', status: 'running' },
-      { id: 'step-manifest', name: 'Manifest & Signature Verification', status: 'pending' },
-      { id: 'step-download', name: 'Archive Download & Staging', status: 'pending' },
-      { id: 'step-activate', name: 'Health Check & Activation', status: 'pending' },
-    ];
-
-    try {
-      // Step 1: Arch check
-      await new Promise((r) => setTimeout(r, 400));
-      for (const srv of targetServers) {
-        addLog(`Verified ${srv.name} (${srv.platform || 'linux'} ${srv.architecture || 'amd64'}) - Connected`);
-      }
-      packageInstallSteps[0].status = 'done';
-      packageInstallSteps[1].status = 'running';
-      packageInstallProgress = 35;
-
-      // Step 2: Manifest & Signature
-      await new Promise((r) => setTimeout(r, 450));
-      addLog(`Loading signed manifest from ${packageSource}...`);
-      addLog(`Cryptographic signature verified against official Payesh registry.`);
-      packageInstallSteps[1].status = 'done';
-      packageInstallSteps[2].status = 'running';
-      packageInstallProgress = 65;
-
-      // Step 3 & 4: Download & Activate
-      const source: PackageSource = {
-        kind: packageSource,
-        location: packageLocation.trim() || (packageSource === 'github' ? module.repository || 'Real-kia/payesh' : '')
-      };
-      if (packageSource === 'github') source.version = releaseVer;
-      if (packageSource !== 'github' && packageManifest.trim()) source.manifest_location = packageManifest.trim();
-      if (packageSource !== 'github' && packageSignature.trim()) source.signature_location = packageSignature.trim();
-
-      addLog(`Downloading package payload...`);
-      await new Promise((r) => setTimeout(r, 400));
-      packageInstallSteps[2].status = 'done';
-      packageInstallSteps[3].status = 'running';
-      packageInstallProgress = 85;
-
-      for (let i = 0; i < targetServers.length; i++) {
-        const srv = targetServers[i];
-        const srvCurrent = moduleState(module.id);
-        const isUpdate = srvCurrent && (srvCurrent.state === 'enabled' || srvCurrent.state === 'installed-disabled');
-        addLog(`[${i + 1}/${targetServers.length}] ${isUpdate ? 'Updating' : 'Installing'} on ${srv.name}...`);
-
-        if (!PREVIEW_MODE) {
-          try {
-            const currentRevision = srvCurrent?.revision ?? '0';
-            const action = isUpdate ? 'update' : 'install';
-            let res: ModuleInstallation;
-            try {
-              res = await apiClient.installModuleSource(srv.id, module.id, source, currentRevision, operationKey(`pkg-${action}`));
-            } catch (err) {
-              if (isUpdate) {
-                res = await apiClient.moduleAction(srv.id, module.id, 'enable', currentRevision, operationKey('pkg-enable'));
-              } else {
-                throw err;
-              }
-            }
-            addLog(`[${i + 1}/${targetServers.length}] Successfully ${isUpdate ? 'updated' : 'installed'} on ${srv.name} (${res.state})`);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Execution failed';
-            addLog(`[${i + 1}/${targetServers.length}] ${srv.name}: ${msg}`, 'warn');
-          }
-        } else {
-          await new Promise((r) => setTimeout(r, 350));
-          addLog(`[${i + 1}/${targetServers.length}] Health check passed on ${srv.name}. Service active.`);
-        }
-      }
-
-      packageInstallSteps[3].status = 'done';
-      packageInstallProgress = 100;
-      packageInstallStage = 'success';
-      addLog(`Package ${module.name} v${releaseVer} installation complete!`, 'info');
-
-      // Add to local fleetLogEntries so it appears in Logs page immediately
-      fleetLogEntries = [
-        {
-          id: `pkg-log-${Date.now()}`,
-          serverId: targetServers[0].id,
-          serverName: isAll ? 'All Nodes' : targetServers[0].name,
-          timestamp: new Date().toISOString(),
-          level: 'INFO',
-          text: `Package ${module.id} v${releaseVer} installed successfully on ${isAll ? `all ${targetServers.length} nodes` : targetServers[0].name}`,
-          source: 'package-manager',
-          cursor: String(Date.now()),
-        },
-        ...fleetLogEntries
-      ];
-
-      if (packageServerId && packageServerId !== 'all') {
-        void loadServerModules();
-      }
-      if (selectedServer) {
-        void loadSelectedServerPackages(selectedServer.id);
-      }
-      showNotice(`${module.name} installation finished.`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Installation failed.';
-      addLog(`Error: ${msg}`, 'error');
-      packageInstallStage = 'error';
-      packageError = msg;
-    } finally {
-      packageBusy = '';
-    }
-  }
-
-  function packageGitHubURL(module: Module): string {
-    const arch = servers.find((server) => server.id === packageServerId)?.architecture;
-    const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(packageLocation.trim()) ? packageLocation.trim() : module.repository || 'Real-kia/payesh';
-    const release = packageVersion.trim() || module.release || 'latest';
-    const base = release === 'latest' ? `https://github.com/${repo}/releases/latest/download` : `https://github.com/${repo}/releases/download/v${release.replace(/^v/, '')}`;
-    return arch === 'amd64' || arch === 'arm64' ? `${base}/${module.id}-linux-${arch}.tar.gz` : `https://github.com/${repo}/releases`;
-  }
-
-  async function packageAction(module: Module, action: 'enable' | 'disable' | 'remove'): Promise<void> {
-    if (!packageServerId || packageServerId === 'all' || packageBusy) return;
-    packageBusy = `${module.id}:${action}`; packageError = '';
-    try {
-      const current = moduleState(module.id);
-      const result = await apiClient.moduleAction(packageServerId, module.id, action, current?.revision ?? '0', operationKey(`package-${action}`));
-      moduleInstallations = [...moduleInstallations.filter((item) => item.module_id !== module.id), result];
-      showNotice(`${module.name} is now ${result.state}.`);
-    } catch (error) {
-      packageError = error instanceof Error ? error.message : 'Package operation failed.';
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally {
-      packageBusy = '';
-    }
-  }
-
-  async function packageActionOnServer(serverId: string, pkg: ModuleInstallation, action: 'enable' | 'disable' | 'remove'): Promise<void> {
-    if (!serverId || packageBusy) return;
-    packageBusy = `${pkg.module_id}:${action}`;
-    try {
-      if (PREVIEW_MODE) {
-        if (action === 'remove') {
-          serverInstalledModules = serverInstalledModules.filter((p) => p.module_id !== pkg.module_id);
-        } else {
-          serverInstalledModules = serverInstalledModules.map((p) =>
-            p.module_id === pkg.module_id ? { ...p, state: action === 'enable' ? 'enabled' : 'installed-disabled' } : p
-          );
-        }
-        showNotice(`Package ${pkg.module_id} is now ${action === 'remove' ? 'removed' : action + 'd'}.`);
-        return;
-      }
-      const result = await apiClient.moduleAction(serverId, pkg.module_id, action, pkg.revision, operationKey(`package-${action}`));
-      if (action === 'remove') {
-        serverInstalledModules = serverInstalledModules.filter((p) => p.module_id !== pkg.module_id);
-      } else {
-        serverInstalledModules = serverInstalledModules.map((p) => (p.module_id === pkg.module_id ? result : p));
-      }
-      showNotice(`${pkg.module_id} is now ${result.state}.`);
-    } catch (err) {
-      packageError = err instanceof Error ? err.message : 'Package operation failed.';
-      showNotice(packageError);
-    } finally {
-      packageBusy = '';
-    }
+    packageDialogServerId = serverId;
   }
 
   async function loadAlerts(): Promise<void> {
@@ -1313,46 +668,6 @@
     saveActiveInstall(activeInstall);
   }
 
-  async function createJoinCommand(): Promise<void> {
-    const name = joinName.trim();
-    if (!name || joinBusy) return;
-    joinBusy = true; joinError = ''; joinCommand = ''; joinExpiresAt = ''; joinCopied = false;
-    let createdServerId: string | null = null;
-    let createdRevision = '0';
-    try {
-      const transport = await apiClient.getNodeTransportSettings({ limit: 1 });
-      if (!transport.url) {
-        joinError = 'Enable HTTPS for this hub under Settings → SSL / TLS first. Nodes need its public address to connect.';
-        return;
-      }
-      const created = await apiClient.createServer({ name, address: 'joins by command' });
-      createdServerId = created.id;
-      createdRevision = created.configuration_revision ?? '0';
-      const issued = await apiClient.createEnrollmentToken(created.id, operationKey('join-token'));
-      const job = await apiClient.enrollServer(created.id, { token: issued.token, idempotency_key: operationKey('join-enroll') });
-      servers = [...servers, emptyApiServer(created)];
-      joinExpiresAt = issued.expires_at;
-      joinCommand = `curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh | sudo sh -s -- --release-mode preview --role node --join-url ${transport.url} --join-job ${job.id} --join-token ${issued.token}${transport.ca_sha256 ? ` --join-ca-sha256 ${transport.ca_sha256}` : ''}`;
-    } catch (error) {
-      if (createdServerId) {
-        try { await apiClient.deleteServer(createdServerId, createdRevision); } catch { /* the pending server can be removed from the server list */ }
-      }
-      joinError = error instanceof Error ? error.message : 'Unable to create the join command.';
-    } finally {
-      joinBusy = false;
-    }
-  }
-
-  async function copyJoinCommand(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(joinCommand);
-      joinCopied = true;
-    } catch {
-      joinCopied = false;
-      joinError = 'Copy failed. Select the command and copy it manually.';
-    }
-  }
-
   async function createPendingServer(): Promise<void> {
     if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || createServerBusy) return;
     createServerBusy = true; jobError = '';
@@ -1418,22 +733,12 @@
     navigate('server', server.id);
   }
 
-  function toggleTheme() {
-    theme = theme === 'light' ? 'dark' : 'light';
-    applyTheme(true);
-  }
-
+  let noticeTimer: number | undefined;
   function showNotice(message: string) {
     notice = message;
-    window.setTimeout(() => { notice = ''; }, 4200);
-  }
-
-  function operationKey(prefix: string): string {
-    if (typeof crypto === 'undefined') throw new Error('Secure operation identity is unavailable in this browser context.');
-    if (typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
-    if (typeof crypto.getRandomValues !== 'function') throw new Error('Secure operation identity is unavailable in this browser context.');
-    const random = crypto.getRandomValues(new Uint8Array(16));
-    return `${prefix}-${Array.from(random, (value) => value.toString(16).padStart(2, '0')).join('')}`;
+    // A newer notice restarts the timer so it is not cleared early.
+    window.clearTimeout(noticeTimer);
+    noticeTimer = window.setTimeout(() => { notice = ''; }, 4200);
   }
 
   function recordJob(job: Job): void {
@@ -1609,17 +914,28 @@
     }
   }
 
+  let renaming = false;
+  let renameError = '';
+  function startRename(): void {
+    if (!selectedServer) return;
+    labelDraft = selectedServer.name; renameError = ''; renaming = true;
+  }
+
   async function renameSelectedServer(): Promise<void> {
-    if (!selectedServer || !labelDraft.trim() || labelDraft.trim() === selectedServer.name || labelBusy) return;
-    labelBusy = true; jobError = '';
+    if (!selectedServer || labelBusy) return;
+    const name = labelDraft.trim();
+    if (!name || name === selectedServer.name) { renaming = false; return; }
+    const id = selectedServer.id;
+    labelBusy = true; renameError = '';
     try {
-      const updated = await apiClient.updateServerLabel(selectedServer.id, labelDraft.trim(), selectedServer.configurationRevision, operationKey('label'));
-      const replacement = emptyApiServer(updated);
-      Object.assign(selectedServer, replacement);
+      // Only the name and revision change; keep the loaded metrics and history.
+      const updated = PREVIEW_MODE ? { name, configuration_revision: selectedServer.configurationRevision } : await apiClient.updateServerLabel(id, name, selectedServer.configurationRevision, operationKey('label'));
+      servers = servers.map((server) => server.id === id ? { ...server, name: updated.name, configurationRevision: updated.configuration_revision } : server);
       labelDraft = updated.name;
-      showNotice('Server label updated.');
+      renaming = false;
+      showNotice('Server renamed.');
     } catch (error) {
-      jobError = error instanceof Error ? error.message : 'Unable to rename this server.';
+      renameError = error instanceof Error ? error.message : 'Unable to rename this server.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       labelBusy = false;
@@ -1695,39 +1011,6 @@
     if (!PREVIEW_MODE && sessionState === 'authenticated') void loadApiData();
   }
 
-  function formatBytes(value: string): string {
-    try {
-      const bytes = BigInt(value);
-      const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-      let scaled = Number(bytes);
-      let unit = 0;
-      while (scaled >= 1000 && unit < units.length - 1) {
-        scaled /= 1000;
-        unit += 1;
-      }
-      return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[unit]}`;
-    } catch {
-      return '—';
-    }
-  }
-
-  function percentage(counted: string, allowance: string): number {
-    try {
-      const result = (BigInt(counted) * 100n) / BigInt(allowance);
-      return Math.max(0, Math.min(100, Number(result)));
-    } catch {
-      return 0;
-    }
-  }
-
-  function stateLabel(state: DisplayState): string {
-    return state.replace('-', ' ');
-  }
-
-  function metricValue(value: number | null): string {
-    return value === null ? '—' : `${value.toFixed(2)}%`;
-  }
-
   function hasCapability(server: PreviewServer, capability: DetailTab): boolean {
     if (capability === 'processes') return server.role === 'standalone' || server.role === 'hub';
     if (capability === 'resources' || capability === 'network' || capability === 'packages' || capability === 'metrics' || capability === 'traffic') return true;
@@ -1741,16 +1024,6 @@
     if (tab === 'logs') return 'Logs';
     if (tab === 'processes') return 'Processes';
     return String(tab);
-  }
-
-  function metricHistoryValues(server: PreviewServer, metric: 'cpu' | 'memory' | 'disk'): Array<number | null> {
-    return server.metricHistory?.ranges[chartRange]?.[metric] ?? [];
-  }
-
-  function seriesRange(values: Array<number | null>): string {
-    const numeric = values.filter((value): value is number => value !== null && Number.isFinite(value));
-    if (numeric.length === 0) return 'unavailable';
-    return `${Math.min(...numeric).toFixed(2)}–${Math.max(...numeric).toFixed(2)}%`;
   }
 
   function capabilityMessage(server: PreviewServer, capability: DetailTab): string {
@@ -1788,12 +1061,6 @@
     return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
   }
 
-  function logRangeWindow(range: LogWindow): { from: string; to: string } {
-    const to = new Date();
-    const minutes = range === '1h' ? 60 : range === '6h' ? 360 : range === '24h' ? 24 * 60 : 7 * 24 * 60;
-    return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
-  }
-
   function metricChart(query: MetricQuery): PreviewChartData {
     if (!query.samples.length && query.rollups.length) {
       const timestamps = [...new Set(query.rollups.map((rollup) => Date.parse(String(rollup.bucket_start)) / 1000))].filter(Number.isFinite).sort((a, b) => a - b);
@@ -1827,31 +1094,6 @@
     server.latestMetricAt = latest.observed_at;
     const read = (names: string[]) => names.map((name) => latest.values[name]).find((value) => typeof value === 'number' && Number.isFinite(value)) ?? null;
     server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), disk: read(['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent']) };
-  }
-
-  function currentNetworkRate(server: PreviewServer, direction: 'download' | 'upload'): number | null {
-    if (server.freshnessState !== 'fresh') return null;
-    const history = server.metricHistory?.ranges['15m'];
-    if (!PREVIEW_MODE && (!history?.timestamps.length || Date.now() / 1000 - history.timestamps.at(-1)! > 90)) return null;
-    const series = direction === 'download' ? history?.networkRx : history?.networkTx;
-    return series?.at(-1) ?? null;
-  }
-
-  function sumNetworkRate(fleet: PreviewServer[], direction: 'download' | 'upload'): number | null {
-    const rates = fleet.filter((server) => server.connectionState === 'connected').map((server) => currentNetworkRate(server, direction));
-    return rates.length && rates.every((rate) => rate !== null) ? rates.reduce<number>((sum, rate) => sum + (rate ?? 0), 0) : null;
-  }
-
-  function sampleAge(server: PreviewServer): string {
-    if (!server.latestMetricAt) return 'awaiting sample';
-    const seconds = Math.max(0, Math.round((Date.now() - Date.parse(server.latestMetricAt)) / 1000));
-    return seconds < 5 ? 'live now' : seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
-  }
-
-  function displayAddress(server: PreviewServer): string {
-    if (server.address) return server.address;
-    if (!PREVIEW_MODE && (server.role === 'standalone' || server.role === 'hub') && typeof window !== 'undefined') return window.location.hostname;
-    return 'Address unavailable';
   }
 
   let liveRefreshBusy = false;
@@ -1956,12 +1198,10 @@
     previewState = 'loading';
     previewLoadFailed = false;
     servers = [];
-    previewLogEntries = [];
     selectedServerId = '';
     try {
       const preview = await import('./preview/fixtures');
       servers = preview.getPreviewServers();
-      previewLogEntries = preview.previewLogEntries;
       selectedServerId = servers[0]?.id ?? '';
       modulesState = 'ready';
       modules = [
@@ -1969,15 +1209,13 @@
         { id: 'bandwidth-controls', name: 'Bandwidth Controls', description: 'Ingress and egress traffic shaping with tc / fq_codel queueing disciplines.', latest_version: '0.1.0', resource_estimate_source: 'static' },
         { id: 'port-traffic', name: 'Port Traffic Accounting', description: 'Per-port iptables and nftables telemetry collection with byte counters.', latest_version: '0.1.0', resource_estimate_source: 'static' }
       ];
-      moduleInstallations = [
-        { server_id: selectedServerId, module_id: 'cpu-controls', version: '0.1.0', state: 'enabled', revision: '1', updated_at: '2026-09-09T14:40:00Z' },
-        { server_id: selectedServerId, module_id: 'bandwidth-controls', state: 'available', revision: '0', updated_at: '2026-09-09T14:40:00Z' }
-      ];
       alertsState = 'ready';
       alerts = [
         { id: 'alert-1', rule_id: 'high-cpu-utilization', server_id: 'server-us-00000002', state: 'pending', last_value: 74.0, last_observation: '2026-09-09T14:34:18Z' },
         { id: 'alert-2', rule_id: 'host-heartbeat-stale', server_id: 'server-us-00000002', state: 'firing', last_observation: '2026-09-09T14:34:18Z' }
       ];
+      updateStatus = preview.previewUpdateStatus;
+      notificationItems = preview.previewNotifications;
       restoreState(savedUiState);
       previewState = servers.length ? 'ready' : 'empty';
       if (typeof window !== 'undefined') window.history.replaceState({ activePage, selectedServerId, detailTab }, '', window.location.pathname);
@@ -2010,8 +1248,6 @@
       previewState = servers.length ? 'ready' : 'empty';
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
-      if (activePage === 'logs') void loadFleetLogs();
-      if (activePage === 'settings') void loadHTTPS();
       void loadNotifications();
       const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
       if (!controller.signal.aborted) {
@@ -2026,214 +1262,6 @@
         authExpired = true;
         sessionState = 'signed-out';
       }
-    }
-  }
-
-  function resolveLogLevel(rawSeverity?: string, text: string = ''): FleetLogEntry['level'] {
-    const sev = (rawSeverity || '').trim().toUpperCase();
-    if (sev === 'ERROR' || sev === 'ERR' || sev === 'CRITICAL' || sev === 'EMERGENCY' || sev === 'FATAL') {
-      return 'ERROR';
-    }
-    if (sev === 'WARN' || sev === 'WARNING') {
-      return 'WARN';
-    }
-    if (sev === 'DEBUG') {
-      return 'DEBUG';
-    }
-
-    const lower = text.toLowerCase();
-    if (
-      lower.includes('sqlite_busy') ||
-      lower.includes('database is locked') ||
-      lower.includes('status=1/failure') ||
-      lower.includes('exit-code') ||
-      lower.includes('level=error') ||
-      lower.includes('[error]') ||
-      lower.includes('error:') ||
-      lower.includes('panic:') ||
-      lower.includes('fatal:') ||
-      lower.includes('critical:') ||
-      lower.includes('failed to bind') ||
-      lower.includes('packet loss spike') ||
-      lower.includes('failed to connect') ||
-      lower.includes('connection refused')
-    ) {
-      return 'ERROR';
-    }
-
-    if (
-      lower.includes('level=warn') ||
-      lower.includes('[warn') ||
-      lower.includes('warn:') ||
-      lower.includes('warning:') ||
-      lower.includes('pressure warning') ||
-      lower.includes('exceeded threshold') ||
-      lower.includes('high disk i/o wait') ||
-      (lower.includes('certificate for') && lower.includes('expires in'))
-    ) {
-      return 'WARN';
-    }
-
-    if (lower.includes('level=debug') || lower.includes('[debug]') || lower.includes('debug:')) {
-      return 'DEBUG';
-    }
-
-    return 'INFO';
-  }
-
-  function generatePreviewFleetLogs(): FleetLogEntry[] {
-    const now = Date.now();
-    const demoServers = servers.length > 0
-      ? servers
-      : [
-          { id: 'srv-master', name: 'Master-Control-01', role: 'master' },
-          { id: 'srv-worker-1', name: 'Worker-Node-Frankfurt', role: 'node' },
-          { id: 'srv-worker-2', name: 'Worker-Node-Helsinki', role: 'node' },
-        ];
-
-    const baseTemplates: Array<{ offsetSec: number; level: FleetLogEntry['level']; serverIdx: number; text: string; source: string }> = [
-      { offsetSec: 15, level: 'INFO', serverIdx: 0, text: 'Telemetry ingest batch processed 48 samples in 1.2ms', source: 'payesh-server' },
-      { offsetSec: 42, level: 'INFO', serverIdx: 1, text: 'Agent collected CPU (14.2%), Memory (42.8%), Disk (56.1%)', source: 'payesh-agent' },
-      { offsetSec: 95, level: 'WARN', serverIdx: 2, text: 'Memory pressure warning: usage exceeded 85% threshold (86.4%)', source: 'cgroup-monitor' },
-      { offsetSec: 140, level: 'INFO', serverIdx: 0, text: 'Health ping received from Worker-Node-Frankfurt (latency: 18ms)', source: 'payesh-server' },
-      { offsetSec: 210, level: 'ERROR', serverIdx: 1, text: 'Failed to bind ephemeral socket: address already in use (EADDRINUSE :8081)', source: 'network-monitor' },
-      { offsetSec: 320, level: 'WARN', serverIdx: 0, text: 'SSL certificate for payesh.internal expires in 12 days', source: 'webtls' },
-      { offsetSec: 450, level: 'INFO', serverIdx: 2, text: 'Log rotation executed: archived /var/log/payesh/agent.err.1', source: 'logrotate' },
-      { offsetSec: 600, level: 'INFO', serverIdx: 1, text: 'Transport handshake successful via TLS 1.3 (cipher: TLS_AES_128_GCM_SHA256)', source: 'payesh-agent' },
-      { offsetSec: 850, level: 'ERROR', serverIdx: 2, text: 'Upstream gateway 192.168.1.1 packet loss spike: 4.8% packet drop detected', source: 'bandwidth-probe' },
-      { offsetSec: 1200, level: 'INFO', serverIdx: 0, text: 'Database hourly compact finished: 0 orphaned rows removed, vacuum complete', source: 'payesh-db' },
-      { offsetSec: 1540, level: 'WARN', serverIdx: 1, text: 'High disk I/O wait detected: queue depth 8.2 on /dev/nvme0n1', source: 'disk-stat' },
-      { offsetSec: 2100, level: 'INFO', serverIdx: 2, text: 'Systemd service payesh-agent reloaded with PID 18420', source: 'systemd' },
-      { offsetSec: 2900, level: 'ERROR', serverIdx: 0, text: 'Database lock contention resolved: SQLite busy handler waited 42ms (SQLITE_BUSY)', source: 'payesh-db' },
-      { offsetSec: 3600, level: 'INFO', serverIdx: 1, text: 'Heartbeat cycle healthy: 0 alerts active across 12 targets', source: 'payesh-agent' },
-    ];
-
-    const entries: FleetLogEntry[] = [];
-    const cycles = 12; // 14 * 12 = 168 entries to support multi-page pagination testing
-    let idCounter = 1;
-
-    for (let c = 0; c < cycles; c++) {
-      const cycleOffsetSec = c * 3600;
-      for (const tmpl of baseTemplates) {
-        const srv = demoServers[tmpl.serverIdx % demoServers.length];
-        if (fleetLogServerFilter !== 'all' && srv.id !== fleetLogServerFilter) {
-          continue;
-        }
-        const totalOffset = tmpl.offsetSec + cycleOffsetSec;
-        const iso = new Date(now - totalOffset * 1000).toISOString();
-        entries.push({
-          id: `preview-log-${idCounter}`,
-          serverId: srv.id,
-          serverName: srv.name,
-          timestamp: iso,
-          level: resolveLogLevel(tmpl.level, tmpl.text),
-          text: c > 0 ? `${tmpl.text} (cycle ${c + 1})` : tmpl.text,
-          source: tmpl.source,
-          cursor: String(2000 + idCounter),
-        });
-        idCounter++;
-      }
-    }
-
-    return entries;
-  }
-
-  async function loadFleetLogs(targetServerId = fleetLogServerFilter) {
-    fleetLogAbortController?.abort();
-    const controller = new AbortController();
-    fleetLogAbortController = controller;
-    fleetLogState = 'loading';
-    fleetLogError = '';
-    fleetLogPage = 0;
-
-    if (PREVIEW_MODE) {
-      fleetLogEntries = generatePreviewFleetLogs();
-      fleetLogState = fleetLogEntries.length ? 'ready' : 'empty';
-      return;
-    }
-
-    try {
-      const targetServers = targetServerId === 'all'
-        ? servers
-        : servers.filter((s) => s.id === targetServerId);
-
-      if (targetServers.length === 0) {
-        fleetLogEntries = [];
-        fleetLogState = 'empty';
-        return;
-      }
-
-      const window = logRangeWindow(fleetLogWindow);
-      const results: FleetLogEntry[] = [];
-
-      await Promise.allSettled(
-        targetServers.map(async (server) => {
-          try {
-            const sources = await apiClient.listLogSources(server.id, { signal: controller.signal });
-            for (const source of sources.items) {
-              try {
-                const queryRes = await apiClient.queryLogs(server.id, {
-                  source: source.id,
-                  ...window,
-                  limit: fleetLogFetchLimit,
-                  order: 'desc',
-                  signal: controller.signal
-                });
-                for (const entry of queryRes.entries) {
-                  const level = resolveLogLevel(entry.severity, entry.text);
-                  results.push({
-                    id: `${server.id}-${source.id}-${entry.cursor || Math.random().toString(36).slice(2)}`,
-                    serverId: server.id,
-                    serverName: server.name,
-                    timestamp: entry.timestamp,
-                    level,
-                    text: entry.text,
-                    source: source.label || source.id,
-                    cursor: entry.cursor
-                  });
-                }
-              } catch {
-                // If single source fails, continue
-              }
-            }
-          } catch {
-            // If single server fails, continue
-          }
-        })
-      );
-
-      if (controller.signal.aborted) return;
-
-      results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      fleetLogEntries = results;
-      fleetLogState = fleetLogEntries.length ? 'ready' : 'empty';
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      fleetLogError = err instanceof Error ? err.message : 'Unable to load fleet logs.';
-      fleetLogState = 'error';
-    }
-  }
-
-  async function loadLogs(serverId: string) {
-    if (PREVIEW_MODE) return;
-    logAbortController?.abort();
-    const controller = new AbortController();
-    logAbortController = controller;
-    logState = 'loading'; logError = ''; logEntries = [];
-    try {
-      const sources = await apiClient.listLogSources(serverId, { signal: controller.signal });
-      const source = sources.items[0];
-      if (!source) { logState = 'empty'; return; }
-      const window = rangeWindow('24h');
-      const result = await apiClient.queryLogs(serverId, { source: source.id, ...window, limit: 200, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      logEntries = result.entries.map((entry) => ({ time: formatLogTimeInTz(entry.timestamp, currentTimezone), level: (entry.severity ?? 'INFO').toUpperCase() as PreviewLogEntry['level'], text: entry.text, source: source.label, cursor: entry.cursor }));
-      logState = logEntries.length ? 'ready' : 'empty';
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      logError = error instanceof Error ? error.message : 'Unable to load logs.';
-      authExpired = error instanceof ApiError && error.authExpired;
-      logState = 'error';
     }
   }
 
@@ -2273,15 +1301,21 @@
     } catch {
       // Corrupt install cache is non-critical
     }
-    applyTheme(false);
+    applyAppearance(appearance);
+    // Follow the operating system while the theme is set to System.
+    const colorScheme = window.matchMedia?.('(prefers-color-scheme: dark)');
+    const onSchemeChange = () => { if (appearance.mode === 'system') { theme = resolveTheme('system'); applyAppearance(appearance, true); } };
+    colorScheme?.addEventListener?.('change', onSchemeChange);
     savedUiState = { ...(savedUiState ?? {}), ...stateFromLocation() };
     if (savedUiState.activePage) activePage = savedUiState.activePage;
     if (savedUiState.selectedServerId) selectedServerId = savedUiState.selectedServerId;
     if (completedInstallServerId && activePage === 'install-progress') {
       activePage = 'server'; selectedServerId = completedInstallServerId; detailTab = 'metrics'; saveUiState();
     }
-    if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
+    // Record the canonical URL before loading: the loaders reset the selection
+    // until data arrives.
     window.history.replaceState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
+    if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
     const onPopState = (event: PopStateEvent) => {
       restoreState({ ...(event.state ?? {}), ...stateFromLocation() });
       if (activePage === 'packages' && !PREVIEW_MODE) void loadModules();
@@ -2290,96 +1324,67 @@
     };
     window.addEventListener('popstate', onPopState);
     const notificationRefresh = window.setInterval(() => void loadNotifications(), 60000);
-    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); void refreshStorageUsage(); }, 15000);
+    const liveRefresh = window.setInterval(() => { void refreshSelectedServer(); void refreshMonitoring(); }, 15000);
+    // Refreshes pause while the tab is hidden; catch up as soon as it is shown.
+    const onVisibility = () => { if (!document.hidden) { void refreshSelectedServer(); void refreshMonitoring(); } };
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.clearInterval(liveRefresh);
       window.clearInterval(notificationRefresh);
       window.clearTimeout(updatePollTimer);
-      if (httpsPoll) clearTimeout(httpsPoll);
-      if (nodePortPoll) clearTimeout(nodePortPoll);
       window.removeEventListener('popstate', onPopState);
-      trafficUsageController?.abort();
+      colorScheme?.removeEventListener?.('change', onSchemeChange);
+      document.removeEventListener('visibilitychange', onVisibility);
       apiAbortController?.abort();
-      logAbortController?.abort();
       jobPollController?.abort();
     };
   });
 </script>
+
+<svelte:window on:keydown={onGlobalKey} />
 
 <svelte:head>
   <title>Payesh — Cloud Fleet Operations</title>
   <meta name="description" content="Payesh lightweight local-first Linux fleet monitoring and management" />
 </svelte:head>
 
-<div class="app-shell" data-theme={theme}>
-  <aside class="sidebar" aria-label="Primary navigation" inert={!PREVIEW_MODE && authExpired}>
-    <div class="brand-lockup">
-      <div class="brand-mark" aria-hidden="true">
-        <span>P</span>
-      </div>
-      <div class="brand-text">
-        <strong>Payesh</strong>
-      </div>
-    </div>
+{#snippet chunkFailed()}
+  <div class="unavailable-panel">
+    <strong>This view could not be loaded</strong>
+    <span>The dashboard may have been updated in the meantime. Reload the page to continue.</span>
+    <button class="button ghost small" type="button" on:click={() => window.location.reload()}><Icon name="refresh" size={13} />Reload</button>
+  </div>
+{/snippet}
 
-    <button class="button ghost mobile-menu-toggle" type="button" aria-expanded={mobileNavOpen} aria-controls="primary-navigation" on:click={() => mobileNavOpen = !mobileNavOpen}>Menu <Icon name="chevron-right" size={14} /></button>
-    <nav id="primary-navigation" class="nav-list" class:menu-open={mobileNavOpen}>
-      <button class:active={activePage === 'overview'} class="nav-item" type="button" on:click={() => navigate('overview')} aria-current={activePage === 'overview' ? 'page' : undefined}>
-        <Icon name="overview" size={17} />
-        <span>Overview</span>
-      </button>
-      <button class:active={activePage === 'monitoring'} class="nav-item" type="button" on:click={() => navigate('monitoring')} aria-current={activePage === 'monitoring' ? 'page' : undefined}>
-        <Icon name="activity" size={17} />
-        <span>Server monitoring</span>
-      </button>
-      <button class:active={activePage === 'servers' || activePage === 'server' || activePage === 'add-server' || activePage === 'install-progress'} class="nav-item" type="button" on:click={() => navigate('servers')}>
-        <Icon name="servers" size={17} />
-        <span>Servers</span>
-        <span class="nav-count">{servers.length}</span>
-      </button>
-      <button class:active={activePage === 'alerts'} class="nav-item" type="button" on:click={() => navigate('alerts')}>
-        <Icon name="alerts" size={17} />
-        <span>Alerts</span>
-        {#if firingAlertCount > 0}
-          <span class="nav-count firing">{firingAlertCount}</span>
-        {:else}
-          <span class="nav-count neutral">0</span>
-        {/if}
-      </button>
-      <button class:active={activePage === 'logs'} class="nav-item" type="button" on:click={() => navigate('logs')} aria-current={activePage === 'logs' ? 'page' : undefined}>
-        <Icon name="terminal" size={17} />
-        <span>Logs</span>
-      </button>
-      <button class:active={activePage === 'packages'} class="nav-item" type="button" on:click={() => navigate('packages')}>
-        <Icon name="packages" size={17} />
-        <span>Packages</span>
-      </button>
-      <button class:active={activePage === 'settings'} class="nav-item" type="button" on:click={() => navigate('settings')} aria-current={activePage === 'settings' ? 'page' : undefined}>
-        <Icon name="settings" size={17} />
-        <span>Settings</span>
-      </button>
-    </nav>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="app-shell">
+  <Sidebar
+    {activePage}
+    serverCount={servers.length}
+    firingAlerts={firingAlertCount}
+    statusLabel={PREVIEW_MODE ? 'Fixture preview' : sessionState === 'authenticated' && !authExpired ? 'Connected to hub' : 'Sign in required'}
+    statusTone={PREVIEW_MODE ? 'warn' : sessionState === 'authenticated' && !authExpired ? 'ok' : 'off'}
+    user={!authExpired ? myAccount?.username ?? '' : ''}
+    inert={!PREVIEW_MODE && authExpired}
+    onNavigate={(page, fromMenu) => navigate(page, selectedServerId, fromMenu)}
+  />
 
-    <div class="sidebar-footer">
-      <div class="connection-status">
-        <span class="connection-dot"></span>
-        <span class="connection-label">Local hub</span>
-      </div>
-      <span class="version-tag">{PREVIEW_MODE ? 'Fixture preview' : sessionState === 'authenticated' && !authExpired ? 'Connected' : 'Sign in required'}</span>
-    </div>
-  </aside>
-
-  <main class="main-content">
+  <main class="main-content" id="main-content" tabindex="-1">
     <header class="topbar" inert={!PREVIEW_MODE && authExpired}>
-      <div class="breadcrumbs">
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
         <span class="crumb-root">Workspace</span>
-        <span class="crumb-separator" aria-hidden="true">/</span>
-        <strong class="crumb-current">
-          {activePage === 'server' ? (selectedServer?.name || 'Server Details') : activePage === 'add-server' ? 'Add Server' : activePage === 'install-progress' ? 'Installation Progress' : activePage.charAt(0).toUpperCase() + activePage.slice(1)}
-        </strong>
-      </div>
+        <Icon name="chevron-right" size={13} />
+        {#if activePage === 'server' || activePage === 'install-progress'}
+          <button class="crumb-link" type="button" on:click={() => navigate('servers')}>Servers</button>
+          <Icon name="chevron-right" size={13} />
+        {/if}
+        <strong class="crumb-current" aria-current="page">{pageTitle}</strong>
+      </nav>
 
       <div class="topbar-actions">
+        <button class="search-trigger" type="button" on:click={() => (paletteOpen = true)} aria-label="Go to page, server or setting (Ctrl+K)">
+          <Icon name="search" size={14} /><span>Go to…</span><kbd>{isMac ? '⌘' : 'Ctrl'} K</kbd>
+        </button>
         {#if myAccount?.permission === 'read'}<span class="status-pill pending">Read only</span>{/if}
         {#if PREVIEW_MODE}
           <label class="preview-control">
@@ -2392,216 +1397,84 @@
             </select>
           </label>
         {/if}
-        <button class="icon-button" type="button" on:click={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>
-          <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
+        <button class="icon-button theme-toggle" type="button" on:click={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>
+          {#key theme}<span class="theme-icon"><Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} /></span>{/key}
         </button>
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}
-          <button class="icon-button notification-bell-button" type="button" on:click={() => { settingsSection = 'notifications'; navigate('settings'); void loadNotifications(); }} aria-label={`Notifications${unreadNotifications ? ` (${unreadNotifications} unread)` : ''}`} title="Notifications">
+          <button class="icon-button" type="button" on:click={() => openSettings('notifications')} aria-label={`Notifications${unreadNotifications ? ` (${unreadNotifications} unread)` : ''}`} title="Notifications">
             <Icon name="bell" size={16} />
             {#if unreadNotifications > 0}
               <span class="notification-badge" aria-hidden="true">{unreadNotifications > 99 ? '99+' : unreadNotifications}</span>
             {/if}
           </button>
-          <button class="button ghost small" type="button" on:click={() => promptSignOut()}>Sign out</button>
+          <button class="icon-button" type="button" on:click={() => promptSignOut()} aria-label="Sign out" title="Sign out"><Icon name="log-out" size={16} /></button>
         {/if}
-        {#if myAccount?.permission !== 'read'}<button class="button primary small" type="button" on:click={() => openAddServer()}>
-          <Icon name="plus" size={14} />
-          <span>Add server</span>
-        </button>{/if}
+        {#if myAccount?.permission !== 'read'}
+          <button class="button primary small add-server" type="button" on:click={() => openAddServer()}>
+            <Icon name="plus" size={14} />
+            <span>Add server</span>
+          </button>
+        {/if}
       </div>
     </header>
 
-    {#if notice}<div class="notice" role="status"><Icon name="check" size={14} /><span>{notice}</span></div>{/if}
-    {#if signOutError}<div class="partial-warning" role="alert"><Icon name="alert-triangle" size={15} /><span>{signOutError}</span></div>{/if}
-    {#if showUpdateBanner && updateStatus}
-      <div class="partial-warning update-banner" role="status"><Icon name="alert-triangle" size={15} /><span>Payesh v{updateStatus.latest} is available{updateStatus.current && updateStatus.current !== 'dev' ? ` (installed: v${updateStatus.current})` : ''}. <button class="link-button" type="button" on:click={openUpdateSettings}>View update</button></span><button class="link-button" type="button" aria-label="Dismiss update notice" on:click={dismissUpdateBanner}>Dismiss</button></div>
-    {/if}
-    {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span></div>{/if}
-    {#if insecureConnection && !PREVIEW_MODE && sessionState === 'authenticated'}
-      <div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => navigate('settings')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
-    {/if}
+    <div class="banners">
+      {#if signOutError}<div class="partial-warning" role="alert"><Icon name="alert-triangle" size={15} /><span>{signOutError}</span></div>{/if}
+      {#if showUpdateBanner && updateStatus}
+        <div class="partial-warning update-banner" role="status"><Icon name="download" size={15} /><span>Payesh v{updateStatus.latest} is available{updateStatus.current && updateStatus.current !== 'dev' ? ` (installed: v${updateStatus.current})` : ''}. <button class="link-button" type="button" on:click={openUpdateSettings}>View update</button></span><button class="link-button" type="button" aria-label="Dismiss update notice" on:click={dismissUpdateBanner}>Dismiss</button></div>
+      {/if}
+      {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span></div>{/if}
+      {#if insecureConnection && !PREVIEW_MODE && sessionState === 'authenticated'}
+        <div class="partial-warning" role="status"><Icon name="lock" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => openSettings('tls')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
+      {/if}
+    </div>
 
+    <!-- A rendering error inside one page must not blank the whole dashboard. -->
+    <svelte:boundary onerror={(error) => console.error('payesh: page failed to render', error)}>
     {#if !PREVIEW_MODE && authExpired}
-      <section class="page" aria-label="Sign in">
-          <div class="login-screen">
-            <div class="login-card">
-              <div class="brand-mark large"><span>P</span></div>
-              <h1>Sign in to hub</h1>
-              <p class="muted center">Authenticate to access fleet operations.</p>
-              <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
-                <label>
-                  <span>Username</span>
-                  <input use:focusLogin bind:value={authUsername} autocomplete="username" placeholder="owner" required />
-                </label>
-                <label>
-                  <span>Password</span>
-                  <input type="password" bind:value={authPassword} autocomplete="current-password" placeholder="••••••••••••" required />
-                </label>
-                {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
-                {#if insecureConnection}<p class="insecure-login" role="note"><Icon name="alert-triangle" size={14} /> Not encrypted: your password is sent without SSL. Add a domain in Settings to enable HTTPS.</p>{/if}
-                <button class="button primary" type="submit" disabled={authBusy}>
-                  {authBusy ? 'Authenticating…' : 'Sign in to Console'}
-                </button>
-              </form>
-            </div>
-          </div>
+      <section class="login-screen" aria-label="Sign in">
+        <div class="login-card">
+          <svg class="login-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" /><path d="M6 18h4.2l2.6-6.5 4.4 11 3-7.5H26" /></svg>
+          <h1>Sign in to Payesh</h1>
+          <p class="muted center">Authenticate to access fleet operations.</p>
+          <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
+            <label>
+              <span>Username</span>
+              <input use:focusLogin bind:value={authUsername} autocomplete="username" placeholder="admin" required />
+            </label>
+            <label>
+              <span>Password</span>
+              <input type="password" bind:value={authPassword} autocomplete="current-password" placeholder="••••••••••••" required />
+            </label>
+            {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
+            {#if insecureConnection}<p class="insecure-login" role="note"><Icon name="alert-triangle" size={14} /> Not encrypted: your password is sent without SSL. Add a domain in Settings to enable HTTPS.</p>{/if}
+            <button class="button primary login-submit" type="submit" disabled={authBusy}>
+              {#if authBusy}<span class="version-spinner" aria-hidden="true"></span>Signing in…{:else}Sign in{/if}
+            </button>
+          </form>
+        </div>
       </section>
     {:else if activePage === 'monitoring'}
-      <section class="page" aria-labelledby="monitoring-title">
-        <div class="page-heading">
-          <div><h1 id="monitoring-title" tabindex="-1">Server monitoring</h1></div>
-          <span class="heading-status-badge"><span class="live-ping"></span>{displayServers.length} servers</span>
-        </div>
-        <div class="summary-grid">
-          <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
-          <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
-          <article class="summary-card stat-network-card">
-            <span class="stat-icon-wrap cyan card-corner-icon"><Icon name="activity" size={15} /></span>
-            <div class="network-split">
-              <div class="network-split-col">
-                <div class="network-split-head">
-                  <span class="rate-badge down">↓</span>
-                  <span class="rate-title">Download</span>
-                </div>
-                <strong class="network-split-value tabular">{formatNetworkRate(fleetDownload)}</strong>
-              </div>
-              <div class="network-split-sep" aria-hidden="true"></div>
-              <div class="network-split-col">
-                <div class="network-split-head">
-                  <span class="rate-badge up">↑</span>
-                  <span class="rate-title">Upload</span>
-                </div>
-                <strong class="network-split-value tabular">{formatNetworkRate(fleetUpload)}</strong>
-              </div>
-            </div>
-          </article>
-        </div>
-        {#if displayServers.length === 0}<div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>{/if}
-        <div class="monitoring-grid">
-          {#each displayServers as server}
-            <div class="panel monitoring-card clickable" role="button" tabindex="0" on:click={() => selectServer(server)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') selectServer(server); }}>
-              <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
-              {#if server.connectionState === 'connected'}<div class="monitoring-metrics">
-                {#each [['CPU', 'cpu', 'teal'], ['Memory', 'memory', 'purple']] as metric}
-                  {@const value = server.metrics[metric[1] as 'cpu' | 'memory']}
-                  {@const history = server.metricHistory?.ranges['15m']?.[metric[1] as 'cpu' | 'memory'] ?? []}
-                  <div class={`monitoring-gauge ${metric[2]}`} class:resource-warning={value !== null && value >= 75} class:resource-critical={value !== null && value >= 90}>
-                    <span>{metric[0]}</span><strong>{metricValue(value)}</strong>
-                    <div class="monitoring-spark" aria-label={`${metric[0]} recent history`}>
-                      {#if history.filter(point => point !== null).length > 1}<Sparkline values={history} tone={metric[2] as 'teal' | 'purple'} />{:else}<small class="faint">Awaiting history</small>{/if}
-                    </div>
-                    <div class="resource-track" role="meter" aria-label={`${metric[0]} usage`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={value ?? undefined} aria-valuetext={value === null ? 'Unavailable' : metricValue(value)}><i style:width={`${Math.max(0, Math.min(100, value ?? 0))}%`}></i></div>
-                  </div>
-                {/each}
-                <div class="monitoring-gauge blue monitoring-gauge-disk" class:resource-warning={server.metrics.disk !== null && server.metrics.disk >= 75} class:resource-critical={server.metrics.disk !== null && server.metrics.disk >= 90}>
-                  <div class="monitoring-gauge-head">
-                    <span>Disk</span>
-                  </div>
-                  <div class="monitoring-disk-circle">
-                    <CircleChart value={server.metrics.disk} size={64} strokeWidth={8} label="Used" color="var(--blue, #3b82f6)" />
-                  </div>
-                </div>
-                <div class="monitoring-network"><span>↓ Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
-                <div class="monitoring-network"><span>↑ Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
-              </div>{/if}
-              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected' && server.traffic.allowanceBytes !== '0'}<span>Billing period: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : server.freshnessReason || server.connectionState}</span></div>
-              <button class="button ghost small" type="button" on:click|stopPropagation={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
-            </div>
-          {/each}
-        </div>
-      </section>
+      <MonitoringPage servers={displayServers} timezone={currentTimezone} download={fleetDownload} upload={fleetUpload} onSelect={selectServer} />
     {:else if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading">
           <div>
             <h1 id="servers-title" tabindex="-1">Servers</h1>
-
+            <p class="lede">{servers.length} {servers.length === 1 ? 'server' : 'servers'} · {servers.length - attentionCount} healthy</p>
           </div>
-          {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}>
-            <Icon name="plus" size={15} />
-            <span>Add server</span>
-          </button>{/if}
+          {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}><Icon name="plus" size={15} /><span>Add server</span></button>{/if}
         </div>
-
-        <div class="table-container">
-          <div class="table-header">
-            <span class="col-status">Status</span>
-            <span class="col-name">Server & Address</span>
-            <span class="col-metric">CPU</span>
-            <span class="col-metric">Memory</span>
-            <span class="col-metric col-metric-disk">Disk</span>
-            <span class="col-rxtx">Rx / Tx</span>
-            <span class="col-action"></span>
-          </div>
-          <div class="server-list">
-            {#each displayServers as server}
-              <button class="server-row" type="button" on:click={() => selectServer(server)}>
-                <div class="col-status">
-                  <span class={`status-pill ${server.displayState}`}>
-                    <i class="status-dot"></i>
-                    <span>{stateLabel(server.displayState)}</span>
-                  </span>
-                </div>
-                <div class="col-name server-identity">
-                  <strong>{server.name}</strong>
-                  <small class="mono faint">{displayAddress(server)} · {server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : (server.freshnessReason || server.connectionState)}</small>
-                </div>
-                <div class="col-metric server-metric">
-                  {#if server.connectionState === 'connected'}
-                    <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
-                    <div class="metric-microbar">
-                      <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                    </div>
-                  {:else}
-                    <span class="faint">—</span>
-                  {/if}
-                </div>
-                <div class="col-metric server-metric">
-                  {#if server.connectionState === 'connected'}
-                    <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
-                    <div class="metric-microbar">
-                      <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
-                    </div>
-                  {:else}
-                    <span class="faint">—</span>
-                  {/if}
-                </div>
-                <div class="col-metric server-metric col-metric-disk">
-                  {#if server.connectionState === 'connected'}
-                    <div class="disk-table-cell">
-                      <CircleChart value={server.metrics.disk} size={28} strokeWidth={9} showValue={false} color="var(--blue, #3b82f6)" />
-                      <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
-                    </div>
-                  {:else}
-                    <span class="faint">—</span>
-                  {/if}
-                </div>
-                <div class="col-rxtx">
-                  {#if server.connectionState === 'connected'}
-                    <span class="rxtx-rates tabular">
-                      <span class="rate-down">↓ {formatNetworkRate(currentNetworkRate(server, 'download'))}</span>
-                      <span class="rate-sep">·</span>
-                      <span class="rate-up">↑ {formatNetworkRate(currentNetworkRate(server, 'upload'))}</span>
-                    </span>
-                  {:else}
-                    <span class="faint">—</span>
-                  {/if}
-                </div>
-                <div class="col-action">
-                  <span class="server-arrow"><Icon name="chevron-right" size={16} /></span>
-                </div>
-              </button>
-            {/each}
-          </div>
-        </div>
+        {#if servers.length}
+          <ServerTable servers={displayServers} timezone={currentTimezone} onSelect={selectServer} />
+        {:else}
+          <div class="state-panel"><div class="state-icon"><Icon name="servers" size={24} /></div><h2>No servers yet</h2><p>Add a Linux server over SSH or with a one-line join command.</p></div>
+        {/if}
       </section>
 
     {:else if activePage === 'add-server'}
-      <section class="page" aria-labelledby="add-server-title">
-        <button class="back-link" type="button" on:click={() => navigate('servers')}>
-          <Icon name="arrow-left" size={15} />
-          <span>Back to servers</span>
-        </button>
+      <section class="page narrow" aria-labelledby="add-server-title">
+        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>Back to servers</span></button>
         <div class="page-heading">
           <div>
             <h1 id="add-server-title" tabindex="-1">Add a server</h1>
@@ -2611,86 +1484,43 @@
 
         {#if activeInstall && ['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)}
           <div class="active-install-banner" role="status">
-            <div class="banner-left">
-              <span class="pulse-dot"></span>
-              <span>Deployment in progress for <strong>{activeInstall.serverName}</strong> ({activeInstall.simulatedProgress}%)</span>
-            </div>
-            <button class="button small ghost" type="button" on:click={() => navigate('install-progress', activeInstall?.serverId)}>
-              <span>View live log</span>
-              <Icon name="arrow-right" size={13} />
-            </button>
+            <div class="banner-left"><span class="pulse-dot"></span><span>Deployment in progress for <strong>{activeInstall.serverName}</strong> ({activeInstall.simulatedProgress}%)</span></div>
+            <button class="button small ghost" type="button" on:click={() => navigate('install-progress', activeInstall?.serverId)}><span>View live log</span><Icon name="arrow-right" size={13} /></button>
           </div>
         {/if}
 
-        <article class="panel">
+        <article class="panel method">
+          <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
           <form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}>
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
-            <label>IP address or hostname<input bind:value={installHost} maxlength="255" placeholder="e.g. 192.0.2.1" required /></label>
-            <label>SSH port<input type="number" min="1" max="65535" bind:value={installPort} required /></label>
-            <label>SSH user<input bind:value={installUser} placeholder="root" required /></label>
-            <fieldset class="ssh-auth-choice form-wide">
-              <legend>SSH authentication</legend>
-              <div class="ssh-auth-options">
-                <label><input type="radio" name="new-server-auth" checked={installAuthMethod === 'password'} on:change={() => chooseInstallAuth('password')} /> Password</label>
-                <label><input type="radio" name="new-server-auth" checked={installAuthMethod === 'key'} on:change={() => chooseInstallAuth('key')} /> Private key</label>
-              </div>
-              <small>Choose one method. Credentials are used for this installation.</small>
-            </fieldset>
-            {#if installAuthMethod === 'password'}
-              <label class="form-wide">SSH password<input type="password" bind:value={installPassword} autocomplete="off" placeholder="SSH user password" required /></label>
-            {:else}
-              <label class="form-wide">OpenSSH private key<textarea bind:value={installKey} rows="4" autocomplete="off" placeholder="Paste OpenSSH private key" required></textarea></label>
-              <label class="form-wide">Key passphrase <small>(if encrypted)</small><input type="password" bind:value={installKeyPassphrase} autocomplete="off" /></label>
-            {/if}
-            <label>Host-key fingerprint <small>(required for new hosts)</small><input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
-            <small class="form-wide muted">Verify the SHA256 fingerprint through a trusted channel before installing. A matching existing known_hosts entry can be reused.</small>
+            <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} />
             <div class="setup-actions">
               <button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button>
               <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
-                {createServerBusy ? 'Connecting…' : 'Add and install server'}
+                {#if createServerBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Add and install server{/if}
               </button>
             </div>
           </form>
-          {#if jobError}<p class="form-error">{jobError}</p>{/if}
+          {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
         </article>
-        <article class="panel">
-          <h2>Or run one command on the server</h2>
-          <p class="muted">Use this when you are already logged in to the server. Name it, copy the command, and run it there as a user with sudo. The server installs Payesh and joins this hub.</p>
-          <form class="form-grid" on:submit|preventDefault={() => void createJoinCommand()}>
-            <label class="form-wide">Server name<input bind:value={joinName} maxlength="128" placeholder="e.g. EU-Node-02" required /></label>
-            <div class="setup-actions form-wide">
-              <button class="button primary" type="submit" disabled={joinBusy || !joinName.trim()}>{joinBusy ? 'Creating…' : 'Create command'}</button>
-            </div>
-          </form>
-          {#if joinError}<p class="form-error" role="alert">{joinError}</p>{/if}
-          {#if joinCommand}
-            <div class="join-command">
-              <pre tabindex="0" aria-label="Join command"><code>{joinCommand}</code></pre>
-              <button class="button small" type="button" on:click={() => void copyJoinCommand()}>{joinCopied ? 'Copied' : 'Copy command'}</button>
-              <p class="muted">The command contains a single-use token and stops working at {new Date(joinExpiresAt).toLocaleString()}. Treat it like a password.</p>
-            </div>
-          {/if}
-        </article>
+
+        <div class="or-divider" aria-hidden="true"><span>or</span></div>
+
+        <JoinCommandPanel onCreated={(created) => (servers = [...servers, emptyApiServer(created)])} />
       </section>
 
     {:else if activePage === 'install-progress'}
       <section class="page" aria-labelledby="install-progress-title">
-        <button class="back-link" type="button" on:click={() => navigate('servers')}>
-          <Icon name="arrow-left" size={15} />
-          <span>Back to servers</span>
-        </button>
+        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>Back to servers</span></button>
         <div class="page-heading">
           <div>
-            <h1 id="install-progress-title" tabindex="-1">{activeInstall ? `Installing ${activeInstall.serverName}` : 'Server Installation'}</h1>
-            <p class="lede">
-              {activeInstall
-                ? `Connecting over SSH to ${activeInstall.host}:${activeInstall.port} and monitoring deployment progress.`
-                : 'No active deployment found.'}
-            </p>
+            <h1 id="install-progress-title" tabindex="-1">{!activeInstall ? 'Server installation' : activeInstall.currentStage === 'failed' ? `Could not install ${activeInstall.serverName}` : activeInstall.currentStage === 'cancelled' ? `Installation of ${activeInstall.serverName} cancelled` : `Installing ${activeInstall.serverName}`}</h1>
+            <p class="lede">{!activeInstall ? 'No active deployment found.' : activeInstall.currentStage === 'failed' || activeInstall.currentStage === 'cancelled' ? `SSH target ${activeInstall.user}@${activeInstall.host}:${activeInstall.port}.` : `Connecting over SSH to ${activeInstall.host}:${activeInstall.port} and monitoring deployment progress.`}</p>
           </div>
         </div>
 
         {#if activeInstall}
+          {#await lazy.InstallProgress() then { default: InstallProgress }}
           <InstallProgress
             install={activeInstall}
             onCancel={() => promptCancelInstall()}
@@ -2707,606 +1537,128 @@
             }}
             onAddAnother={() => openAddServer()}
           />
+          {:catch}{@render chunkFailed()}{/await}
         {:else}
           <div class="state-panel">
             <div class="state-icon"><Icon name="servers" size={28} /></div>
             <h2>No active deployment</h2>
             <p>Select a server from the fleet or add a new server to start an installation.</p>
-            <button class="button primary" type="button" on:click={() => openAddServer()}>
-              <Icon name="plus" size={15} />
-              <span>Add a server</span>
-            </button>
+            <button class="button primary" type="button" on:click={() => openAddServer()}><Icon name="plus" size={15} /><span>Add a server</span></button>
           </div>
         {/if}
       </section>
 
     {:else if activePage === 'alerts'}
-      <section class="page" aria-labelledby="alerts-title">
-        <div class="page-heading">
-          <div>
-            <h1 id="alerts-title" tabindex="-1">Alerts</h1>
-
-          </div>
-          <button class="button ghost" type="button" on:click={() => void loadAlerts()}>
-            <Icon name="refresh" size={14} />
-            <span>Reload</span>
-          </button>
-        </div>
-
-        {#if alertsState === 'loading'}
-          <div class="state-panel"><div class="loading-spinner"></div><h2>Loading alert states…</h2></div>
-        {:else if alertsState === 'error'}
-          <div class="state-panel error-state">
-            <h2>Could not load alerts</h2>
-            <p>{alertsError}</p>
-            <button class="button primary" on:click={() => void loadAlerts()}>Retry</button>
-          </div>
-        {:else if alertsState === 'empty'}
-          <div class="state-panel">
-            <div class="state-icon positive"><Icon name="check" size={24} /></div>
-            <h2>All systems operating normally</h2>
-            <p>No active incidents or firing alert rules across the fleet.</p>
-          </div>
-        {:else}
-          <div class="alerts-pagination-bar">
-            <div class="alerts-count-info">
-              <span>Showing {alerts.length === 0 ? 0 : alertsPage * alertsPageSize + 1}–{Math.min(alerts.length, (alertsPage + 1) * alertsPageSize)} of {alerts.length}</span>
-            </div>
-            <div class="alerts-pager">
-              <label class="page-size-selector">
-                <span>Per page:</span>
-                <select bind:value={alertsPageSize} on:change={() => alertsPage = 0}>
-                  <option value={10}>10</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-              </label>
-              <button class="button ghost small" type="button" disabled={alertsPage === 0} on:click={() => alertsPage--}>Previous</button>
-              <span class="pager-info">Page {alertsPage + 1} of {totalAlertPages}</span>
-              <button class="button ghost small" type="button" disabled={alertsPage >= totalAlertPages - 1} on:click={() => alertsPage++}>Next</button>
-            </div>
-          </div>
-
-          <div class="server-list">
-            {#each pagedAlerts as alert}
-              <article class="server-row alert-row">
-                <span class={`status-pill ${alert.state === 'firing' ? 'failed' : alert.state === 'pending' ? 'stale' : 'healthy'}`}>
-                  <i class="status-dot"></i>
-                  <span>{alert.state}</span>
-                </span>
-                <span class="server-identity">
-                  <strong>{alert.rule_id}</strong>
-                  <small>{servers.find((server) => server.id === alert.server_id)?.name || alert.server_id || 'Fleet-wide'}</small>
-                </span>
-                <span class="server-status">
-                  <small class="faint">{alert.last_observation ? formatDateTimeInTz(alert.last_observation, currentTimezone) : 'Awaiting observation'}</small>
-                </span>
-                {#if alert.last_value !== undefined}
-                  <span class="server-metric">
-                    <strong>{alert.last_value.toFixed(2)}</strong>
-                    <small>Value</small>
-                  </span>
-                {/if}
-              </article>
-            {/each}
-          </div>
-
-          {#if totalAlertPages > 1}
-            <div class="alerts-pagination-bar bottom">
-              <button class="button ghost small" type="button" disabled={alertsPage === 0} on:click={() => alertsPage--}>Previous</button>
-              <span class="pager-info">Page {alertsPage + 1} of {totalAlertPages}</span>
-              <button class="button ghost small" type="button" disabled={alertsPage >= totalAlertPages - 1} on:click={() => alertsPage++}>Next</button>
-            </div>
-          {/if}
-        {/if}
-      </section>
-
+      <AlertsPage {alerts} loadState={alertsState} error={alertsError} {servers} timezone={currentTimezone} onReload={() => void loadAlerts()} />
     {:else if activePage === 'logs'}
-      <section class="page" aria-labelledby="logs-title">
-        <div class="page-heading">
-          <div>
-            <h1 id="logs-title" tabindex="-1">Logs</h1>
-          </div>
-          <div class="heading-actions">
-            <button class="button ghost small" type="button" disabled={fleetLogState === 'loading'} on:click={() => void loadFleetLogs()}>
-              <Icon name="refresh" size={13} />
-              <span>{fleetLogState === 'loading' ? 'Loading…' : 'Reload'}</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="logs-toolbar panel">
-          <div class="logs-toolbar-filters">
-            <!-- Node Selector -->
-            <div class="log-control-group">
-              <label for="log-server-filter" class="control-label">Node</label>
-              <select id="log-server-filter" bind:value={fleetLogServerFilter} on:change={() => void loadFleetLogs()}>
-                <option value="all">All nodes ({servers.length})</option>
-                {#each servers as server}
-                  <option value={server.id}>{server.name} ({server.role === 'node' ? 'Node' : 'Master'})</option>
-                {/each}
-              </select>
-            </div>
-
-            <!-- Severity Filter Buttons -->
-            <div class="log-control-group">
-              <span class="control-label">Severity</span>
-              <div class="level-chip-group" role="group" aria-label="Filter logs by severity">
-                <button type="button" class="level-chip" class:active={fleetLogLevelFilter === 'all'} on:click={() => fleetLogLevelFilter = 'all'}>
-                  All <span class="chip-count">{fleetLogEntries.length}</span>
-                </button>
-                <button type="button" class="level-chip error" class:active={fleetLogLevelFilter === 'error'} on:click={() => fleetLogLevelFilter = 'error'}>
-                  <span class="chip-dot error"></span> Errors <span class="chip-count">{errorCount}</span>
-                </button>
-                <button type="button" class="level-chip warn" class:active={fleetLogLevelFilter === 'warn'} on:click={() => fleetLogLevelFilter = 'warn'}>
-                  <span class="chip-dot warn"></span> Warnings <span class="chip-count">{warnCount}</span>
-                </button>
-                <button type="button" class="level-chip info" class:active={fleetLogLevelFilter === 'info'} on:click={() => fleetLogLevelFilter = 'info'}>
-                  <span class="chip-dot info"></span> Info <span class="chip-count">{infoCount}</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Time Window Filter -->
-            <div class="log-control-group">
-              <label for="log-window-filter" class="control-label">Window</label>
-              <select id="log-window-filter" bind:value={fleetLogWindow} on:change={() => void loadFleetLogs()}>
-                <option value="1h">Last 1h</option>
-                <option value="6h">Last 6h</option>
-                <option value="24h">Last 24h</option>
-                <option value="7d">Last 7d</option>
-              </select>
-            </div>
-
-            <!-- Fetch Limit -->
-            <div class="log-control-group">
-              <label for="log-limit-filter" class="control-label">Fetch Limit</label>
-              <select id="log-limit-filter" bind:value={fleetLogFetchLimit} on:change={() => void loadFleetLogs()}>
-                <option value={100}>Latest 100</option>
-                <option value={250}>Latest 250</option>
-                <option value={500}>Latest 500</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- Search filter input -->
-          <div class="logs-toolbar-search">
-            <div class="log-search-input-box">
-              <Icon name="search" size={14} />
-              <input type="search" placeholder="Search message, node, or source…" bind:value={fleetLogSearchQuery} />
-              {#if fleetLogSearchQuery}
-                <button type="button" class="search-clear-btn" on:click={() => fleetLogSearchQuery = ''} aria-label="Clear search">
-                  <Icon name="x" size={12} />
-                </button>
-              {/if}
-            </div>
-          </div>
-        </div>
-
-        {#if fleetLogState === 'loading'}
-          <div class="state-panel">
-            <div class="loading-spinner" aria-hidden="true"></div>
-            <h2>Loading logs…</h2>
-          </div>
-        {:else if fleetLogState === 'error'}
-          <div class="unavailable-panel">
-            <strong>Could not load logs</strong>
-            <span>{fleetLogError}</span>
-            <button class="button ghost small" type="button" on:click={() => void loadFleetLogs()}>Retry</button>
-          </div>
-        {:else if fleetLogState === 'empty' || filteredFleetLogs.length === 0}
-          <div class="unavailable-panel">
-            <strong>No log entries found</strong>
-            <span>{fleetLogEntries.length > 0 ? 'No entries match your current level or search filter.' : 'No entries returned from the selected node(s).'}</span>
-            {#if fleetLogEntries.length > 0}
-              <button class="button ghost small" type="button" on:click={() => { fleetLogLevelFilter = 'all'; fleetLogSearchQuery = ''; }}>Clear filters</button>
-            {:else}
-              <button class="button ghost small" type="button" on:click={() => void loadFleetLogs()}>Reload</button>
-            {/if}
-          </div>
-        {:else}
-          <div class="terminal-log-viewer fleet-log-viewer">
-            <div class="logs-pagination-bar top">
-              <div class="logs-page-summary">
-                <span class="mono faint">
-                  {#if filteredFleetLogs.length === 0}
-                    Showing 0 entries
-                  {:else}
-                    Showing {fleetLogPage * fleetLogPageSize + 1}–{Math.min((fleetLogPage + 1) * fleetLogPageSize, filteredFleetLogs.length)} of {filteredFleetLogs.length} entries
-                  {/if}
-                  {#if filteredFleetLogs.length !== fleetLogEntries.length}
-                    (filtered from {fleetLogEntries.length})
-                  {/if}
-                  · {currentTimezone}
-                </span>
-              </div>
-              <div class="logs-pagination-controls">
-                <div class="page-size-selector">
-                  <label for="fleet-log-page-size" class="faint">Per page:</label>
-                  <select id="fleet-log-page-size" bind:value={fleetLogPageSize}>
-                    <option value={50}>50</option>
-                    <option value={100}>100 (Default)</option>
-                    <option value={250}>250</option>
-                    <option value={500}>500</option>
-                  </select>
-                </div>
-                {#if totalFleetLogPages > 1}
-                  <div class="pager-buttons">
-                    <button class="button ghost small icon-only" type="button" title="First page" disabled={fleetLogPage === 0} on:click={() => fleetLogPage = 0}>«</button>
-                    <button class="button ghost small" type="button" disabled={fleetLogPage === 0} on:click={() => fleetLogPage -= 1}>‹ Prev</button>
-                    <span class="pager-info mono">Page {fleetLogPage + 1} of {totalFleetLogPages}</span>
-                    <button class="button ghost small" type="button" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage += 1}>Next ›</button>
-                    <button class="button ghost small icon-only" type="button" title="Last page" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage = totalFleetLogPages - 1}>»</button>
-                  </div>
-                {/if}
-              </div>
-            </div>
-
-            <div class="log-list">
-              {#each pagedFleetLogs as entry (entry.id)}
-                <div class="log-entry">
-                  <time class="mono tabular">{formatLogTimeInTz(entry.timestamp, currentTimezone)}</time>
-                  {#if fleetLogServerFilter === 'all'}
-                    <span class="log-server-badge">{entry.serverName}</span>
-                  {/if}
-                  <span class={`log-level-badge ${entry.level.toLowerCase()}`}>{entry.level}</span>
-                  <span class="log-text mono">
-                    <span>{entry.text}</span>
-                    <small class="faint">{entry.source} #{entry.cursor}</small>
-                  </span>
-                </div>
-              {/each}
-            </div>
-
-            {#if filteredFleetLogs.length > 0}
-              <div class="logs-pagination-bar bottom">
-                <div class="logs-page-summary">
-                  <span class="mono faint">Page {fleetLogPage + 1} of {totalFleetLogPages} · {filteredFleetLogs.length} entries total</span>
-                </div>
-                <div class="logs-pagination-controls">
-                  {#if totalFleetLogPages > 1}
-                    <div class="pager-buttons">
-                      <button class="button ghost small icon-only" type="button" title="First page" disabled={fleetLogPage === 0} on:click={() => fleetLogPage = 0}>«</button>
-                      <button class="button ghost small" type="button" disabled={fleetLogPage === 0} on:click={() => fleetLogPage -= 1}>‹ Prev</button>
-                      <span class="pager-info mono">Page {fleetLogPage + 1} of {totalFleetLogPages}</span>
-                      <button class="button ghost small" type="button" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage += 1}>Next ›</button>
-                      <button class="button ghost small icon-only" type="button" title="Last page" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage = totalFleetLogPages - 1}>»</button>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </section>
-
+      {#await lazy.LogsPage() then { default: LogsPage }}<LogsPage {servers} timezone={currentTimezone} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
     {:else if activePage === 'packages'}
-      <section class="page" aria-labelledby="packages-title">
-        <div class="page-heading">
-          <div>
-            <h1 id="packages-title" tabindex="-1">Packages</h1>
-
-          </div>
-          <button class="button ghost" type="button" on:click={() => void loadModules(true)}>
-            <Icon name="refresh" size={14} />
-            <span>Refresh catalog</span>
-          </button>
-        </div>
-
-
-        {#if modulesError && modulesState === 'ready'}<p class="muted" role="status">{modulesError}</p>{/if}
-        {#if modulesState === 'loading'}
-          <div class="state-panel"><div class="loading-spinner"></div><h2>Loading modules…</h2></div>
-        {:else if modulesState === 'error'}
-          <div class="state-panel error-state">
-            <h2>Could not load packages</h2>
-            <p>{modulesError}</p>
-            <button class="button primary" on:click={() => void loadModules(true)}>Retry</button>
-          </div>
-        {:else if modulesState === 'empty'}
-          <div class="state-panel">
-            <h2>No packages available</h2>
-            <p>The verified package catalog is currently empty.</p>
-          </div>
-        {:else}
-          <div class="module-grid">
-            {#each modules as module}
-              <article class="panel module-card">
-                <div class="module-top">
-                  <div class="module-badge">{module.id}</div>
-                  <span class="release-tag">v{module.latest_version}</span>
-                </div>
-                <h2>{module.name}</h2>
-                <p class="muted module-desc">{module.description || 'Optional Payesh extension capability.'}</p>
-                <div class="module-meta"><span>Install on your master or a node</span></div>
-                {#if myAccount?.permission !== 'read'}<button class="button primary small full-width" disabled={module.install_supported === false || !!packageBusy || !servers.length} on:click={() => openPackageDialog(module)}>{module.install_supported === false ? 'Requires Payesh update' : 'Install'}</button>{/if}
-              </article>
-            {/each}
-          </div>
-        {/if}
-        {#if packageError}<p class="form-error" role="alert">{packageError}</p>{/if}
-      </section>
+      <PackagesPage {modules} loadState={modulesState} error={modulesError} packageError="" readOnly={myAccount?.permission === 'read'} busy={!!packageDialog} hasServers={servers.length > 0} onRefresh={() => void loadModules(true)} onInstall={(module) => openPackageDialog(module)} />
 
     {:else if activePage === 'settings'}
       <section class="page" aria-labelledby="settings-title">
         <div class="page-heading">
           <div>
             <h1 id="settings-title" tabindex="-1">Settings</h1>
+            <p class="lede">Hub configuration and your personal preferences.</p>
           </div>
         </div>
 
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="Settings sections" on:focusin={(event) => {
-            if (event.target instanceof HTMLButtonElement) event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            // Keyboard focus only: scrolling on mouse down moves the button away from the pointer and swallows the click.
+            if (event.target instanceof HTMLButtonElement && event.target.matches(':focus-visible')) event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
           }}>
-            <button type="button" aria-current={settingsSection === 'general' ? 'page' : undefined} class:chosen={settingsSection === 'general'} on:click={() => { settingsSection = 'general'; }}>General</button>
-            <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => { settingsSection = 'tls'; if (!PREVIEW_MODE) void loadHTTPS(); }}>SSL / TLS</button>
-            <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => { settingsSection = 'updates'; if (!PREVIEW_MODE) void checkLatestUpdate(); }}>Versions & updates</button>
-            <button type="button" aria-current={settingsSection === 'storage' ? 'page' : undefined} class:chosen={settingsSection === 'storage'} on:click={() => { settingsSection = 'storage'; if (!PREVIEW_MODE) void loadStorageSettings(); }}>Storage & sampling</button>
-            <button type="button" aria-current={settingsSection === 'notifications' ? 'page' : undefined} class:chosen={settingsSection === 'notifications'} on:click={() => { settingsSection = 'notifications'; void loadNotifications(); }}>Notifications{unreadNotifications ? ` (${unreadNotifications})` : ''}</button>
-            {#if myAccount?.role === 'owner'}<button type="button" aria-current={settingsSection === 'users' ? 'page' : undefined} class:chosen={settingsSection === 'users'} on:click={() => settingsSection = 'users'}>User management</button>{/if}
+            {#each settingsSections as section (section.id)}
+              {#if section.id !== 'users' || myAccount?.role === 'owner'}
+                <button type="button" aria-current={settingsSection === section.id ? 'page' : undefined} class:chosen={settingsSection === section.id} on:click={() => openSettings(section.id)}>
+                  <Icon name={section.icon} size={15} />
+                  <span>{section.label}</span>
+                  {#if section.id === 'notifications' && unreadNotifications}<span class="nav-badge">{unreadNotifications}</span>{/if}
+                </button>
+              {/if}
+            {/each}
           </nav>
-          <div class="settings-grid">
-          {#if settingsSection === 'general'}
-          <article class="panel account-management">
-            <div class="panel-heading"><div><h2>General</h2></div></div>
-            <div class="settings-meta-box">
-              <div class="meta-row"><span>Active timezone</span><strong>{currentTimezone}</strong></div>
-              <div class="meta-row"><span>Time preview</span><strong class="tabular">{formatTimeInTz(new Date(), currentTimezone, true)} · {formatDateTimeInTz(new Date(), currentTimezone)}</strong></div>
-            </div>
-            <form class="form-grid" on:submit|preventDefault={() => {}}>
-              <label>Timezone
-                <select value={currentTimezone} on:change={(e) => changeTimezone(e.currentTarget.value)}>
-                  {#each getAvailableTimezones() as tz}
-                    <option value={tz}>{tz}</option>
-                  {/each}
-                </select>
-              </label>
-            </form>
-          </article>
-          {:else if settingsSection === 'storage'}
-          <article class="panel account-management storage-settings-panel">
-            <div class="panel-heading"><div><h2>Storage & sampling</h2></div><button class="button ghost small" disabled={storageBusy || PREVIEW_MODE} on:click={() => void loadStorageSettings()}>Refresh</button></div>
-            {#if storageStatus}
-              <div class="settings-meta-box">
-                <div class="meta-row"><span>Total storage usage</span><strong>{formatBytes(String(storageUsageBytes))} / {formatBytes(String(storageStatus.settings.max_database_bytes))}</strong></div>
-                <div class="progress"><span style={`width:${Math.min(100, storageUsageBytes / storageStatus.settings.max_database_bytes * 100)}%`}></span></div>
-                {#if recoverySnapshotBytes > 0}
-                  <div class="meta-row"><span>Database and journals</span><strong>{formatBytes(String(storageStatus.database_bytes))}</strong></div>
-                  <div class="meta-row"><span>Recovery snapshots</span><strong>{formatBytes(String(recoverySnapshotBytes))}</strong></div>
-                {/if}
-                <div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div>
-              </div>
-              <form class="form-grid" on:submit|preventDefault={() => void saveStorageSettings()}>
-                <label>Maximum storage size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
-                <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
-                <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
-                <label>Automatic sampling reduction<select bind:value={adaptiveSampling} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
-                <label>Storage notifications<select bind:value={storageNotificationsEnabled} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
-                {#if myAccount?.role === 'owner'}<button class="button primary" type="submit" disabled={storageBusy || PREVIEW_MODE}>{storageBusy ? 'Saving…' : 'Save settings'}</button>{/if}
-              </form>
-            {:else if storageBusy}<p role="status">Loading storage settings…</p>{/if}
-            {#if storageError}<p class="form-error" role="alert">{storageError}</p>{/if}
-            {#if storageSaved}<p class="success-text" role="status">{storageSaved}</p>{/if}
-          </article>
-          {:else if settingsSection === 'notifications'}
-          <article class="panel account-management">
-            <div class="panel-heading"><div><h2>Notifications</h2></div><div class="settings-actions"><button class="button ghost small" type="button" disabled={notificationBusy} on:click={() => void loadNotifications()}>Refresh</button>{#if myAccount?.permission === 'edit'}<button class="button ghost small" type="button" disabled={!unreadNotifications || notificationBusy} on:click={() => void markNotificationsRead()}>Mark all read</button>{/if}</div></div>
-            {#if notificationError}<p class="form-error" role="alert">{notificationError}</p>{/if}
-            <div class="notification-list">{#each notificationItems as item (item.id)}<article class:unread={!item.read}><div><strong>{item.kind === 'storage_full' ? 'Database limit reached' : item.kind === 'storage_cleanup' ? 'Old history removed' : item.kind === 'storage_saving' ? 'Database storage pressure' : item.kind === 'storage_warning' ? 'Database nearly full' : 'Storage recovered'}</strong><time datetime={item.created_at}>{formatDateTimeInTz(item.created_at, currentTimezone)}</time></div><p>{item.message}</p></article>{:else}<p class="muted">{notificationBusy ? 'Loading notifications…' : 'No storage notifications yet.'}</p>{/each}</div>
-          </article>
-          {:else if settingsSection === 'users' && myAccount?.role === 'owner'}
-          <article class="panel account-management">
-            <div class="panel-heading"><div><h2>User management</h2><span class="muted">{accounts.length} users</span></div><button class="button primary small" type="button" on:click={() => addingUser = !addingUser}>{addingUser ? 'Cancel' : 'Add user'}</button></div>
-            <label class="user-search">Search users<input bind:value={userSearch} placeholder="Search by username" /></label>
-            <div class="account-list">
-              <div class="user-table-head"><span>User</span><span>Role</span><span>Access</span><span>Actions</span></div>
-              {#each accounts.filter(account => account.username.toLowerCase().includes(userSearch.toLowerCase())) as account}
-                <div class="account-row">
-                  <strong>{account.username}</strong><span class="user-role">{account.role}</span><span>{account.permission === 'read' ? 'Read only' : 'Can edit'}</span>
-                  <div class="settings-actions"><button class="button ghost small" type="button" on:click={() => startEditingAccount(account)}>Edit</button>{#if account.role !== 'owner'}<button class="button ghost small" type="button" on:click={() => void removeAccount(account)}>Remove</button>{/if}</div>
-                </div>
-                {#if editingAccount === account.username}
-                  <form class="form-grid account-edit-form" on:submit|preventDefault={() => void editAccount(account)}>
-                    <label>Username<input bind:value={editUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-                    <label><span id="edit-password-label">New password</span><input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" aria-labelledby="edit-password-label" /></label>
-                    {#if account.role !== 'owner'}
-                      <label>Role<select bind:value={editRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
-                      <label>Permission<select bind:value={editPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
-                    {/if}
-                    <div class="settings-actions"><button class="button primary small" type="submit" disabled={accountBusy}>Save changes</button><button class="button ghost small" type="button" on:click={() => editingAccount = ''}>Cancel</button></div>
-                  </form>
-                {/if}
-              {/each}
-            </div>
-            {#if addingUser}<form class="form-grid account-edit-form" on:submit|preventDefault={() => void saveAccount()}>
-              <h3 class="form-wide">New user</h3>
-              <label>Username<input bind:value={accountUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-              <label><span id="new-password-label">Password</span><input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" aria-labelledby="new-password-label" /></label>
-              <label>Role<select bind:value={accountRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
-              <label>Permission<select bind:value={accountPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
-              <button class="button primary" type="submit" disabled={accountBusy}>Create user</button>
-            </form>{/if}
-            {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
-          </article>
-          {/if}
-          {#if settingsSection === 'updates'}<article class="panel account-management">
-            <div class="panel-heading"><div><h2>Versions & updates</h2></div><button class="button ghost small" type="button" disabled={updateCheckBusy || PREVIEW_MODE} on:click={() => void checkLatestUpdate()}>{#if updateCheckBusy}<span class="version-spinner" aria-hidden="true"></span>Checking version…{:else}<Icon name="refresh" size={14} />Check version{/if}</button></div>
-            <div class="settings-meta-box">
-              <div class="meta-row"><span>Installed version</span><strong>{updateStatus?.current ? `v${updateStatus.current}` : servers.find(server => server.role !== 'node')?.version ?? 'Unavailable'}</strong></div>
-            </div>
-            {#if updateCheckBusy}<div class="version-checking" role="status"><span class="version-spinner" aria-hidden="true"></span><div><strong>Checking for updates</strong></div></div>{/if}
-            {#if updateStatus && !updateCheckBusy && !updateCheckError}
-              <div class="settings-meta-box">
-                <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
-                <div class="meta-row"><span>Status</span><span class={`status-pill ${installedAhead || updateStatus.update_available ? 'pending' : 'healthy'}`} role="status"><Icon name={updateStatus.update_available ? 'refresh' : 'check'} size={14} />{installedAhead ? 'Beta · ahead of latest release' : updateStatus.update_available ? 'Update available' : 'Up to date'}</span></div>
-              </div>
-              {#if webUpdateActive}
-                <p class="update-progress" role="status">Updating to v{webUpdate?.target}… {webUpdate?.state === 'queued' ? 'Waiting for the update service.' : 'Installing. The dashboard will restart and reload automatically.'}</p>
-              {:else if updateStatus.update_available && myAccount?.role === 'owner'}
-                {#if updateStatus.web_update_supported}
-                  <button class="button primary small" type="button" disabled={updateApplyBusy} on:click={() => void startWebUpdate(updateStatus?.latest ?? '')}>{updateApplyBusy ? 'Starting…' : `Update to v${updateStatus.latest}`}</button>
-                {:else}
-                  <p class="muted">Updating from the browser is not set up on this server yet. Run the command below once; later updates can be done here.</p>
-                {/if}
-              {/if}
-            {/if}
-            {#if updateCheckError}<p class="form-error" role="alert">{updateCheckError}</p>{/if}
-            {#if updateApplyError}<p class="form-error" role="alert">{updateApplyError}</p>{/if}
-            <h3>Release history</h3>
-            {#if releaseList.length}
-              <div class="release-list">{#each visibleReleases as release (release.version)}<div class="release-row"><strong>v{release.version}</strong><span>{release.version === updateStatus?.current ? 'Installed' : new Date(release.published_at).toLocaleDateString()}</span><span class="release-actions"><a href={release.url} target="_blank" rel="noopener noreferrer">Release notes ↗</a>{#if myAccount?.role === 'owner' && updateStatus?.web_update_supported && !webUpdateActive && isNewerVersion(release.version, updateStatus.current)}<button class="button ghost small" type="button" disabled={updateApplyBusy} on:click={() => void startWebUpdate(release.version)}>Install</button>{/if}</span></div>{/each}</div>
-              {#if releasePageCount > 1}
-                <div class="release-pager"><button class="button ghost small" type="button" disabled={releasePage === 0} on:click={() => releasePage -= 1}>Newer</button><span class="muted">Page {releasePage + 1} of {releasePageCount} · {releaseList.length} releases</span><button class="button ghost small" type="button" disabled={releasePage >= releasePageCount - 1} on:click={() => releasePage += 1}>Older</button></div>
-              {/if}
-            {:else}<p class="muted">{updateCheckBusy ? 'Loading releases…' : 'Release history unavailable.'}</p>{/if}
-            <h3>Update command</h3>
-            <code class="update-command">sudo payesh update</code>
-          </article>{/if}
-          {#if settingsSection === 'tls'}<article class="panel">
-            <div class="panel-heading">
-              <div>
-                <h2>SSL / TLS</h2>
-              </div>
-            </div>
-            <div class="settings-meta-box">
-              <div class="meta-row">
-                <span>Status</span>
-                {#if PREVIEW_MODE}
-                  <span class="status-pill">Fixture preview · no hub connection</span>
-                {:else if browserHTTPS || httpsStatus?.state === 'active'}
-                  <span class="status-pill healthy"><i class="status-dot"></i> HTTPS active</span>
-                {:else if httpsStatus?.state === 'pending'}
-                  <span class="status-pill pending"><i class="status-dot"></i> Requesting certificate…</span>
-                {:else if httpsStatus?.state === 'failed'}
-                  <span class="status-pill failed"><i class="status-dot"></i> Certificate request failed</span>
-                {:else if httpsStatusLoading || (!httpsStatus && !httpsError)}
-                  <span class="status-pill pending">Checking HTTPS status…</span>
-                {:else if httpsError}
-                  <span class="status-pill pending">HTTPS settings unavailable</span>
-                {:else}
-                  <span class="status-pill pending"><i class="status-dot"></i> Not encrypted (HTTP)</span>
+          <div class="settings-content">
+            {#key settingsSection}
+              <div class="settings-section">
+                {#if settingsSection === 'general'}
+                  {#await lazy.GeneralSettings() then { default: GeneralSettings }}<GeneralSettings {appearance} timezone={currentTimezone} onAppearance={setAppearance} onTimezone={changeTimezone} />{:catch}{@render chunkFailed()}{/await}
+                {:else if settingsSection === 'storage'}
+                  {#await lazy.StorageSettings() then { default: StorageSettings }}<StorageSettings isOwner={myAccount?.role === 'owner'} onSaved={showSettingsSavedDialog} onAuthExpired={() => (authExpired = true)} onNotificationsChanged={() => void loadNotifications()} />{:catch}{@render chunkFailed()}{/await}
+                {:else if settingsSection === 'notifications'}
+                  {#await lazy.NotificationsSettings() then { default: NotificationsSettings }}<NotificationsSettings items={notificationItems} busy={notificationBusy} error={notificationError} canEdit={myAccount?.permission === 'edit'} timezone={currentTimezone} onRefresh={() => void loadNotifications()} onMarkRead={() => void markNotificationsRead()} />{:catch}{@render chunkFailed()}{/await}
+                {:else if settingsSection === 'users' && myAccount?.role === 'owner'}
+                  {#await lazy.UsersSettings() then { default: UsersSettings }}<UsersSettings {accounts} currentUser={myAccount.username} onChanged={loadAccounts} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onOwnPasswordChanged={handleOwnPasswordChanged} />{:catch}{@render chunkFailed()}{/await}
+                  {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
+                {:else if settingsSection === 'updates'}
+                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
+                {:else if settingsSection === 'tls'}
+                  {#await lazy.TlsSettings() then { default: TlsSettings }}<TlsSettings readOnly={myAccount?.permission === 'read'} {insecureConnection} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {/if}
               </div>
-              {#if browserHTTPS && httpsStatus?.state !== 'active'}<div class="meta-row"><span>Connection</span><span>This browser connection uses HTTPS.</span></div>{/if}
-              {#if httpsStatus?.domain}
-                <div class="meta-row"><span>Address</span><span class="mono">{#if httpsStatus.state === 'active'}<a href={httpsURL(httpsStatus)}>{httpsURL(httpsStatus)}</a>{:else}{httpsStatus.domain}{/if}</span></div>
-              {/if}
-              {#if httpsStatus?.expires_at}
-                <div class="meta-row"><span>Renews before</span><span>{new Date(httpsStatus.expires_at).toLocaleDateString()}</span></div>
-              {/if}
-            </div>
-            {#if httpsStatus?.state === 'failed' && httpsStatus.error}<p class="form-error" role="alert">{httpsStatus.error}</p>{/if}
-            <form class="form-grid" on:submit|preventDefault={() => void saveHTTPS()}>
-              <label>Domain<input bind:value={httpsDomain} placeholder="panel.example.com" autocomplete="off" required disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
-              <label>Email (optional)<input type="email" bind:value={httpsEmail} placeholder="you@example.com" autocomplete="email" disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
-              <label>Cloudflare API token (optional)<input type="password" bind:value={httpsToken} placeholder="Only needed if port 80 is in use" autocomplete="off" disabled={httpsBusy || myAccount?.permission === 'read'} /></label>
-            </form>
-            {#if httpsError}<p class="form-error" role="alert">{httpsError}</p>{/if}
-            <div class="settings-actions">
-              <button class="button primary" type="button" disabled={httpsBusy || PREVIEW_MODE || myAccount?.permission === 'read' || !httpsDomain.trim()} on:click={() => void saveHTTPS()}>{httpsBusy ? 'Requesting certificate…' : httpsStatus?.domain ? 'Update certificate' : 'Enable HTTPS'}</button>
-              {#if httpsStatus?.domain && !httpsBusy && myAccount?.permission !== 'read'}<button class="button ghost" type="button" on:click={() => promptRemoveHTTPS()}>Remove domain</button>{/if}
-            </div>
-          </article>
-          {/if}
-          {#if settingsSection === 'tls'}<article class="panel connection-settings-panel">
-            <div class="panel-heading"><h2>Dashboard port</h2></div>
-            <form class="port-form" on:submit|preventDefault={() => void saveDashboardPort()}>
-              <label>Dashboard port<input type="number" min="1" max="65535" required bind:value={dashboardPort} disabled={portBusy || myAccount?.permission === 'read'} /></label>
-              <button class="button primary" type="submit" disabled={portBusy || PREVIEW_MODE || myAccount?.permission === 'read'}>{portBusy ? 'Checking port…' : 'Change port'}</button>
-            </form>
-            {#if portError}<p class="form-error" role="alert">{portError}</p>{/if}
-          </article>{/if}
-          {#if settingsSection === 'tls'}<article class="panel connection-settings-panel">
-            <div class="panel-heading"><h2>Node transport port</h2></div>
-            <form class="port-form" on:submit|preventDefault={() => void saveNodePort()}>
-              <label>Node transport port<input type="number" min="1" max="65535" required bind:value={nodePort} disabled={nodePortBusy || PREVIEW_MODE || myAccount?.permission === 'read'} /></label>
-              <button class="button primary" type="submit" disabled={nodePortBusy || PREVIEW_MODE || !nodeTransportStatus?.url || Number(nodePort) === Number(nodeTransportStatus.port) || myAccount?.permission === 'read'}>{nodePortBusy ? 'Saving…' : 'Change node port'}</button>
-            </form>
-            {#if nodeTransportLoading && !nodeTransportStatus}<p class="muted" role="status">Loading node transport settings…</p>{/if}
-            {#if nodeTransportLoadError}
-              <p class="form-error" role="alert">{nodeTransportLoadError}</p>
-              <button class="button ghost" type="button" disabled={nodeTransportLoading} on:click={() => void loadNodeTransport()}>{nodeTransportLoading ? 'Retrying…' : 'Retry node settings'}</button>
-            {/if}
-            {#if nodePortError}<p class="form-error" role="alert">{nodePortError}</p>{/if}
-            {#if nodeTransportStatus}
-              {#if nodeTransportStatus.url}<p class="mono">{nodeTransportStatus.url}</p>{:else}<p class="muted">Enable HTTPS to connect nodes.</p>{/if}
-              <p class="muted">{nodeTransportStatus.migrated} of {nodeTransportStatus.total} nodes on current port.</p>
-              {#each nodeTransportStatus.nodes as node (node.id)}
-                <div class="meta-row"><span>{node.name}</span><span>{node.state === 'migrated' ? 'Migrated' : node.state === 'update-required' ? 'Agent update required' : node.state === 'failed' ? 'Migration failed · retrying' : 'Pending connection'}</span></div>
-                {#if node.error}<p class="muted">{node.name}: {node.error}</p>{/if}
-              {/each}
-              {#if nodePageHistory.length || nodeTransportStatus.next_cursor}
-                <div class="node-page-actions" aria-label="Node migration pages">
-                  <button class="button ghost small" type="button" disabled={nodeTransportLoading || nodePortBusy || !nodePageHistory.length} on:click={() => void changeNodePage(false)}>Previous nodes</button>
-                  <span class="muted">Page {nodePageHistory.length + 1}</span>
-                  <button class="button ghost small" type="button" disabled={nodeTransportLoading || nodePortBusy || !nodeTransportStatus.next_cursor} on:click={() => void changeNodePage(true)}>Next nodes</button>
-                </div>
-              {/if}
-              {#if nodeTransportStatus.previous_ports.length || nodeTransportStatus.legacy_dashboard}
-                <button class="button ghost" type="button" disabled={nodePortBusy || nodeTransportStatus.pending > 0 || myAccount?.permission === 'read'} on:click={retireNodePorts}>Retire previous node endpoints</button>
-              {/if}
-            {/if}
-          </article>{/if}
+            {/key}
           </div>
         </div>
       </section>
 
     {:else if activePage === 'onboarding' && (PREVIEW_MODE || sessionState !== 'authenticated')}
-      <section class="page onboarding-page" aria-labelledby="setup-title">
+      <section class="page narrow onboarding-page" aria-labelledby="setup-title">
         <div class="page-heading">
           <div>
-            <h1 id="setup-title" tabindex="-1">Setup your local hub</h1>
-            <p class="lede">Set your secure credentials to initialize this Payesh node.</p>
+            <h1 id="setup-title" tabindex="-1">Set up your hub</h1>
+            <p class="lede">Create the owner account to initialize this Payesh hub.</p>
           </div>
         </div>
-        <div class="stepper" aria-label="Setup progress">
+        <ol class="stepper" aria-label="Setup progress">
           {#each ['Access', 'Defaults', 'Enroll'] as label, index}
-            <div class:current={setupStep === index + 1} class:done={setupStep > index + 1} class="step">
-              <span>{setupStep > index + 1 ? '✓' : index + 1}</span>
+            <li class:current={setupStep === index + 1} class:done={setupStep > index + 1} class="step" aria-current={setupStep === index + 1 ? 'step' : undefined}>
+              <span>{#if setupStep > index + 1}<Icon name="check" size={12} />{:else}{index + 1}{/if}</span>
               {label}
-            </div>
+            </li>
           {/each}
-        </div>
-        <div class="onboarding-card">
-          {#if setupStep === 1}
-            <h2>Create owner account</h2>
-            <p class="muted">{PREVIEW_MODE ? 'These values stay in this preview and are never transmitted.' : 'The one-time setup secret is verified once over the authenticated API. Passwords are not persisted by this browser.'}</p>
-            <div class="form-grid">
-              <label>Workspace name<input bind:value={workspaceName} autocomplete="organization" placeholder="e.g. Infrastructure Team" /></label>
-              <label>Bootstrap secret<input type="password" bind:value={setupSecret} minlength="16" autocomplete="new-password" placeholder="At least 16 characters" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters.</small></label>
-              <label>Owner username<input bind:value={ownerUsername} minlength="3" autocomplete="username" required placeholder="admin" aria-invalid={setupError ? 'true' : undefined} /><small>Use the generated username from installation.</small></label>
-              <label>Owner password<input type="password" bind:value={ownerPassword} minlength="12" autocomplete="new-password" placeholder="At least 12 characters" aria-invalid={setupError ? 'true' : undefined} /><small>At least 12 characters.</small></label>
-            </div>
-          {:else if setupStep === 2}
-            <h2>Storage & notifications</h2>
-            <p class="muted">Monitoring starts with a 1 GB database limit, 15-second sampling, and in-app storage notifications enabled. Old history is cleaned up automatically when space runs low.</p>
-            <p class="muted">After setup, open Settings → Storage & sampling to change the limit, sampling intervals, or notifications.</p>
-
-          {:else}
-            <h2>Enroll first server</h2>
-            <p class="muted">You can pair an existing server immediately or configure one later.</p>
-            <div class="choice-row">
-              <label class:chosen={enrollmentMode === 'skip'}><input type="radio" bind:group={enrollmentMode} value="skip" /> Skip for now</label>
-              <label class:chosen={enrollmentMode === 'connect'}><input type="radio" bind:group={enrollmentMode} value="connect" /> Connect with a pairing token</label>
-            </div>
-            {#if enrollmentMode === 'connect'}
-              {#if PREVIEW_MODE}
-                <label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters. Preview only; not persisted or transmitted.</small></label>
-              {:else if servers.length > 0}
-                <label class="pairing-field">Pending server<select bind:value={selectedServerId}>{#each servers as server}<option value={server.id}>{server.name} · {server.id}</option>{/each}</select></label>
-                <label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>Single-use token sent to enrollment endpoint.</small></label>
+        </ol>
+        <div class="panel onboarding-card">
+          {#key setupStep}
+            <div class="step-body">
+              {#if setupStep === 1}
+                <h2>Create owner account</h2>
+                <p class="muted">{PREVIEW_MODE ? 'These values stay in this preview and are never transmitted.' : 'The one-time setup secret is verified once over the authenticated API. Passwords are not persisted by this browser.'}</p>
+                <div class="form-grid">
+                  <label>Workspace name<input bind:value={workspaceName} autocomplete="organization" placeholder="e.g. Infrastructure Team" /></label>
+                  <label>Bootstrap secret<input type="password" bind:value={setupSecret} minlength="16" autocomplete="new-password" placeholder="At least 16 characters" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters.</small></label>
+                  <label>Owner username<input bind:value={ownerUsername} minlength="3" autocomplete="username" required placeholder="admin" aria-invalid={setupError ? 'true' : undefined} /><small>Use the generated username from installation.</small></label>
+                  <label>Owner password<input type="password" bind:value={ownerPassword} minlength="12" autocomplete="new-password" placeholder="At least 12 characters" aria-invalid={setupError ? 'true' : undefined} /><small>At least 12 characters.</small></label>
+                </div>
+              {:else if setupStep === 2}
+                <h2>Storage & notifications</h2>
+                <p class="muted">Monitoring starts with a 1 GB database limit, 15-second sampling, and in-app storage notifications enabled. Old history is cleaned up automatically when space runs low.</p>
+                <p class="muted">After setup, open Settings → Storage & sampling to change the limit, sampling intervals, or notifications.</p>
               {:else}
-                <div class="unavailable-panel"><strong>No pending server identity</strong><span>The server must appear in the authenticated fleet before this pairing route can target it.</span></div>
+                <h2>Enroll first server</h2>
+                <p class="muted">You can pair an existing server immediately or configure one later.</p>
+                <div class="choice-row">
+                  <label class:chosen={enrollmentMode === 'skip'}><input type="radio" bind:group={enrollmentMode} value="skip" /> Skip for now</label>
+                  <label class:chosen={enrollmentMode === 'connect'}><input type="radio" bind:group={enrollmentMode} value="connect" /> Connect with a pairing token</label>
+                </div>
+                {#if enrollmentMode === 'connect'}
+                  {#if PREVIEW_MODE}
+                    <label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>At least 16 characters. Preview only; not persisted or transmitted.</small></label>
+                  {:else if servers.length > 0}
+                    <label class="pairing-field">Pending server<select bind:value={selectedServerId}>{#each servers as server}<option value={server.id}>{server.name} · {server.id}</option>{/each}</select></label>
+                    <label class="pairing-field">Pairing token<input type="password" bind:value={pairingToken} minlength="16" autocomplete="off" aria-invalid={setupError ? 'true' : undefined} /><small>Single-use token sent to enrollment endpoint.</small></label>
+                  {:else}
+                    <div class="unavailable-panel"><strong>No pending server identity</strong><span>The server must appear in the authenticated fleet before this pairing route can target it.</span></div>
+                  {/if}
+                {/if}
+                <div class="review-box">
+                  <span>Workspace: <strong>{workspaceName || 'Default'}</strong></span>
+                  <span>Storage defaults: <strong>1 GB · 15-second samples · notifications enabled</strong></span>
+                  <span>Enrollment: <strong>{enrollmentMode === 'skip' ? 'Skipped' : 'Pairing token ready'}</strong></span>
+                </div>
               {/if}
-            {/if}
-            <div class="review-box">
-              <span>Workspace: <strong>{workspaceName || 'Default'}</strong></span>
-              <span>Storage defaults: <strong>1 GB · 15-second samples · notifications enabled</strong></span>
-              <span>Enrollment: <strong>{enrollmentMode === 'skip' ? 'Skipped' : 'Pairing token ready'}</strong></span>
             </div>
-          {/if}
+          {/key}
           {#if setupError}<p class="form-error" role="alert">{setupError}</p>{/if}
           <div class="setup-actions">
             <button class="button ghost" type="button" on:click={() => setupStep > 1 ? setupStep -= 1 : navigate('overview')}>{setupStep > 1 ? 'Back' : 'Cancel'}</button>
@@ -3317,24 +1669,31 @@
 
     {:else if activePage === 'server' && selectedServer}
       <section class="page server-page" aria-labelledby="server-title">
-        <button class="back-link" type="button" on:click={() => navigate('overview')}>
-          <Icon name="arrow-left" size={15} />
-          <span>Back to overview</span>
-        </button>
+        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>All servers</span></button>
 
         <div class="page-heading server-heading">
-          <div>
-            <div class="heading-row">
-              <h1 id="server-title" tabindex="-1">{selectedServer.name}</h1>
-              <span class={`status-pill ${selectedServer.displayState}`}>
-                <i class="status-dot"></i>
-                <span>{stateLabel(selectedServer.displayState)}</span>
-              </span>
+          <div class="server-title">
+            <span class="server-avatar" aria-hidden="true"><Icon name="server" size={20} /></span>
+            <div>
+              <div class="heading-row">
+                {#if renaming}
+                  <form class="rename" on:submit|preventDefault={() => void renameSelectedServer()}>
+                    <input bind:value={labelDraft} maxlength="128" aria-label="Server name" disabled={labelBusy} use:focusInput on:keydown={(event) => { if (event.key === 'Escape') renaming = false; }} />
+                    <button class="button primary small" type="submit" disabled={labelBusy || !labelDraft.trim()}>{labelBusy ? 'Saving…' : 'Save'}</button>
+                    <button class="button ghost small" type="button" disabled={labelBusy} on:click={() => (renaming = false)}>Cancel</button>
+                  </form>
+                {:else}
+                  <h1 id="server-title" tabindex="-1">{selectedServer.name}</h1>
+                  {#if myAccount?.permission !== 'read'}<button class="icon-button rename-button" type="button" aria-label="Rename server" title="Rename" on:click={startRename}><Icon name="pencil" size={14} /></button>{/if}
+                {/if}
+                <StatusPill state={selectedServer.displayState} label={stateLabel(selectedServer.displayState)} />
+              </div>
+              <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.version}</p>
+              {#if renameError}<p class="form-error" role="alert">{renameError}</p>{/if}
             </div>
-            <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.version}</p>
           </div>
           <div class="server-heading-actions">
-            {#if !PREVIEW_MODE && selectedServer.role === 'node'}
+            {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
               <button class="button danger small" type="button" disabled={deleteServerBusy} on:click={() => promptDeleteServer()}>
                 <Icon name="trash" size={14} />
                 <span>{deleteServerBusy ? 'Deleting…' : 'Delete server'}</span>
@@ -3343,33 +1702,19 @@
           </div>
         </div>
 
-        <div class="server-meta-bar">
-          <div class="meta-item">
-            <span class="meta-label">Address</span>
-            <span class="meta-value mono">{displayAddress(selectedServer)}</span>
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">Connection</span>
-            <span class="meta-value capitalize">{selectedServer.connectionState}</span>
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">Freshness</span>
-            <span class="meta-value capitalize">{selectedServer.freshnessState}</span>
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">Revision</span>
-            <span class="meta-value mono">rev {selectedServer.configurationRevision}</span>
-          </div>
+        <dl class="server-meta-bar">
+          <div class="meta-item"><dt>Address</dt><dd class="mono">{displayAddress(selectedServer)}</dd></div>
+          <div class="meta-item"><dt>Role</dt><dd class="capitalize">{selectedServer.role === 'node' ? 'Node' : 'Master'}</dd></div>
+          <div class="meta-item"><dt>Connection</dt><dd class="capitalize"><span class={`dot ${selectedServer.connectionState}`}></span>{selectedServer.connectionState.replace('-', ' ')}</dd></div>
+          <div class="meta-item"><dt>Freshness</dt><dd class="capitalize">{selectedServer.freshnessState}</dd></div>
+          <div class="meta-item"><dt>Revision</dt><dd class="mono">rev {selectedServer.configurationRevision}</dd></div>
           {#if selectedServer.freshnessReason}
-            <div class="meta-item alert-hint">
-              <span class="meta-label">Note</span>
-              <span class="meta-value">{selectedServer.freshnessReason}</span>
-            </div>
+            <div class="meta-item note"><dt>Note</dt><dd>{selectedServer.freshnessReason}</dd></div>
           {/if}
-        </div>
-
+        </dl>
 
         {#if activeInstall && activeInstall.serverId === selectedServer.id}
+          {#await lazy.InstallProgress() then { default: InstallProgress }}
           <InstallProgress
             install={activeInstall}
             compact={true}
@@ -3378,34 +1723,17 @@
             onRetry={() => { saveActiveInstall(null); }}
             onAddAnother={() => { saveActiveInstall(null); navigate('add-server'); }}
           />
+          {:catch}{@render chunkFailed()}{/await}
         {:else if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState !== 'connected'}
           <article class="panel server-actions">
-            <div class="panel-heading">
-              <div>
-                <h2>Install over SSH</h2>
-              </div>
-            </div>
+            <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
-              <label>SSH host<input bind:value={installHost} placeholder="hostname or IP" required /></label>
-              <label>Port<input type="number" min="1" max="65535" bind:value={installPort} required /></label>
-              <label>SSH user<input bind:value={installUser} required /></label>
-              <fieldset class="ssh-auth-choice form-wide">
-                <legend>SSH authentication</legend>
-                <div class="ssh-auth-options">
-                  <label><input type="radio" name="retry-server-auth" checked={installAuthMethod === 'password'} on:change={() => chooseInstallAuth('password')} /> Password</label>
-                  <label><input type="radio" name="retry-server-auth" checked={installAuthMethod === 'key'} on:change={() => chooseInstallAuth('key')} /> Private key</label>
-                </div>
-              </fieldset>
-              {#if installAuthMethod === 'password'}
-                <label class="form-wide">SSH password<input type="password" bind:value={installPassword} autocomplete="off" required /></label>
-              {:else}
-                <label class="form-wide">OpenSSH private key<textarea bind:value={installKey} rows="4" autocomplete="off" required></textarea></label>
-                <label class="form-wide">Key passphrase <small>(if encrypted)</small><input type="password" bind:value={installKeyPassphrase} autocomplete="off" /></label>
-              {/if}
-              <label>Host-key fingerprint <small>(required for new hosts)</small><input bind:value={installFingerprint} placeholder="SHA256:…" /></label>
-              <button class="button primary small" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
-                {installBusy ? 'Connecting…' : 'Install Payesh'}
-              </button>
+              <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} />
+              <div class="setup-actions">
+                <button class="button primary" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
+                  {#if installBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Install Payesh{/if}
+                </button>
+              </div>
             </form>
             {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
           </article>
@@ -3415,6 +1743,7 @@
           <div class="tabs" role="tablist" aria-label="Server detail sections">
             {#each availableTabs as tab}
               <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); }}>
+                <Icon name={tab === 'processes' ? 'cpu' : tab === 'network' ? 'activity' : tab === 'packages' ? 'packages' : 'overview'} size={14} />
                 {tabLabel(tab)}
               </button>
             {/each}
@@ -3422,332 +1751,25 @@
         {/if}
 
         {#if selectedServer.connectionState !== 'connected'}
-          <div class="unavailable-panel large"><strong>Node is not connected</strong><span>Metrics and telemetry will appear after the node reconnects.</span></div>
+          <div class="unavailable-panel large"><Icon name="radio" size={22} /><strong>Node is not connected</strong><span>Metrics and telemetry will appear after the node reconnects.</span></div>
         {:else if detailTab === 'packages'}
-          <article class="panel server-packages-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>Installed Packages ({serverInstalledModules.length})</h2>
-                <p class="muted">Verified extension packages configured on {selectedServer.name}.</p>
-              </div>
-              <div class="heading-actions">
-                <button class="button ghost small" type="button" disabled={serverPackagesLoading} on:click={() => void loadSelectedServerPackages(selectedServer.id)}>
-                  <Icon name="refresh" size={13} />
-                  <span>{serverPackagesLoading ? 'Refreshing…' : 'Refresh'}</span>
-                </button>
-                <button class="button primary small" type="button" on:click={() => { packageServerId = selectedServer.id; navigate('packages'); }}>
-                  <Icon name="plus" size={13} />
-                  <span>Browse catalog</span>
-                </button>
-              </div>
-            </div>
-
-            {#if serverPackagesLoading}
-              <div class="state-panel">
-                <div class="loading-spinner" aria-hidden="true"></div>
-                <h2>Loading packages…</h2>
-              </div>
-            {:else if serverPackagesError}
-              <div class="unavailable-panel">
-                <strong>Could not load packages</strong>
-                <span>{serverPackagesError}</span>
-                <button class="button ghost small" on:click={() => void loadSelectedServerPackages(selectedServer.id)}>Retry</button>
-              </div>
-            {:else if serverInstalledModules.length === 0}
-              <div class="unavailable-panel">
-                <strong>No packages installed on this server</strong>
-                <span>This server currently has no optional extension packages installed.</span>
-                <button class="button primary small" type="button" on:click={() => { packageServerId = selectedServer.id; navigate('packages'); }}>
-                  Install a package
-                </button>
-              </div>
-            {:else}
-              <div class="server-package-list">
-                {#each serverInstalledModules as pkg (pkg.module_id)}
-                  {@const catModule = modules.find((m) => m.id === pkg.module_id)}
-                  <div class="server-package-card">
-                    <div class="package-card-header">
-                      <div class="package-card-identity">
-                        <div class="package-name-row">
-                          <h3>{catModule?.name || pkg.module_id}</h3>
-                          <span class="mono-badge">{pkg.module_id}</span>
-                          {#if catModule?.latest_version && pkg.version && catModule.latest_version !== pkg.version}
-                            <span class="update-alert-badge">Update: v{catModule.latest_version}</span>
-                          {/if}
-                        </div>
-                        {#if catModule?.description}
-                          <p class="package-desc faint">{catModule.description}</p>
-                        {/if}
-                      </div>
-                      <div class="package-card-status">
-                        <span class={`status-pill ${pkg.state === 'enabled' ? 'healthy' : pkg.state === 'installed-disabled' ? 'pending' : 'warning'}`}>
-                          <i class="status-dot"></i>
-                          <span>{pkg.state === 'enabled' ? 'Enabled' : pkg.state === 'installed-disabled' ? 'Disabled' : pkg.state}</span>
-                        </span>
-                      </div>
-                    </div>
-
-                    <div class="package-version-bar">
-                      <div class="version-item">
-                        <span class="version-label">Installed Version</span>
-                        <strong class="mono tabular">v{pkg.version || '0.1.0'}</strong>
-                      </div>
-                      <div class="version-item">
-                        <span class="version-label">Catalog Version</span>
-                        <strong class="mono tabular">v{catModule?.latest_version || pkg.version || '0.1.0'}</strong>
-                      </div>
-                      {#if pkg.updated_at}
-                        <div class="version-item">
-                          <span class="version-label">Last Updated</span>
-                          <span class="faint mono tabular">{formatDateTimeInTz(pkg.updated_at, currentTimezone)}</span>
-                        </div>
-                      {/if}
-                    </div>
-
-                    <div class="package-card-actions">
-                      <button
-                        class="button primary small"
-                        type="button"
-                        disabled={!!packageBusy}
-                        on:click={() => {
-                          const mod = catModule || { id: pkg.module_id, name: pkg.module_id, latest_version: pkg.version || '0.1.0', resource_estimate_source: 'curated' };
-                          openPackageDialog(mod, selectedServer.id);
-                        }}
-                      >
-                        <Icon name="refresh" size={13} />
-                        <span>Update package</span>
-                      </button>
-
-                      <button
-                        class="button ghost small"
-                        type="button"
-                        disabled={!!packageBusy}
-                        on:click={() => void packageActionOnServer(selectedServer.id, pkg, pkg.state === 'enabled' ? 'disable' : 'enable')}
-                      >
-                        <span>{pkg.state === 'enabled' ? 'Disable' : 'Enable'}</span>
-                      </button>
-
-                      {#if pkg.state === 'installed-disabled'}
-                        <button
-                          class="button danger small"
-                          type="button"
-                          disabled={!!packageBusy}
-                          on:click={() => void packageActionOnServer(selectedServer.id, pkg, 'remove')}
-                        >
-                          <Icon name="trash" size={13} />
-                          <span>Remove</span>
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </article>
-
+          <div class="tab-body">
+            {#key selectedServer.id}
+              {#await lazy.PackagesPanel() then { default: PackagesPanel }}<PackagesPanel server={selectedServer} catalog={modules} timezone={currentTimezone} readOnly={myAccount?.permission === 'read'} refreshKey={packagesRefreshKey} onManage={(module) => openPackageDialog(module, selectedServer.id)} onBrowse={() => { packageServerId = selectedServer.id; navigate('packages'); }} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
+            {/key}
+          </div>
         {:else if detailTab === 'processes'}
           {#key selectedServer.id}<ProcessTable serverId={selectedServer.id} onPackages={() => { packageServerId = selectedServer.id; navigate('packages'); }} />{/key}
         {:else if (detailTab === 'resources' || detailTab === 'metrics') && (hasCapability(selectedServer, 'resources') || hasCapability(selectedServer, 'metrics'))}
-          <div class="metric-grid">
-            <article class="metric-card">
-              <div class="card-top">
-                <span class="metric-title">CPU</span>
-                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.cpu)}</strong>
-              </div>
-              {#if metricHistoryValues(selectedServer, 'cpu').length > 1}
-                <div class="sparkline">
-                  <Sparkline values={metricHistoryValues(selectedServer, 'cpu')} tone="teal" />
-                </div>
-              {:else}
-                <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, 'cpu').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
-              {/if}
-              <div class="metric-footer">
-                <span>{sampleAge(selectedServer)}</span>
-                <span class="faint">Window: {chartRange}</span>
-              </div>
-            </article>
-
-            <article class="metric-card">
-              <div class="card-top">
-                <span class="metric-title">Memory</span>
-                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.memory)}</strong>
-              </div>
-              {#if metricHistoryValues(selectedServer, 'memory').length > 1}
-                <div class="sparkline">
-                  <Sparkline values={metricHistoryValues(selectedServer, 'memory')} tone="purple" />
-                </div>
-              {:else}
-                <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, 'memory').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
-              {/if}
-              <div class="metric-footer">
-                <span>{sampleAge(selectedServer)}</span>
-                <span class="faint">Window: {chartRange}</span>
-              </div>
-            </article>
-
-            <article class="metric-card disk-metric-card">
-              <div class="card-top">
-                <span class="metric-title">Disk</span>
-                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.disk)}</strong>
-              </div>
-              <div class="disk-card-circle">
-                <CircleChart value={selectedServer.metrics.disk} size={64} strokeWidth={8} label="Used" />
-              </div>
-              <div class="metric-footer">
-                <span>{sampleAge(selectedServer)}</span>
-                <span class="faint">{selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(0)}% free` : 'Window: ' + chartRange}</span>
-              </div>
-            </article>
+          <div class="tab-body">
+            {#await lazy.ResourcesPanel() then { default: ResourcesPanel }}<ResourcesPanel server={selectedServer} {chartData} bind:range={chartRange} timezone={currentTimezone} {theme} />{:catch}{@render chunkFailed()}{/await}
           </div>
-
-          <article class="panel chart-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>CPU and Memory Utilization</h2>
-              </div>
-              <div class="range-selector">
-                <select bind:value={chartRange} aria-label="Chart time range">
-                  <option value="15m">Last 15 minutes</option>
-                  <option value="1h">Last hour</option>
-                  <option value="24h">Last 24 hours</option>
-                </select>
-              </div>
-            </div>
-
-            {#if chartData && chartData.coverage !== 'unavailable'}
-              <div class="legend">
-                <span><i class="legend-dot teal"></i> CPU Utilization</span>
-                <span><i class="legend-dot purple"></i> Memory</span>
-                <span class="faint">Scale: 0–100% · Time: {currentTimezone}</span>
-              </div>
-              {#key `${chartRange}-${theme}-${selectedServer.id}-${currentTimezone}`}
-                <ChartPreview data={chartData} range={chartRange} timezone={currentTimezone} label="CPU and memory history over the selected time range" />
-              {/key}
-              <div class="resource-highlights">
-                <span>Highest CPU: <strong class="tabular">{seriesRange(chartData.cpu)}</strong></span>
-                <span>Highest Memory: <strong class="tabular">{seriesRange(chartData.memory)}</strong></span>
-              </div>
-            {:else}
-              <div class="unavailable-panel">
-                <strong>Resource history unavailable</strong>
-                <span>No telemetry samples have been recorded yet for this range.</span>
-              </div>
-            {/if}
-          </article>
-
-          <article class="panel chart-panel disk-detail-panel">
-            <div class="panel-heading">
-              <div><h2>Disk Storage</h2></div>
-            </div>
-            <div class="disk-detail-layout">
-              <CircleChart value={selectedServer.metrics.disk} size={130} strokeWidth={10} label="Used" sublabel={selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(1)}% free` : ''} />
-              <div class="disk-detail-stats">
-                <div class="disk-stat-box">
-                  <span class="stat-lbl">Used Space</span>
-                  <strong class="tabular">{selectedServer.metrics.disk !== null ? `${selectedServer.metrics.disk.toFixed(1)}%` : '—'}</strong>
-                </div>
-                <div class="disk-stat-box">
-                  <span class="stat-lbl">Available Space</span>
-                  <strong class="tabular">{selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(1)}%` : '—'}</strong>
-                </div>
-                <div class="disk-stat-box">
-                  <span class="stat-lbl">Health</span>
-                  <strong class="tabular">{selectedServer.metrics.disk === null ? '—' : selectedServer.metrics.disk >= 90 ? 'Critical' : selectedServer.metrics.disk >= 75 ? 'Warning' : 'Healthy'}</strong>
-                </div>
-              </div>
-            </div>
-          </article>
-
         {:else if (detailTab === 'network' || detailTab === 'traffic') && (hasCapability(selectedServer, 'network') || hasCapability(selectedServer, 'traffic'))}
-          <article class="panel chart-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>Download & Upload Bandwidth</h2>
-              </div>
-              <div class="range-selector">
-                <select bind:value={chartRange} aria-label="Traffic chart time range">
-                  <option value="15m">Last 15 minutes</option>
-                  <option value="1h">Last hour</option>
-                  <option value="24h">Last 24 hours</option>
-                </select>
-              </div>
-            </div>
-            <div class="network-rates">
-              <div><span class="muted">Download</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'download'))}</strong></div>
-              <div><span class="muted">Upload</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'upload'))}</strong></div>
-            </div>
-
-            {#if chartData && (chartData.networkRx?.some((v) => v !== null) || chartData.networkTx?.some((v) => v !== null))}
-              <div class="legend">
-                <span><i class="legend-dot teal"></i> Download</span>
-                <span><i class="legend-dot blue"></i> Upload</span>
-                <span class="faint">Unit: Mbit/s · Time: {currentTimezone}</span>
-              </div>
-              {#key `${chartRange}-${theme}-${selectedServer.id}-${currentTimezone}-traffic`}
-                <TrafficChart data={chartData} timezone={currentTimezone} />
-              {/key}
-            {:else}
-              <div class="unavailable-panel">
-                <strong>Waiting for network samples</strong>
-                <span>At least two consecutive network counter samples are needed to calculate bandwidth rate.</span>
-              </div>
-            {/if}
-          </article>
-
-          <article class="panel traffic-panel">
-            <div class="panel-heading"><div><h2>Traffic used in a date range</h2></div></div>
-            <form class="traffic-range-form" on:submit|preventDefault={() => void loadTrafficUsage()}>
-              <label>From<input type="datetime-local" step="3600" required bind:value={trafficFrom} disabled={trafficUsageBusy} /></label>
-              <label>To<input type="datetime-local" step="3600" required bind:value={trafficTo} disabled={trafficUsageBusy} /></label>
-              <button class="button primary" type="submit" disabled={trafficUsageBusy || PREVIEW_MODE}>{#if trafficUsageBusy}<span class="version-spinner" aria-hidden="true"></span>Calculating…{:else}Calculate usage{/if}</button>
-            </form>
-            {#if trafficUsageError}<p class="error-text" role="alert">{trafficUsageError}</p>{/if}
-            {#if trafficUsage}
-              <p class="muted">{formatDateTimeInTz(trafficUsage.from, currentTimezone)} → {formatDateTimeInTz(trafficUsage.to, currentTimezone)}</p>
-              <div class="network-rates traffic-usage-results" aria-live="polite">
-                <div><span class="muted">Download</span><strong class="tabular usage-download">{trafficUsage.download_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.download_bytes)}</strong><small class="muted">{trafficUsage.download_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
-                <div><span class="muted">Upload</span><strong class="tabular usage-upload">{trafficUsage.upload_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.upload_bytes)}</strong><small class="muted">{trafficUsage.upload_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
-                <div><span class="muted">Total recorded</span><strong class="tabular">{trafficUsage.total_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.total_bytes)}</strong></div>
-              </div>
-              {#if trafficUsage.download_hours < trafficUsage.requested_hours || trafficUsage.upload_hours < trafficUsage.requested_hours}
-                <p class="warning-text" role="status">History is incomplete. These are available totals; missing hours and uncertain counters are excluded.</p>
-              {/if}
-            {/if}
-          </article>
-
-          {#if selectedServer.traffic.from}
-            <article class="panel traffic-panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>{selectedServer.traffic.scope} billing window</h2>
-                </div>
-                <span class="status-pill {selectedServer.traffic.continuity === 'complete' ? 'healthy' : 'stale'}">
-                  <i class="status-dot"></i>
-                  <span>{selectedServer.traffic.continuity}</span>
-                </span>
-              </div>
-              <div class="traffic-number">
-                <strong class="tabular">{formatBytes(selectedServer.traffic.countedBytes)}</strong>
-                <span class="faint">of {formatBytes(selectedServer.traffic.allowanceBytes)} allowance</span>
-              </div>
-              <div class="progress">
-                <span style={`width:${percentage(selectedServer.traffic.countedBytes, selectedServer.traffic.allowanceBytes)}%`}></span>
-              </div>
-              <div class="traffic-details">
-                <div class="detail-cell"><span>Direction</span><strong>{selectedServer.traffic.direction}</strong></div>
-                <div class="detail-cell"><span>Timezone</span><strong>{selectedServer.traffic.timezone}</strong></div>
-                <div class="detail-cell"><span>Period</span><strong class="mono">{selectedServer.traffic.from.slice(0, 10)} → {selectedServer.traffic.to.slice(0, 10)}</strong></div>
-                <div class="detail-cell"><span>Continuity</span><strong>{selectedServer.traffic.continuity}</strong></div>
-              </div>
-            </article>
-          {:else}
-            <div class="unavailable-panel">
-              <strong>Traffic allowance not configured</strong>
-              <span>Bandwidth monitoring is active. Configure an allowance to enable quota tracking.</span>
-            </div>
-          {/if}
-
-
+          <div class="tab-body">
+            {#key selectedServer.id}
+              {#await lazy.NetworkPanel() then { default: NetworkPanel }}<NetworkPanel server={selectedServer} {chartData} bind:range={chartRange} timezone={currentTimezone} {theme} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
+            {/key}
+          </div>
         {:else if selectedServer && detailTab !== 'metrics' && !hasCapability(selectedServer, detailTab)}
           <div class="unavailable-panel large"><strong>{tabLabel(detailTab)} unavailable</strong><span>{capabilityMessage(selectedServer, detailTab)}</span></div>
         {:else if selectedServer && !hasCapability(selectedServer, 'metrics')}
@@ -3756,403 +1778,47 @@
       </section>
 
     {:else}
-      <!-- FLEET OVERVIEW PAGE -->
-      <section class="page overview-page" aria-labelledby="overview-title">
-        <div class="page-heading">
-          <div>
-            <h1 id="overview-title" tabindex="-1">Fleet overview</h1>
-          </div>
-          <div class="heading-status-badge">
-            <span class="live-ping"></span>
-            <span class="date-stamp tabular">{PREVIEW_MODE ? 'Fixture preview' : 'Updates every 15s'}</span>
-          </div>
-        </div>
-
-        {#if previewState === 'loading'}
-          <div class="state-panel">
-            <div class="loading-spinner" aria-hidden="true"></div>
-            <h2>Connecting to fleet…</h2>
-            <p>Gathering health telemetry and server states.</p>
-          </div>
-        {:else if previewState === 'empty'}
-          <div class="empty-onboarding">
-            <div class="empty-onboarding-main">
-              <span class="eyebrow">Get started · 1 of 3</span>
-              <div class="state-icon"><Icon name="servers" size={26} /></div>
-              <h2>Bring your first server online</h2>
-              <p>Connect a Linux server over SSH. Payesh checks node transport reachability before installing the agent, then shows its live metrics here.</p>
-              {#if myAccount?.permission === 'read'}
-                <p class="muted">Ask a user with edit access to add the first server.</p>
-              {:else}
-                <button class="button primary" type="button" on:click={() => openAddServer()}>
-                  <Icon name="plus" size={15} />
-                  <span>Add first server</span>
-                </button>
-              {/if}
-            </div>
-            <ol class="empty-onboarding-steps" aria-label="Server setup steps">
-              <li><span>01</span><div><strong>Enter server details</strong><small>Hostname, SSH user, and one sign-in method.</small></div></li>
-              <li><span>02</span><div><strong>Verify the connection</strong><small>Payesh checks SSH and the TLS node endpoint.</small></div></li>
-              <li><span>03</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
-            </ol>
-          </div>
-        {:else if previewState === 'error'}
-          <div class="state-panel error-state">
-            <div class="state-icon"><Icon name="alert-triangle" size={28} /></div>
-            <h2>Could not connect to fleet</h2>
-            <p>{apiError || 'The API endpoint returned an error.'}</p>
-            <button class="button primary" type="button" on:click={() => PREVIEW_MODE ? void loadPreviewData() : void loadApiData()}>Retry connection</button>
-          </div>
-        {:else}
-          <!-- STATS CARDS -->
-          <div class="summary-grid">
-            <article class="summary-card">
-              <div class="card-header">
-                <span class="stat-label">Healthy Servers</span>
-                <span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span>
-              </div>
-              <strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong>
-              <div class="stat-badge positive">
-                <span>Healthy and responding</span>
-              </div>
-            </article>
-
-            <article class="summary-card">
-              <div class="card-header">
-                <span class="stat-label">Needs Attention</span>
-                <span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span>
-              </div>
-              <strong class="stat-value tabular">{attentionCount}</strong>
-              {#if attentionCount > 0}
-                <div class="stat-badge warning">
-                  <span>Stale or pending nodes</span>
-                </div>
-              {/if}
-            </article>
-
-            <article class="summary-card stat-network-card">
-              <span class="stat-icon-wrap cyan card-corner-icon"><Icon name="activity" size={15} /></span>
-              <div class="network-split">
-                <div class="network-split-col">
-                  <div class="network-split-head">
-                    <span class="rate-badge down">↓</span>
-                    <span class="rate-title">Download</span>
-                  </div>
-                  <strong class="network-split-value tabular">{formatNetworkRate(fleetDownload)}</strong>
-                </div>
-                <div class="network-split-sep" aria-hidden="true"></div>
-                <div class="network-split-col">
-                  <div class="network-split-head">
-                    <span class="rate-badge up">↑</span>
-                    <span class="rate-title">Upload</span>
-                  </div>
-                  <strong class="network-split-value tabular">{formatNetworkRate(fleetUpload)}</strong>
-                </div>
-              </div>
-            </article>
-          </div>
-
-          <!-- SERVER LIST SECTION -->
-          <div class="section-heading">
-            <div>
-              <h2>Servers ({displayServers.length})</h2>
-            </div>
-            <button class="button ghost small" type="button" on:click={() => navigate('monitoring')}>Go to server monitoring <Icon name="chevron-right" size={14} /></button>
-          </div>
-
-          <div class="table-container">
-            <div class="table-header">
-              <span class="col-status">Status</span>
-              <span class="col-name">Hostname / Address</span>
-              <span class="col-metric">CPU</span>
-              <span class="col-metric">Memory</span>
-              <span class="col-metric col-metric-disk">Disk</span>
-              <span class="col-rxtx">Rx / Tx</span>
-              <span class="col-action"></span>
-            </div>
-            <div class="server-list">
-              {#each displayServers as server}
-                <button class="server-row" type="button" on:click={() => selectServer(server)}>
-                  <div class="col-status">
-                    <span class={`status-pill ${server.displayState}`} aria-label={stateLabel(server.displayState)}>
-                      <i class="status-dot"></i>
-                      <span>{stateLabel(server.displayState)}</span>
-                    </span>
-                  </div>
-                  <div class="col-name server-identity">
-                    <strong>{server.name}</strong>
-                    <small class="mono faint">{displayAddress(server)} · {server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : (server.freshnessReason || server.connectionState)}</small>
-                  </div>
-                  <div class="col-metric server-metric">
-                    {#if server.connectionState === 'connected'}
-                      <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
-                      <div class="metric-microbar">
-                        <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                      </div>
-                    {:else}
-                      <span class="faint">—</span>
-                    {/if}
-                  </div>
-                  <div class="col-metric server-metric">
-                    {#if server.connectionState === 'connected'}
-                      <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
-                      <div class="metric-microbar">
-                        <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
-                      </div>
-                    {:else}
-                      <span class="faint">—</span>
-                    {/if}
-                  </div>
-                  <div class="col-metric server-metric col-metric-disk">
-                    {#if server.connectionState === 'connected'}
-                      <div class="disk-table-cell">
-                        <CircleChart value={server.metrics.disk} size={28} strokeWidth={9} showValue={false} color="var(--blue, #3b82f6)" />
-                        <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
-                      </div>
-                    {:else}
-                      <span class="faint">—</span>
-                    {/if}
-                  </div>
-                  <div class="col-rxtx">
-                    {#if server.connectionState === 'connected'}
-                      <span class="rxtx-rates tabular">
-                        <span class="rate-down">↓ {formatNetworkRate(currentNetworkRate(server, 'download'))}</span>
-                        <span class="rate-sep">·</span>
-                        <span class="rate-up">↑ {formatNetworkRate(currentNetworkRate(server, 'upload'))}</span>
-                      </span>
-                    {:else}
-                      <span class="faint">—</span>
-                    {/if}
-                  </div>
-                  <div class="col-action">
-                    <span class="server-arrow" aria-hidden="true"><Icon name="chevron-right" size={16} /></span>
-                  </div>
-                </button>
-              {/each}
-            </div>
-          </div>
-
-          <!-- LOWER PANELS -->
-          <div class="lower-grid">
-            <article class="panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>Allowance Overview</h2>
-                </div>
-                <button class="text-button" type="button" on:click={() => selectedServer && selectServer(selectedServer)}>
-                  <span>View metrics</span>
-                  <Icon name="chevron-right" size={14} />
-                </button>
-              </div>
-              {#if overviewAllowanceBytes === '0'}
-                <div class="unavailable-panel">
-                  <strong>No allowance quota configured</strong>
-                  <span>Open a server's Traffic tab to review live interface telemetry.</span>
-                </div>
-              {:else}
-                <div class="traffic-number">
-                  <strong class="tabular">{formatBytes(overviewTrafficBytes)}</strong>
-                  <span class="faint">consumed this billing cycle</span>
-                </div>
-                <div class="progress">
-                  <span style={`width:${percentage(overviewTrafficBytes, overviewAllowanceBytes)}%`}></span>
-                </div>
-                <p class="muted info-hint tabular">{formatBytes(overviewAllowanceBytes)} fleet quota · {currentTimezone} timezone</p>
-              {/if}
-            </article>
-
-            <article class="panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>Collection status</h2>
-                </div>
-                <span class={`status-pill ${attentionCount ? 'stale' : 'healthy'}`}><i class="status-dot"></i>{attentionCount ? 'Review needed' : 'Receiving data'}</span>
-              </div>
-              <div class="activity-feed">
-                <div class="activity-item">
-                  <span class="activity-icon-pill emerald"><Icon name="check" size={13} /></span>
-                  <div>
-                    <strong>{connectedCount} of {displayServers.length} servers connected</strong>
-                    <small class="faint">{healthyCount} healthy · {attentionCount} need attention</small>
-                  </div>
-                </div>
-                <div class="activity-item">
-                  <span class="activity-icon-pill amber"><Icon name="activity" size={13} /></span>
-                  <div>
-                    <strong>Alerts and incidents</strong>
-                    <button class="text-button" type="button" on:click={() => navigate('alerts')}>Review alert history <Icon name="chevron-right" size={14} /></button>
-                  </div>
-                </div>
-              </div>
-            </article>
-          </div>
-
-          {#if latestJob}
-            <article class="panel job-panel" aria-live="polite">
-              <div class="panel-heading">
-                <div>
-                  <h2>{latestJob.kind}</h2>
-                </div>
-                <span class={`status-pill ${latestJob.state}`}>
-                  <i class="status-dot"></i>
-                  <span>{latestJob.state}</span>
-                </span>
-              </div>
-              <div class="job-progress">
-                <span style={`width:${Math.max(0, Math.min(100, latestJob.progress))}%`}></span>
-              </div>
-              <p class="muted info-hint tabular">{latestJob.progress}% · rev {latestJob.revision} · {latestJob.id}</p>
-              {#if latestJob.error}<p class="form-error">{latestJob.error.message || 'The job failed.'}</p>{/if}
-              {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
-              <div class="job-actions">
-                {#if ['queued', 'running'].includes(latestJob.state)}
-                  <button class="button ghost small" type="button" on:click={() => promptCancelInstall()}>Cancel job</button>
-                {/if}
-                <button class="button ghost small" type="button" on:click={() => void pollJob(latestJob?.id ?? '')} disabled={jobBusy}>Reload status</button>
-              </div>
-            </article>
-          {/if}
-        {/if}
-      </section>
+      <OverviewPage
+        servers={displayServers}
+        loadState={previewState}
+        {apiError}
+        readOnly={myAccount?.permission === 'read'}
+        timezone={currentTimezone}
+        download={fleetDownload}
+        upload={fleetUpload}
+        trafficBytes={overviewTrafficBytes}
+        allowanceBytes={overviewAllowanceBytes}
+        {latestJob}
+        {jobError}
+        {jobBusy}
+        onSelect={selectServer}
+        onAddServer={() => openAddServer()}
+        onNavigate={(page) => navigate(page)}
+        onRetry={() => PREVIEW_MODE ? void loadPreviewData() : void loadApiData()}
+        onCancelJob={() => promptCancelInstall()}
+        onReloadJob={() => void pollJob(latestJob?.id ?? '')}
+      />
     {/if}
+    {#snippet failed(error, reset)}
+      <section class="page">
+        <div class="state-panel error-state">
+          <div class="state-icon"><Icon name="alert-triangle" size={26} /></div>
+          <h2>This page could not be shown</h2>
+          <p>{error instanceof Error ? error.message : 'An unexpected error occurred.'} Other pages keep working.</p>
+          <div class="job-actions"><button class="button primary" type="button" on:click={reset}>Try again</button><button class="button ghost" type="button" on:click={() => { reset(); navigate('overview'); }}>Go to overview</button></div>
+        </div>
+      </section>
+    {/snippet}
+    </svelte:boundary>
   </main>
 </div>
 
-<Modal
-  open={!!packageDialog}
-  title={packageDialog ? (isTargetAlreadyInstalled ? `Update ${packageDialog.name}` : `Install ${packageDialog.name}`) : 'Install package'}
-  description={packageStep === 'progress' ? 'Installation pipeline and deployment logs.' : packageStep === 'target' ? 'Choose where to install or update this package.' : packageServerId === 'all' ? `Install or update on all ${servers.length} connected nodes.` : `Deploy to ${servers.find(server => server.id === packageServerId)?.name ?? 'selected server'}.`}
-  icon="packages"
-  confirmText={packageStep === 'progress' ? (packageInstallStage === 'running' ? 'Deploying…' : 'Done') : packageStep === 'target' ? 'Continue' : packageServerId === 'all' ? 'Install on all nodes' : isTargetAlreadyInstalled ? 'Update package' : 'Install package'}
-  busy={packageStep === 'progress' && packageInstallStage === 'running'}
-  confirmDisabled={packageStep === 'progress' ? packageInstallStage === 'running' : (!packageServerId || packageStatusBusy || packageStatusFailed || (packageStep === 'source' && packageSource !== 'github' && !packageLocation.trim()))}
-  onCancel={() => { if (packageInstallStage !== 'running') { packageDialog = null; packageStep = 'target'; } }}
-  onConfirm={() => {
-    if (packageStep === 'target') {
-      packageStep = 'source';
-    } else if (packageStep === 'source') {
-      if (packageDialog) void startPackageInstall(packageDialog);
-    } else {
-      packageDialog = null;
-      packageStep = 'target';
-    }
-  }}
->
-  {#if packageStep === 'target'}
-    <label class="package-dialog-label">
-      Install target
-      <select bind:value={packageServerId} disabled={!!packageBusy} on:change={() => void loadServerModules()}>
-        <option value="" disabled>Choose target node</option>
-        <option value="all">⚡ All nodes ({servers.length} servers)</option>
-        {#each servers as server}
-          <option value={server.id}>{server.name} · {server.role === 'node' ? 'Node' : 'Master'} ({server.architecture})</option>
-        {/each}
-      </select>
-    </label>
-    {#if packageStatusBusy}
-      <p class="muted" role="status">Loading package status…</p>
-    {/if}
-  {:else if packageStep === 'source'}
-    <div class="package-dialog-subheading">
-      <button class="button ghost small" disabled={!!packageBusy} on:click={() => packageStep = 'target'}>
-        <Icon name="arrow-left" size={13} />
-        <span>Change target ({packageServerId === 'all' ? 'All nodes' : servers.find(s => s.id === packageServerId)?.name})</span>
-      </button>
-    </div>
+<CommandPalette bind:open={paletteOpen} commands={paletteCommands} servers={displayServers} onServer={selectServer} />
 
-    {#if isTargetAlreadyInstalled}
-      <div class="already-installed-note">
-        <Icon name="refresh" size={14} />
-        <span>Package already installed on this node ({moduleState(packageDialog?.id ?? '')?.version ? `v${moduleState(packageDialog?.id ?? '')?.version}` : 'installed'}). Proceeding will update it to the latest release.</span>
-      </div>
-    {:else if packageServerId === 'all'}
-      <div class="already-installed-note">
-        <Icon name="servers" size={14} />
-        <span>Package will be installed across all {servers.length} nodes. Nodes that already have this package will be safely updated.</span>
-      </div>
-    {/if}
-
-    <div class="package-source-fields">
-      <label>Source
-        <select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}>
-          <option value="github">Official GitHub Releases</option>
-          <option value="local">Local path on host</option>
-          <option value="url">Custom Archive URL</option>
-        </select>
-      </label>
-      <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}
-        <input bind:value={packageLocation} placeholder={packageSource === 'github' ? (packageDialog?.repository || 'Real-kia/payesh') : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} />
-      </label>
-      {#if packageSource === 'github'}
-        <label>Release Version
-          <input bind:value={packageVersion} placeholder={`Catalog default (v${packageDialog?.latest_version || '0.1.0'})`} />
-        </label>
-      {:else}
-        <details>
-          <summary>Package metadata</summary>
-          <label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label>
-          <label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label>
-        </details>
-      {/if}
-    </div>
-
-    {#if packageDialog && packageServerId !== 'all'}
-      {@const state = moduleState(packageDialog.id)?.state}
-      {#if state === 'enabled' || state === 'installed-disabled'}
-        <p class="muted">Currently {state === 'enabled' ? 'enabled' : 'installed and disabled'} on this server.</p>
-        <div class="job-actions">
-          <button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, state === 'enabled' ? 'disable' : 'enable'); }}>
-            {state === 'enabled' ? 'Disable' : 'Enable'}
-          </button>
-          {#if state === 'installed-disabled'}
-            <button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, 'remove'); }}>
-              Remove
-            </button>
-          {/if}
-        </div>
-      {/if}
-      {#if packageSource === 'github'}<a href={packageGitHubURL(packageDialog)} target="_blank" rel="noopener noreferrer">View package archive ↗</a>{/if}
-    {/if}
-  {:else if packageStep === 'progress'}
-    <div class="package-install-progress-box">
-      <!-- Steps Tracker -->
-      <div class="install-steps-tracker">
-        {#each packageInstallSteps as step (step.id)}
-          <div class={`install-step-item ${step.status}`}>
-            <div class="step-icon-wrap">
-              {#if step.status === 'done'}
-                <Icon name="check" size={14} />
-              {:else if step.status === 'running'}
-                <Icon name="loader" size={14} class="spin" />
-              {:else if step.status === 'failed'}
-                <Icon name="alert-triangle" size={14} />
-              {:else}
-                <span class="step-dot"></span>
-              {/if}
-            </div>
-            <span>{step.name}</span>
-          </div>
-        {/each}
-      </div>
-
-      <!-- Progress Bar -->
-      <div class="install-progress-bar">
-        <span style={`width: ${packageInstallProgress}%`}></span>
-      </div>
-
-      <!-- Live Terminal Console Logs -->
-      <div class="install-console-log">
-        {#each packageInstallLogs as log}
-          <div class={`console-log-row ${log.level}`}>
-            <time>{log.time}</time>
-            <span class="log-msg">{log.text}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
-  {#if packageError}<p class="form-error" role="alert">{packageError}</p>{#if packageStatusFailed}<button class="button ghost small" on:click={() => void loadServerModules()}>Retry status</button>{/if}{/if}
-</Modal>
+{#if notice}{#key notice}<div class="notice" role="status"><Icon name="check" size={15} /><span>{notice}</span></div>{/key}{/if}
+{#if packageDialog}
+  {#await lazy.PackageDialog() then { default: PackageDialog }}<PackageDialog module={packageDialog} {servers} initialServerId={packageDialogServerId} onClose={() => (packageDialog = null)} onChanged={() => (packagesRefreshKey += 1)} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
+{/if}
 
 <Modal
   open={modalDialog.open}
@@ -4169,1703 +1835,90 @@
 />
 
 <style>
-  :global(*) { box-sizing: border-box; }
-
-  /* --------------------------------------------------------------------------
-     DESIGN TOKENS: MODERN SLATE / ZINC AESTHETIC
-     -------------------------------------------------------------------------- */
-  :global(:root) {
-    --canvas: #f4f5f7;
-    --surface: #ffffff;
-    --surface-muted: #eef1f4;
-    --surface-elevated: #ffffff;
-    --ink: #252e3a;
-    --ink-secondary: #465365;
-    --muted: #647183;
-    --line: #dce1e7;
-    --line-light: #e8ebef;
-    --teal: #245caa;
-    --teal-bg: #eaf0f8;
-    --teal-glow: rgba(36, 92, 170, 0.12);
-    --purple: #8c7394;
-    --purple-bg: #f0edf2;
-    --blue: #657f99;
-    --blue-bg: #eef1f5;
-    --success: #27734f;
-    --success-bg: #edf5f0;
-    --warning: #98651f;
-    --warning-bg: #faf3e8;
-    --danger: #b43e43;
-    --danger-bg: #fbefef;
-    --primary-contrast: #ffffff;
-    --shadow-sm: none;
-    --shadow: none;
-    --shadow-lg: 0 8px 24px rgba(22, 31, 44, 0.12);
-    --radius-sm: 3px;
-    --radius-md: 5px;
-    --radius-lg: 6px;
-    --radius-xl: 8px;
-  }
-
-  :global(:root[data-theme='dark']) {
-    --canvas: #171e27;
-    --surface: #1e2732;
-    --surface-muted: #252f3c;
-    --surface-elevated: #2b3745;
-    --ink: #e5ebf2;
-    --ink-secondary: #b6c1cf;
-    --muted: #98a6b8;
-    --line: #364252;
-    --line-light: #2c3846;
-    --teal: #80aaf0;
-    --teal-bg: #293950;
-    --teal-glow: rgba(128, 170, 240, 0.12);
-    --purple: #b4a0be;
-    --purple-bg: #352e3e;
-    --blue: #91a8bf;
-    --blue-bg: #2b3745;
-    --success: #90c2a1;
-    --success-bg: #25382f;
-    --warning: #dec18c;
-    --warning-bg: #3b3428;
-    --danger: #e4a0a2;
-    --danger-bg: #3e2c33;
-    --primary-contrast: #172438;
-  }
-
-  :global(html) { color-scheme: light; }
-  :global(html[data-theme='dark']) { color-scheme: dark; }
-  :global(body) {
-    margin: 0;
-    min-width: 320px;
-    background: var(--canvas);
-    color: var(--ink);
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-
-  .tabular { font-variant-numeric: tabular-nums; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }
-  .capitalize { text-transform: capitalize; }
-  .faint { color: var(--muted); opacity: 0.8; }
-
-  .button.mobile-menu-toggle { display: none; }
-  .node-page-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; }
-  h1:focus { outline: none; }
-
-  /* --------------------------------------------------------------------------
-     APP SHELL & LAYOUT
-     -------------------------------------------------------------------------- */
-  .app-shell {
-    display: grid;
-    grid-template-columns: 216px minmax(0, 1fr);
-    min-height: 100vh;
-  }
-
-  .sidebar {
-    display: flex;
-    flex-direction: column;
-    padding: 20px 14px;
-    border-right: 1px solid var(--line);
-    background: var(--surface);
-    gap: 24px;
-  }
-
-  .brand-lockup {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 6px 10px;
-  }
-
-  .brand-mark {
-    width: 34px;
-    height: 34px;
-    display: grid;
-    place-items: center;
-    border-radius: 9px;
-    background: var(--teal);
-    color: #ffffff;
-    font-weight: 800;
-    font-size: 17px;
-    box-shadow: none;
-  }
-
-  .brand-text strong {
-    display: block;
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--ink);
-  }
-  .brand-text small {
-    display: block;
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 0.02em;
-  }
-
-  .nav-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .nav-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    padding: 9px 12px;
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 500;
-    text-align: left;
-    transition: all 0.15s ease;
-    cursor: pointer;
-  }
-  .nav-item:hover {
-    background: var(--surface-muted);
-    color: var(--ink);
-  }
-  .nav-item.active {
-    background: var(--surface-muted);
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--line);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .monitoring-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
-  .monitoring-card { display: flex; flex-direction: column; gap: 18px; }
-  .monitoring-top, .monitoring-bottom { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-  .monitoring-top h2 { margin: 0 0 4px; font-size: 17px; }
-  .monitoring-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
-  .monitoring-metrics > div { padding: 12px; border-radius: var(--radius-md); background: var(--surface-muted); }
-  .monitoring-metrics span, .monitoring-metrics strong { display: block; }
-  .monitoring-metrics span, .monitoring-bottom { color: var(--muted); font-size: 12px; }
-  .monitoring-metrics strong { margin-top: 5px; font-size: 18px; color: var(--ink); }
-  .monitoring-gauge { grid-column: span 2; border: 1px solid var(--line); --metric-color: var(--teal); }
-  .monitoring-gauge.purple { --metric-color: var(--purple); }
-  .monitoring-gauge.blue { --metric-color: var(--blue); }
-  .monitoring-gauge.resource-warning { --metric-color: var(--warning, #d97706); }
-  .monitoring-gauge.resource-critical { --metric-color: var(--danger); }
-  .monitoring-gauge strong { color: var(--metric-color); }
-  .monitoring-gauge-disk {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-  }
-  .monitoring-gauge-disk .monitoring-gauge-head {
-    width: 100%;
-    text-align: left;
-  }
-  .monitoring-disk-circle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    padding: 4px 0 2px;
-  }
-  .monitoring-spark { height: 40px; margin: 12px 0 8px; }
-  .resource-track { height: 4px; background: var(--line); border-radius: 9px; overflow: hidden; }
-  .resource-track i { display: block; height: 100%; background: var(--metric-color); transition: width .4s ease; }
-  .monitoring-network { grid-column: span 3; border: 1px solid var(--line); }
-  .monitoring-network strong { font-size: 15px; }
-  .package-dialog-label { display: grid; gap: 8px; }
-  .package-dialog-label select { width: 100%; }
-  .version-spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--teal); border-radius: 50%; animation: version-spin .8s linear infinite; flex-shrink: 0; }
-  .version-checking { display: flex; align-items: center; gap: 14px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 18px; margin: 12px 0; }
-  .version-checking .version-spinner { width: 24px; height: 24px; }
-  .version-checking small { display: block; margin-top: 5px; color: var(--muted); }
-  @keyframes version-spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .version-spinner { animation: none; } .resource-track i { transition: none; } }
-  .monitoring-bottom { flex-wrap: wrap; }
-  .monitoring-card > button { align-self: flex-start; margin-top: auto; }
-  .account-management { grid-column: 1 / -1; }
-  .account-list { margin-bottom: 20px; }
-  .account-row, .user-table-head { display: grid; grid-template-columns: minmax(120px, 1fr) 80px 100px 150px; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
-  .user-table-head { color: var(--muted); font-size: 12px; }
-  .account-row .settings-actions { margin: 0; justify-content: flex-end; gap: 8px; }
-  .user-role { text-transform: capitalize; }
-  @media (max-width: 1100px) { .user-table-head { display: none; } .account-row { grid-template-columns: 1fr 1fr; } .account-row .settings-actions { justify-content: flex-start; } }
-  .update-command { display: block; width: fit-content; max-width: 100%; padding: 10px 14px; margin: 12px 0; border-radius: var(--radius-md); background: var(--surface-muted); overflow-wrap: anywhere; }
-
-  .nav-count {
-    margin-left: auto;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background: var(--surface);
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 600;
-  }
-  .nav-count.firing {
-    background: var(--danger-bg);
-    color: var(--danger);
-  }
-
-  .sidebar-footer {
-    margin-top: auto;
-    padding: 12px 10px;
-    border-top: 1px solid var(--line);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .connection-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .connection-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--teal);
-    box-shadow: 0 0 0 3px var(--teal-bg);
-  }
-  .version-tag {
-    font-size: 11px;
-    opacity: 0.7;
-  }
-
-  /* --------------------------------------------------------------------------
-     TOPBAR & BREADCRUMBS
-     -------------------------------------------------------------------------- */
+  /* ------------------------------------------------------------------------
+     Shell
+     ------------------------------------------------------------------------ */
+  .app-shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
   .main-content { min-width: 0; }
+  .main-content:focus { outline: none; }
+  .skip-link { position: fixed; z-index: 2000; top: 10px; left: 10px; padding: 8px 14px; border-radius: var(--radius-md); background: var(--accent); color: var(--accent-contrast); font-weight: 600; text-decoration: none; transform: translateY(-160%); transition: transform var(--dur) var(--ease-out); }
+  .skip-link:focus { transform: none; }
+
   .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 16px;
     height: 58px;
-    padding: 0 32px;
+    padding: 0 var(--page-pad-x);
     border-bottom: 1px solid var(--line);
     background: var(--surface);
   }
-
-  .breadcrumbs {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-  }
-  .crumb-root { color: var(--muted); }
-  .crumb-separator { color: var(--muted); opacity: 0.4; }
-  .crumb-current { color: var(--ink); font-weight: 600; }
-
-  .topbar-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .preview-control {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .preview-control select {
-    padding: 5px 8px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: var(--surface-muted);
-    color: var(--ink);
-  }
-
-  /* --------------------------------------------------------------------------
-     BUTTONS & CONTROLS
-     -------------------------------------------------------------------------- */
-  :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
-  :global(button) { cursor: pointer; }
-  :global(:focus-visible) {
-    outline: 2px solid var(--teal);
-    outline-offset: 2px;
-  }
-  :global(input:not([type])),
-  :global(input[type="text"]),
-  :global(input[type="password"]),
-  :global(input[type="email"]),
-  :global(input[type="number"]),
-  :global(select),
-  :global(textarea) {
-    background: var(--surface-muted);
-    color: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    padding: 7px 12px;
-    font-size: 13px;
-    font-family: inherit;
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-  }
-  :global(select) {
-    cursor: pointer;
-    appearance: none;
-    -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
-    padding-right: 28px;
-  }
-  :global(input:focus),
-  :global(select:focus),
-  :global(textarea:focus) {
-    outline: none;
-    border-color: var(--teal);
-    box-shadow: 0 0 0 2px var(--teal-glow);
-  }
-  :global(input::placeholder),
-  :global(textarea::placeholder) {
-    color: var(--muted);
-    opacity: 0.7;
-  }
-
-  .button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 9px 16px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--ink);
-    font-size: 13px;
-    font-weight: 600;
-    transition: all 0.15s ease;
-  }
-  .button:hover:not(:disabled) {
-    background: var(--surface-muted);
-    border-color: var(--muted);
-  }
-  .button.small {
-    padding: 6px 12px;
-    font-size: 12px;
-  }
-  .button.primary {
-    background: var(--teal);
-    border-color: var(--teal);
-    color: var(--primary-contrast);
-    box-shadow: none;
-  }
-  .button.primary:hover:not(:disabled) {
-    background: var(--teal);
-    border-color: var(--teal);
-    filter: brightness(1.1);
-  }
-  .button.ghost {
-    background: transparent;
-    border-color: var(--line);
-    color: var(--muted);
-  }
-  .button.ghost:hover:not(:disabled) {
-    background: var(--surface-muted);
-    border-color: var(--muted);
-    color: var(--ink);
-  }
-  .button.danger {
-    background: var(--danger-bg);
-    border-color: transparent;
-    color: var(--danger);
-  }
-  .button.danger:hover:not(:disabled) {
-    filter: brightness(0.95);
-  }
-  .button.full-width { width: 100%; }
-  .button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-  .icon-button {
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--muted);
-    transition: all 0.15s ease;
-  }
-  .icon-button:hover {
-    color: var(--ink);
-    background: var(--surface-muted);
-  }
-
-  .text-button, .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    border: 0;
-    background: transparent;
-    color: var(--teal);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    padding: 0;
-  }
-  .back-link { margin-bottom: 24px; }
-  .text-button:hover, .back-link:hover { text-decoration: underline; }
-
-  /* --------------------------------------------------------------------------
-     STATUS PILLS & INDICATORS
-     -------------------------------------------------------------------------- */
-  .status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 9px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: capitalize;
-  }
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-  }
-
-  .status-pill.healthy { background: var(--success-bg); color: var(--success); }
-  .status-pill.stale, .status-pill.pending { background: var(--warning-bg); color: var(--warning); }
-  .status-pill.installing {
-    background: rgba(6, 182, 212, 0.12);
-    color: #06b6d4;
-    border: 1px solid rgba(6, 182, 212, 0.3);
-  }
-  .status-pill.installing .status-dot {
-    background: #06b6d4;
-    box-shadow: none;
-    animation: none;
-  }
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(0.85); }
-  }
-  .status-pill.unreachable, .status-pill.failed { background: var(--danger-bg); color: var(--danger); }
-  .status-pill.disabled, .status-pill.unsupported { background: var(--surface-muted); color: var(--muted); }
-
-  /* --------------------------------------------------------------------------
-     NOTICES & ALERTS
-     -------------------------------------------------------------------------- */
-  .notice {
-    position: fixed;
-    z-index: 100;
-    bottom: 24px;
-    right: 24px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 18px;
-    border: 1px solid var(--teal);
-    border-radius: var(--radius-md);
-    background: var(--surface-elevated);
-    box-shadow: var(--shadow-lg);
-    color: var(--ink);
-    font-size: 13px;
-  }
-  .partial-warning {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 16px 32px 0;
-    padding: 10px 16px;
-    border: 1px solid var(--warning);
-    border-radius: var(--radius-md);
-    background: var(--warning-bg);
-    color: var(--warning);
-    font-size: 13px;
-  }
-
-  /* --------------------------------------------------------------------------
-     PAGE LAYOUT & HEADINGS
-     -------------------------------------------------------------------------- */
-  .page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 32px 32px 48px;
-  }
-  .page-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 20px;
-    margin-bottom: 28px;
-  }
-  h1 {
-    margin: 0 0 6px;
-    font-size: 26px;
-    font-weight: 600;
-    letter-spacing: -0.03em;
-    color: var(--ink);
-  }
-  h2 {
-    margin: 0 0 4px;
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    color: var(--ink);
-  }
-  .lede {
-    margin: 0;
-    font-size: 14px;
-    color: var(--muted);
-  }
-  .heading-status-badge {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 12px;
-    border-radius: 4px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .live-ping {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--teal);
-    box-shadow: 0 0 0 3px var(--teal-bg);
-  }
-
-  /* --------------------------------------------------------------------------
-     SUMMARY CARDS (METRIC OVERVIEW)
-     -------------------------------------------------------------------------- */
-  .summary-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-  .summary-card {
-    padding: 18px 20px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-  }
-  .summary-card:hover {
-    border-color: var(--line);
-  }
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-  }
-  .stat-label {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--muted);
-  }
-  .stat-icon-wrap {
-    width: 28px;
-    height: 28px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-  }
-  .stat-icon-wrap.emerald { background: transparent; color: var(--muted); }
-  .stat-icon-wrap.amber { background: transparent; color: var(--muted); }
-  .stat-icon-wrap.cyan { background: transparent; color: var(--muted); }
-
-  .stat-value {
-    display: block;
-    font-size: 30px;
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    color: var(--ink);
-    margin-bottom: 10px;
-  }
-  .stat-total {
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--muted);
-  }
-  .stat-badge {
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .stat-badge.positive { color: var(--teal); }
-  .stat-badge.warning { color: var(--warning); }
-
-  /* Network summary card */
-  .stat-network-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-  }
-  .stat-network-card .card-corner-icon {
-    position: absolute;
-    top: 18px;
-    right: 20px;
-  }
-  .network-split {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 12px;
-    padding-right: 28px;
-  }
-  .network-split-col {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-  }
-  .network-split-head {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    height: 28px;
-    margin-bottom: 12px;
-  }
-  .rate-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 17px;
-    height: 17px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    flex-shrink: 0;
-  }
-  .rate-badge.down {
-    background: rgba(20, 184, 166, 0.15);
-    color: var(--teal);
-  }
-  .rate-badge.up {
-    background: rgba(59, 130, 246, 0.15);
-    color: var(--blue, #3b82f6);
-  }
-  .rate-title {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .network-split-value {
-    display: block;
-    font-size: 17px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--ink);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .network-split-sep {
-    width: 1px;
-    height: 42px;
-    background: var(--line);
-    flex-shrink: 0;
-    align-self: center;
-  }
-
-  /* --------------------------------------------------------------------------
-     TABLE CONTAINER & SERVER LIST
-     -------------------------------------------------------------------------- */
-  .section-heading {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    margin-bottom: 14px;
-  }
-  .table-container {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    margin-bottom: 32px;
-  }
-  .table-header {
-    display: grid;
-    grid-template-columns: 130px minmax(180px, 2fr) 85px 85px 105px minmax(130px, 1.2fr) 36px;
-    gap: 16px;
-    align-items: center;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--line);
-    background: var(--surface-muted);
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: none;
-    letter-spacing: 0.04em;
-  }
-  .server-list { display: flex; flex-direction: column; }
-  .server-row {
-    display: grid;
-    grid-template-columns: 130px minmax(180px, 2fr) 85px 85px 105px minmax(130px, 1.2fr) 36px;
-    gap: 16px;
-    align-items: center;
-    width: 100%;
-    padding: 16px 20px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    background: transparent;
-    color: var(--ink);
-    text-align: left;
-    transition: background 0.15s ease;
-    cursor: pointer;
-  }
-  .server-row:last-child { border-bottom: 0; }
-  .server-row:hover { background: var(--surface-muted); }
-
-  .server-identity strong {
-    display: block;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--ink);
-  }
-  .server-identity small {
-    display: block;
-    margin-top: 2px;
-    font-size: 12px;
-  }
-  .col-meta {
-    font-size: 13px;
-    color: var(--ink-secondary);
-  }
-  .col-meta span { display: block; }
-  .col-meta small { display: block; font-size: 11px; margin-top: 2px; }
-
-  .server-metric {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .server-metric strong {
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .metric-microbar {
-    width: 100%;
-    height: 4px;
-    border-radius: 4px;
-    background: var(--surface-muted);
-    overflow: hidden;
-  }
-  .metric-microbar span {
-    display: block;
-    height: 100%;
-    background: var(--teal);
-    border-radius: 4px;
-  }
-  .metric-microbar .bar-memory {
-    background: var(--purple, #a855f7);
-  }
-  .disk-table-cell {
+  .breadcrumbs { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 13px; }
+  .breadcrumbs :global(svg) { opacity: 0.5; }
+  .crumb-link { padding: 0; border: 0; background: none; color: var(--muted); font-size: 13px; }
+  .crumb-link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+  .crumb-current { overflow: hidden; color: var(--ink); font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+  .search-trigger {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-  }
-  .disk-table-cell strong {
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  .col-rxtx {
-    display: flex;
-    align-items: center;
-    font-size: 13px;
-  }
-  .rxtx-rates {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 500;
-  }
-  .rate-down {
-    color: var(--teal);
-  }
-  .rate-up {
-    color: var(--blue, #3b82f6);
-  }
-  .rate-sep {
-    color: var(--muted);
-  }
-
-  .col-action {
-    display: flex;
-    justify-content: flex-end;
-    color: var(--muted);
-  }
-
-  /* --------------------------------------------------------------------------
-     LOWER PANELS
-     -------------------------------------------------------------------------- */
-  .lower-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-  .panel {
-    padding: 24px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-  .panel-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 20px;
-  }
-  .traffic-number {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    margin: 12px 0 16px;
-  }
-  .traffic-number strong {
-    font-size: 32px;
-    font-weight: 700;
-    letter-spacing: -0.03em;
-  }
-  .progress {
-    height: 8px;
-    overflow: hidden;
-    border-radius: 4px;
-    background: var(--surface-muted);
-  }
-  .progress span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--teal);
-  }
-  .info-hint {
-    margin: 12px 0 0;
-    font-size: 12px;
-  }
-
-  .activity-feed {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .activity-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--line-light);
-  }
-  .activity-item:last-child { border-bottom: 0; padding-bottom: 0; }
-  .activity-icon-pill {
-    width: 26px;
-    height: 26px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-  }
-  .activity-icon-pill.emerald { background: var(--teal-bg); color: var(--teal); }
-  .activity-icon-pill.amber { background: var(--warning-bg); color: var(--warning); }
-  .activity-item strong { display: block; font-size: 13px; color: var(--ink); }
-  .activity-item small { display: block; font-size: 12px; }
-
-  /* --------------------------------------------------------------------------
-     SERVER DETAIL VIEW
-     -------------------------------------------------------------------------- */
-  .heading-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .server-heading-actions { display: flex; align-items: center; gap: 10px; }
-  .server-meta-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 18px 28px;
-    padding: 16px 20px;
-    margin-bottom: 24px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    box-shadow: var(--shadow-sm);
-  }
-  .meta-item { display: flex; flex-direction: column; gap: 3px; }
-  .meta-label { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0.04em; color: var(--muted); }
-  .meta-value { font-size: 13px; font-weight: 500; color: var(--ink); }
-
-  .tabs {
-    display: flex;
-    gap: 6px;
-    padding-bottom: 1px;
-    margin-bottom: 24px;
-    border-bottom: 1px solid var(--line);
-  }
-  .tabs button {
-    padding: 9px 16px;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--muted);
-    font-size: 14px;
-    font-weight: 500;
-    transition: all 0.15s ease;
-  }
-  .tabs button:hover { color: var(--ink); }
-  .tabs button.active {
-    border-bottom-color: var(--teal);
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  .success-text { color: var(--success); }
-  .notification-list { display: grid; gap: 12px; }
-  .notification-list article { border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-  .notification-list article.unread { border-left: 3px solid var(--warning); }
-  .notification-list article > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
-  .notification-list time { color: var(--muted); font-size: 12px; }
-  .notification-list p { overflow-wrap: anywhere; }
-  .traffic-range-form { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin-bottom: 20px; }
-  .traffic-range-form label { display: grid; gap: 8px; flex: 1 1 200px; min-width: 0; }
-  .traffic-range-form input { min-width: 0; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
-  .error-text { color: var(--danger); }
-  .warning-text { color: var(--warning); }
-  .traffic-usage-results { margin-top: 24px; }
-  .usage-download { color: var(--teal); }
-  .usage-upload { color: var(--blue); }
-  .network-rates { display: flex; flex-wrap: wrap; gap: 32px; margin-bottom: 20px; }
-  .network-rates > div { display: grid; gap: 6px; }
-  .network-rates strong { font-size: 24px; }
-
-  .metric-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 20px;
-  }
-  .metric-card {
-    padding: 18px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-  .card-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-  }
-  .metric-title { font-size: 13px; font-weight: 600; color: var(--muted); }
-  .metric-big { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
-  .sparkline { height: 48px; margin: 12px 0 8px; }
-  .sparkline-unavailable {
-    display: grid;
-    place-items: center;
-    height: 48px;
-    margin: 12px 0 8px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-muted);
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .metric-footer {
-    display: flex;
-    justify-content: space-between;
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .legend {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 14px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
-  .legend-dot.teal { background: var(--teal); }
-  .legend-dot.purple { background: var(--purple); }
-  .legend-dot.blue { background: var(--blue); }
-
-  .resource-highlights {
-    display: flex;
-    gap: 20px;
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px solid var(--line);
-    font-size: 13px;
-    color: var(--muted);
-  }
-  .resource-highlights strong { color: var(--ink); }
-
-  .traffic-details {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    margin-top: 24px;
-  }
-  .detail-cell span { display: block; font-size: 12px; color: var(--muted); }
-  .detail-cell strong { display: block; margin-top: 4px; font-size: 13px; color: var(--ink); }
-
-  /* --------------------------------------------------------------------------
-     LOG VIEWER (TERMINAL AESTHETIC)
-     -------------------------------------------------------------------------- */
-  .terminal-log-viewer {
-    border-radius: var(--radius-md);
-    background: #090a0f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    overflow: hidden;
-    padding: 12px 16px;
-  }
-  .log-list { display: flex; flex-direction: column; gap: 4px; }
-  .log-entry {
-    display: grid;
-    grid-template-columns: 80px 60px 1fr;
-    gap: 12px;
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-  .log-entry:last-child { border-bottom: 0; }
-  .log-entry time { color: #64748b; }
-  .log-level-badge {
-    font-weight: 700;
-    font-size: 11px;
-    border-radius: 4px;
-    padding: 1px 4px;
-    width: fit-content;
-  }
-  .log-level-badge.info { color: #10b981; }
-  .log-level-badge.warn { color: #f59e0b; }
-  .log-level-badge.error { color: #ef4444; }
-  .log-text { color: #e2e8f0; word-break: break-all; }
-  .log-text small { display: block; margin-top: 2px; font-size: 11px; }
-
-  /* --------------------------------------------------------------------------
-     FLEET LOGS VIEW & TOOLBAR
-     -------------------------------------------------------------------------- */
-  .logs-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 16px;
-    padding: 14px 18px;
-    margin-bottom: 18px;
-  }
-  .logs-toolbar-filters {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-  .log-control-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .control-label {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    color: var(--muted);
-  }
-  .log-control-group select {
-    padding: 6px 12px;
-    font-size: 13px;
-    border-radius: var(--radius-sm);
-    background: var(--surface);
-    border: 1px solid var(--line);
-    color: var(--ink);
-  }
-  .level-chip-group {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--surface-muted);
-    padding: 3px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--line);
-  }
-  .level-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .level-chip:hover {
-    color: var(--ink);
-    background: var(--surface);
-  }
-  .level-chip.active {
-    background: var(--surface);
-    color: var(--ink);
-    font-weight: 600;
-    box-shadow: var(--shadow-sm);
-    border-color: var(--line);
-  }
-  .level-chip.error.active {
-    background: rgba(239, 68, 68, 0.12);
-    color: #ef4444;
-    border-color: rgba(239, 68, 68, 0.25);
-  }
-  .level-chip.warn.active {
-    background: rgba(245, 158, 11, 0.12);
-    color: #f59e0b;
-    border-color: rgba(245, 158, 11, 0.25);
-  }
-  .level-chip.info.active {
-    background: rgba(16, 185, 129, 0.12);
-    color: #10b981;
-    border-color: rgba(16, 185, 129, 0.25);
-  }
-  .chip-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-  }
-  .chip-dot.error { background: #ef4444; }
-  .chip-dot.warn { background: #f59e0b; }
-  .chip-dot.info { background: #10b981; }
-  .chip-count {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 1px 5px;
-    border-radius: 10px;
-    background: var(--line);
-    color: var(--muted);
-  }
-  .level-chip.active .chip-count {
-    background: var(--line-strong, var(--line));
-    color: var(--ink);
-  }
-  .logs-toolbar-search {
-    flex: 1;
-    max-width: 320px;
     min-width: 200px;
-  }
-  .log-search-input-box {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    background: var(--surface);
+    height: 36px;
+    padding: 0 8px 0 12px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
     color: var(--muted);
-  }
-  .log-search-input-box input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
     font-size: 13px;
-    color: var(--ink);
-    padding: 0;
+    transition: border-color var(--transition-fast), color var(--transition-fast);
   }
-  .search-clear-btn {
-    background: transparent;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    padding: 2px;
-    display: grid;
-    place-items: center;
-  }
-  .search-clear-btn:hover {
-    color: var(--ink);
-  }
-  .fleet-log-viewer .logs-pagination-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 6px 4px;
-    font-size: 12px;
-  }
-  .fleet-log-viewer .logs-pagination-bar.top {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-  }
-  .fleet-log-viewer .logs-pagination-bar.bottom {
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    margin-top: 8px;
-    padding-top: 10px;
-  }
-  .fleet-log-viewer .logs-page-summary {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-  }
-  .fleet-log-viewer .logs-pagination-controls {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-  }
-  .fleet-log-viewer .page-size-selector {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-  }
-  .fleet-log-viewer .page-size-selector select {
-    background: #131722;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    color: #e2e8f0;
-    padding: 3px 8px;
-    font-size: 11px;
-    border-radius: var(--radius-xs);
-  }
-  .fleet-log-viewer .pager-buttons {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .fleet-log-viewer .pager-buttons .button {
-    font-size: 11px;
-    padding: 3px 8px;
-    color: #cbd5e1;
-    border-color: rgba(255, 255, 255, 0.12);
-  }
-  .fleet-log-viewer .pager-buttons .button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
+  .search-trigger:hover { border-color: var(--line-strong); color: var(--ink-secondary); }
+  .search-trigger span { flex: 1; text-align: left; }
+  .search-trigger kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-family: var(--font-sans); font-size: 10.5px; }
+  .preview-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+  .preview-control select { padding-top: 5px; padding-bottom: 5px; }
+  .theme-icon { display: grid; place-items: center; animation: theme-spin var(--dur-slow) var(--ease-spring); }
+  @keyframes theme-spin { from { opacity: 0; transform: rotate(-90deg) scale(0.6); } to { opacity: 1; transform: none; } }
+  .notification-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border: 2px solid var(--surface);
+    border-radius: var(--radius-pill);
+    background: var(--danger);
     color: #fff;
-  }
-  .fleet-log-viewer .pager-buttons .button:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-  .fleet-log-viewer .pager-buttons .button.icon-only {
-    padding: 3px 7px;
+    font-size: 9.5px;
     font-weight: 700;
-  }
-  .fleet-log-viewer .pager-info {
-    font-size: 11px;
-    color: #94a3b8;
-  }
-  .fleet-log-viewer .log-entry {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 7px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-  .fleet-log-viewer .log-entry time {
-    flex-shrink: 0;
-    min-width: 75px;
-    color: #64748b;
-  }
-  .log-server-badge {
-    flex-shrink: 0;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 1px 7px;
-    border-radius: var(--radius-xs);
-    background: rgba(20, 184, 166, 0.12);
-    color: var(--teal);
-    border: 1px solid rgba(20, 184, 166, 0.25);
-    white-space: nowrap;
-  }
-  .fleet-log-viewer .log-level-badge {
-    flex-shrink: 0;
-    min-width: 48px;
+    line-height: 13px;
     text-align: center;
-    font-weight: 700;
-    font-size: 11px;
-    border-radius: 4px;
-    padding: 1px 5px;
+    pointer-events: none;
+    animation: pop-in var(--dur) var(--ease-spring);
   }
-  .fleet-log-viewer .log-level-badge.info {
-    background: rgba(16, 185, 129, 0.12);
-    color: #10b981;
-    border: 1px solid rgba(16, 185, 129, 0.25);
-  }
-  .fleet-log-viewer .log-level-badge.warn {
-    background: rgba(245, 158, 11, 0.12);
-    color: #f59e0b;
-    border: 1px solid rgba(245, 158, 11, 0.25);
-  }
-  .fleet-log-viewer .log-level-badge.error {
-    background: rgba(239, 68, 68, 0.12);
-    color: #ef4444;
-    border: 1px solid rgba(239, 68, 68, 0.25);
-  }
-  .fleet-log-viewer .log-level-badge.debug {
-    background: rgba(148, 163, 184, 0.12);
-    color: #94a3b8;
-    border: 1px solid rgba(148, 163, 184, 0.25);
-  }
-  .fleet-log-viewer .log-text {
-    flex: 1;
-    min-width: 0;
-    color: #e2e8f0;
-    word-break: break-word;
-  }
+  .banners:empty { display: none; }
+  .update-banner { justify-content: space-between; }
 
-  /* --------------------------------------------------------------------------
-     PACKAGE CARDS & MODULES
-     -------------------------------------------------------------------------- */
-  .module-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 18px;
+  /* ------------------------------------------------------------------------
+     Pages
+     ------------------------------------------------------------------------ */
+  :global(.page) {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: var(--page-pad-y) var(--page-pad-x) 56px;
+    animation: rise-in var(--dur-slow) var(--ease-out);
   }
-  .module-card { display: flex; flex-direction: column; }
-  .module-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-  .module-badge {
-    padding: 2px 8px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-muted);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: none;
-    color: var(--teal);
-  }
-  .release-tag { font-size: 12px; color: var(--muted); }
-  .module-desc { font-size: 13px; line-height: 1.5; margin: 4px 0 16px; flex: 1; }
-  .module-meta { font-size: 12px; margin-bottom: 16px; color: var(--muted); }
-  .radio-group { display: flex; gap: 10px; margin-bottom: 10px; }
-  .radio-pill { font-size: 12px; color: var(--muted); cursor: pointer; }
-  .source-input {
-    width: 100%;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: var(--surface);
-    color: var(--ink);
-    font-size: 12px;
-    margin-bottom: 12px;
-  }
+  :global(.page.narrow) { max-width: 900px; }
+  :global(.page-heading) { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+  :global(.page-heading .lede) { margin-top: 2px; }
 
-  /* --------------------------------------------------------------------------
-     SERVER PACKAGES TAB & INSTALL PROGRESS
-     -------------------------------------------------------------------------- */
-  .server-packages-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-  .server-package-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .server-package-card {
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-  }
-  .package-card-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .package-card-identity {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .package-name-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .package-name-row h3 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--ink);
-  }
-  .mono-badge {
-    font-family: monospace;
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: var(--radius-xs);
-    background: var(--surface-muted);
-    color: var(--muted);
-    border: 1px solid var(--line);
-  }
-  .package-desc {
-    font-size: 13px;
-    margin: 0;
-  }
-  .package-version-bar {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    flex-wrap: wrap;
-    padding: 10px 14px;
-    background: var(--surface-muted);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--line);
-  }
-  .version-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .version-label {
-    font-size: 11px;
-    text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    color: var(--muted);
-  }
-  .package-card-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .update-alert-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--blue, #3b82f6);
-    background: rgba(59, 130, 246, 0.12);
-    border: 1px solid rgba(59, 130, 246, 0.25);
-    border-radius: 12px;
-  }
-
-  /* INSTALL MODAL PROGRESS & LOGS */
-  .package-dialog-subheading {
-    margin-bottom: 4px;
-  }
-  .package-install-progress-box {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding: 4px 0;
-  }
-  .install-steps-tracker {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .install-step-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    color: var(--muted);
-  }
-  .install-step-item.running {
-    color: var(--ink);
-    font-weight: 600;
-  }
-  .install-step-item.done {
-    color: var(--emerald, #10b981);
-  }
-  .install-step-item.failed {
-    color: var(--danger, #ef4444);
-  }
-  .step-icon-wrap {
-    width: 20px;
-    height: 20px;
-    display: grid;
-    place-items: center;
-  }
-  .step-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--muted);
-    opacity: 0.4;
-  }
-  .install-progress-bar {
-    height: 6px;
-    background: var(--surface-muted);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .install-progress-bar span {
-    display: block;
-    height: 100%;
-    background: var(--teal, #0d9488);
-    transition: width 0.3s ease;
-  }
-  .install-console-log {
-    background: #090a0f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    max-height: 160px;
-    overflow-y: auto;
-    font-family: monospace;
-    font-size: 11px;
-    line-height: 1.5;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .console-log-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .console-log-row time {
-    color: #64748b;
-    flex-shrink: 0;
-  }
-  .console-log-row.info { color: #cbd5e1; }
-  .console-log-row.warn { color: #f59e0b; }
-  .console-log-row.error { color: #ef4444; }
-  .console-log-row .log-msg {
-    word-break: break-word;
-  }
-  .already-installed-note {
-    padding: 8px 12px;
-    background: rgba(59, 130, 246, 0.08);
-    border: 1px solid rgba(59, 130, 246, 0.25);
-    border-radius: var(--radius-sm);
-    font-size: 12px;
-    color: #93c5fd;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  /* --------------------------------------------------------------------------
-     FORMS & INPUTS
-     -------------------------------------------------------------------------- */
-  .active-install-banner {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(6, 182, 212, 0.08);
-    border: 1px solid rgba(6, 182, 212, 0.25);
-    border-radius: var(--radius-md);
-    padding: 10px 16px;
-    margin-bottom: 16px;
-    font-size: 13px;
-    color: var(--ink);
-    gap: 12px;
-  }
-  .active-install-banner .banner-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .pulse-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: #06b6d4;
-    box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.7);
-    animation: none;
-  }
-  @keyframes banner-pulse {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(6, 182, 212, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); }
-  }
-
-  .form-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 18px;
-    margin: 20px 0;
-  }
-  .form-grid label {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--ink);
-  }
-  .form-grid label:first-child { grid-column: 1 / -1; }
-  .form-grid input, .form-grid textarea, .form-grid select {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--ink);
-    font-size: 13px;
-    transition: border 0.15s ease;
-  }
-  .form-grid textarea { resize: vertical; }
-  .form-grid input:focus, .form-grid textarea:focus, .form-grid select:focus {
-    border-color: var(--teal);
-  }
-  .form-grid small { color: var(--muted); font-size: 11px; }
-  .join-command { display: grid; gap: 10px; margin-top: 16px; }
-  .join-command pre {
-    margin: 0;
-    padding: 12px;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface-muted);
-    font-size: 12px;
-  }
-  .join-command .button { justify-self: start; }
-  .setup-actions {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 12px;
-    padding-top: 20px;
-    border-top: 1px solid var(--line);
-  }
-  .form-error {
-    margin: 8px 0 0;
-    color: var(--danger);
-    font-size: 12px;
-  }
-
-  /* --------------------------------------------------------------------------
-     ONBOARDING & LOGIN SCREEN
-     -------------------------------------------------------------------------- */
+  /* Sign in ------------------------------------------------------------------ */
   .login-screen {
     position: fixed;
     inset: 0;
@@ -5873,551 +1926,160 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(9, 10, 15, 0.8);
-    backdrop-filter: blur(12px);
+    overflow-y: auto;
+    background:
+      radial-gradient(60% 50% at 20% 10%, var(--accent-glow), transparent 70%),
+      radial-gradient(50% 50% at 90% 90%, color-mix(in srgb, var(--purple) 18%, transparent), transparent 70%),
+      var(--canvas);
+    animation: fade-in var(--dur-slow) var(--ease-out);
   }
   .login-card {
-    width: min(420px, 100%);
-    padding: 36px 32px;
+    width: min(400px, 100%);
+    padding: 34px 30px 30px;
     border: 1px solid var(--line);
     border-radius: var(--radius-xl);
     background: var(--surface);
     box-shadow: var(--shadow-lg);
+    animation: pop-in var(--dur-slow) var(--ease-spring);
   }
-  .login-card .brand-mark.large {
-    width: 48px;
-    height: 48px;
-    margin: 0 auto 16px;
-    font-size: 22px;
-  }
-  .login-card h1 { text-align: center; margin-bottom: 6px; font-size: 18px; }
-  .login-card .center { text-align: center; }
-  .auth-form {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    margin-top: 24px;
-  }
-  .auth-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink); }
-  .auth-form input {
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface-muted);
-    color: var(--ink);
-  }
+  .login-mark { display: block; width: 46px; height: 46px; margin: 0 auto 16px; filter: drop-shadow(0 8px 18px var(--accent-glow)); }
+  .login-mark rect { fill: var(--accent); }
+  .login-mark path { fill: none; stroke: var(--accent-contrast); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+  .login-card h1 { margin-bottom: 4px; font-size: 20px; text-align: center; }
+  .auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 24px; }
+  .auth-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 550; }
+  .auth-form input { padding: 10px 12px; }
+  .login-submit { min-height: 40px; margin-top: 4px; }
+  .insecure-login { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--warning); font-size: 12px; }
 
-  .onboarding-card {
-    min-width: 0;
-    padding: 32px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-  .stepper {
-    display: flex;
-    gap: 24px;
-    margin-bottom: 24px;
-  }
-  .step {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .step span {
-    width: 24px;
-    height: 24px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--line);
-    border-radius: 50%;
-    font-size: 11px;
-  }
-  .step.current { color: var(--ink); font-weight: 700; }
-  .step.current span, .step.done span {
-    background: var(--teal);
-    border-color: var(--teal);
-    color: #fff;
-  }
-  .choice-row { display: flex; gap: 12px; margin: 20px 0; }
-  .choice-row label {
-    padding: 10px 14px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    font-size: 13px;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .choice-row label.chosen {
-    border-color: var(--teal);
-    background: var(--teal-bg);
-    color: var(--ink);
-  }
-  .review-box {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 16px;
-    border-radius: var(--radius-md);
-    background: var(--surface-muted);
-    font-size: 13px;
-    margin: 20px 0;
-  }
-
-  /* --------------------------------------------------------------------------
-     STATE PANELS & EMPTY/ERROR STATES
-     -------------------------------------------------------------------------- */
-  .state-panel {
-    display: grid;
-    justify-items: center;
-    gap: 12px;
-    padding: 80px 24px;
-    border: 1px dashed var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    text-align: center;
-  }
-  .empty-onboarding {
-    display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr);
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-  .empty-onboarding-main { padding: 40px; background: linear-gradient(135deg, var(--surface), var(--teal-bg)); }
-  .empty-onboarding-main .eyebrow { color: var(--teal); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-  .empty-onboarding-main .state-icon { margin: 28px 0 18px; color: var(--teal); background: var(--surface); }
-  .empty-onboarding-main h2 { margin: 0 0 12px; font-size: clamp(24px, 3vw, 32px); letter-spacing: -.03em; line-height: 1.15; }
-  .empty-onboarding-main p { max-width: 52ch; margin: 0 0 22px; color: var(--ink-secondary); line-height: 1.6; }
-  .empty-onboarding-main .button { min-height: 42px; }
-  .empty-onboarding-steps { display: grid; align-content: center; gap: 0; margin: 0; padding: 20px 30px; list-style: none; }
-  .empty-onboarding-steps li { display: flex; gap: 16px; padding: 22px 0; border-bottom: 1px solid var(--line-light); }
-  .empty-onboarding-steps li:last-child { border-bottom: 0; }
-  .empty-onboarding-steps li > span { flex: 0 0 30px; color: var(--teal); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .empty-onboarding-steps li div { display: grid; gap: 6px; }
-  .empty-onboarding-steps strong { color: var(--ink); font-size: 14px; }
-  .empty-onboarding-steps small { color: var(--muted); line-height: 1.5; }
-  @media (max-width: 800px) { .empty-onboarding { grid-template-columns: 1fr; } .empty-onboarding-main { padding: 28px; } .empty-onboarding-steps { padding: 0 28px 8px; } .empty-onboarding-steps li { padding: 16px 0; } }
-  @media (max-width: 480px) { .empty-onboarding-main { padding: 24px; } .empty-onboarding-steps { padding: 0 24px 8px; } }
-  .state-icon {
-    width: 52px;
-    height: 52px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background: var(--surface-muted);
-    color: var(--muted);
-  }
-  .state-icon.positive { color: var(--teal); background: var(--teal-bg); }
-  .error-state .state-icon { color: var(--danger); background: var(--danger-bg); }
-  .loading-spinner {
-    width: 32px;
-    height: 32px;
-    border: 2px solid var(--line);
-    border-top-color: var(--teal);
-    border-radius: 50%;
-    animation: spin 700ms linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .unavailable-panel {
-    display: grid;
-    gap: 6px;
-    padding: 24px 18px;
-    border: 1px dashed var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface-muted);
-    color: var(--muted);
-    font-size: 13px;
-  }
-  .unavailable-panel strong { color: var(--ink); }
-  .unavailable-panel.large { padding: 48px 24px; text-align: center; }
-
-  /* --------------------------------------------------------------------------
-     SETTINGS & HUB ADMINISTRATION
-     -------------------------------------------------------------------------- */
-  .settings-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-    max-width: 720px;
-    min-width: 0;
-  }
-  .settings-intro { margin-top: 8px; font-size: 14px; line-height: 1.6; color: var(--muted); }
-  .settings-layout { display: grid; grid-template-columns: 200px minmax(0, 850px); gap: 32px; align-items: start; }
-  .settings-nav { display: grid; gap: 4px; border-right: 1px solid var(--line); padding-right: 16px; }
-  .settings-nav button { text-align: left; padding: 12px; min-height: 44px; font-size: 14px; line-height: 1.4; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-family: inherit; border-radius: var(--radius-md); }
-  .settings-nav button.chosen { background: var(--teal-bg); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--teal); }
-  .ssh-auth-choice { margin: 0; padding: 0; border: 0; min-width: 0; }
-  .ssh-auth-choice legend { margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
-  .ssh-auth-choice > small { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
-  .ssh-auth-options { display: flex; flex-wrap: wrap; gap: 8px; }
-  .ssh-auth-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); cursor: pointer; }
-  .ssh-auth-options label:has(input:checked) { border-color: var(--teal); background: var(--teal-bg); }
-  .ssh-auth-options input { width: auto; margin: 0; accent-color: var(--teal); }
-  .user-search { display: grid; gap: 8px; margin-bottom: 20px; font-size: 13px; }
-  .release-list { border-top: 1px solid var(--line); margin: 16px 0 12px; }
-  .release-row { align-items: center; }
-  .release-row { padding: 10px 0; }
-  .release-actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
-  .release-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; font-size: 13px; }
-  .update-progress { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); font-size: 13px; }
-  .update-banner { justify-content: space-between; }
-  .update-banner span { flex: 1; }
-  .release-row { display: grid; grid-template-columns: 100px 1fr auto; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; }
-  .connection-settings-panel > p { font-size: 14px; line-height: 1.6; color: var(--muted); }
-  .connection-settings-panel .panel-heading { margin-bottom: 16px; }
-  .port-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
-  .port-form label { display: grid; gap: 8px; font-size: 13px; color: var(--ink-secondary); }
-  .port-form input { width: 120px; max-width: 100%; box-sizing: border-box; }
-  .form-wide { grid-column: 1 / -1; }
-  @media (max-width: 1100px) { .settings-layout { grid-template-columns: 1fr; gap: 20px; } .settings-nav { display: flex; gap: 6px; overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); padding: 6px; scrollbar-width: thin; } .settings-nav button { flex: 0 0 auto; padding: 10px 14px; white-space: nowrap; } .settings-nav button.chosen { box-shadow: inset 0 -3px var(--teal); } .release-row { grid-template-columns: 70px 1fr; } .release-row .release-actions { grid-column: 1 / -1; justify-content: space-between; } }
-  @media (max-width: 640px) {
-    .settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
-    .settings-nav button { min-width: 0; padding: 10px; white-space: normal; }
-  }
-  .settings-meta-box {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    background: var(--surface-muted);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    margin: 16px 0;
-  }
-  .meta-row {
+  /* Add server ------------------------------------------------------------- */
+  .active-install-banner {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: 13px;
-    color: var(--muted);
-  }
-  .meta-row span:last-child {
-    color: var(--ink);
-  }
-  .settings-actions {
-    display: flex;
-    justify-content: flex-start;
     gap: 12px;
-    margin-top: 16px;
-  }
-  .link-button {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    text-decoration: underline;
-    cursor: pointer;
-  }
-  .insecure-login {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    color: var(--warning);
-    font-size: 12px;
-  }
-
-  /* --------------------------------------------------------------------------
-     PACKAGES & EXTENSIONS
-     -------------------------------------------------------------------------- */
-  .info-hint {
-    font-size: 12px;
-    margin: 0;
-  }
-  .module-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-    gap: 20px;
-  }
-  .module-card {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .module-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .module-badge {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--teal);
-    background: var(--teal-bg);
-    padding: 2px 8px;
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--teal-glow);
-  }
-  .release-tag {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--muted);
-  }
-  .module-card h2 {
-    font-size: 16px;
-    font-weight: 600;
-    margin: 0;
-  }
-  .module-desc {
-    font-size: 13px;
-    line-height: 1.5;
-    flex: 1;
-    margin: 0;
-  }
-  .module-meta {
-    font-size: 12px;
-    color: var(--muted);
-    padding-top: 8px;
-    border-top: 1px solid var(--line);
-  }
-  .package-source-fields { display: grid; grid-template-columns: 1fr; align-items: start; gap: 16px; width: 100%; }
-  .package-source-fields label { display: grid; gap: 8px; min-width: 0; }
-  .package-source-fields select, .package-source-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
-  .package-source-fields details { grid-column: auto; }
-  .package-source-fields summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
-  .package-source-fields details label { margin-bottom: 12px; }
-
-  .package-source {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 4px;
-  }
-  .radio-group {
-    display: flex;
-    gap: 12px;
-  }
-  .radio-pill {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .source-input {
-    width: 100%;
-    font-size: 12px;
-    padding: 6px 10px;
-  }
-  .full-width {
-    width: 100%;
-  }
-
-  /* --------------------------------------------------------------------------
-     ALERTS & INCIDENT LIST
-     -------------------------------------------------------------------------- */
-  .alert-row {
-    display: grid;
-    grid-template-columns: 100px 1.5fr 1fr auto;
-    align-items: center;
-    padding: 14px 20px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--line);
-    transition: background var(--transition-fast);
-  }
-  .alert-row:hover {
-    background: var(--surface-hover);
-  }
-  .alert-row:last-child {
-    border-bottom: 0;
-  }
-
-  /* --------------------------------------------------------------------------
-     NOTIFICATION BELL & BADGE
-     -------------------------------------------------------------------------- */
-  .notification-bell-button {
-    position: relative;
-  }
-  .notification-badge {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 8px;
-    background: var(--danger, #ef4444);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 16px;
-    text-align: center;
-    pointer-events: none;
-  }
-
-  /* --------------------------------------------------------------------------
-     ALERTS PAGINATION
-     -------------------------------------------------------------------------- */
-  .alerts-pagination-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 16px;
     margin-bottom: 16px;
-    background: var(--surface);
-    border: 1px solid var(--line);
+    padding: 10px 14px;
+    border: 1px solid color-mix(in srgb, var(--info) 35%, transparent);
     border-radius: var(--radius-md);
+    background: var(--info-bg);
     font-size: 13px;
+    animation: rise-in var(--dur) var(--ease-out);
   }
-  .alerts-pagination-bar.bottom {
-    margin-top: 16px;
-    margin-bottom: 0;
-    justify-content: flex-end;
-  }
-  .alerts-pager {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .page-size-selector {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .page-size-selector select {
-    padding: 4px 8px;
-    font-size: 12px;
-    border-radius: var(--radius-sm);
-  }
-  .pager-info {
-    font-size: 12px;
-    color: var(--muted);
-  }
+  .banner-left { display: flex; align-items: center; gap: 10px; }
+  .pulse-dot { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--info); }
+  .pulse-dot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.8s var(--ease-out) infinite; }
+  .method .form-grid { margin-bottom: 0; }
+  .or-divider { display: flex; align-items: center; gap: 14px; margin: 18px 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
-  /* --------------------------------------------------------------------------
-     DISK CARD & CIRCLE LAYOUT
-     -------------------------------------------------------------------------- */
-  .disk-metric-card .disk-card-circle {
+  /* Settings ------------------------------------------------------------------ */
+  .settings-layout { display: grid; grid-template-columns: 220px minmax(0, 860px); gap: 28px; align-items: start; }
+  .settings-nav { position: sticky; top: 76px; display: grid; gap: 2px; }
+  .settings-nav button {
     display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 8px 0;
-  }
-  .disk-detail-panel .disk-detail-layout {
-    display: flex;
-    align-items: center;
-    gap: 32px;
-    padding: 16px 8px;
-    flex-wrap: wrap;
-  }
-  .disk-detail-stats {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(110px, 1fr));
-    gap: 16px;
-    flex: 1;
-  }
-  .disk-stat-box {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 12px 16px;
-    background: var(--surface-muted);
-    border: 1px solid var(--line);
+    gap: 10px;
+    min-height: 38px;
+    padding: 0 12px;
+    border: 0;
     border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--ink-secondary);
+    font-size: 13.5px;
+    text-align: left;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
-  .disk-stat-box .stat-lbl {
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .disk-stat-box strong {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--ink);
-  }
+  .settings-nav button :global(svg) { color: var(--muted); }
+  .settings-nav button:hover { background: var(--surface-muted); color: var(--ink); }
+  .settings-nav button.chosen { background: var(--surface); color: var(--ink); font-weight: 620; box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
+  .settings-nav button.chosen :global(svg) { color: var(--accent); }
+  .nav-badge { margin-left: auto; padding: 0 7px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; }
+  .settings-content { min-width: 0; }
+  .settings-section { display: grid; gap: var(--gap); animation: rise-in var(--dur) var(--ease-out); }
+  .settings-section :global(.panel + .panel) { margin-top: 0; }
 
-  /* --------------------------------------------------------------------------
-     MONITORING CARD CLICKABLE
-     -------------------------------------------------------------------------- */
-  .monitoring-card.clickable {
-    cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-  }
-  .monitoring-card.clickable:hover {
-    border-color: var(--teal);
-    box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
-    transform: translateY(-1px);
-  }
+  /* Onboarding ---------------------------------------------------------------- */
+  .stepper { display: flex; gap: 8px; margin: 0 0 18px; padding: 0; list-style: none; }
+  .step { display: flex; flex: 1; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 550; transition: border-color var(--dur), color var(--dur); }
+  .step span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 11px; font-weight: 700; transition: background-color var(--dur), border-color var(--dur), color var(--dur); }
+  .step.current { border-color: var(--accent); color: var(--ink); }
+  .step.current span, .step.done span { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
+  .step.done { color: var(--ink-secondary); }
+  .step-body { animation: rise-in var(--dur) var(--ease-out); }
+  .onboarding-card h2 { margin-bottom: 6px; }
+  .choice-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+  .choice-row label { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink-secondary); font-size: 13px; cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
+  .choice-row label.chosen { border-color: var(--accent); background: var(--accent-bg); color: var(--ink); }
+  .pairing-field { display: grid; gap: 7px; margin-bottom: 14px; font-size: 13px; font-weight: 550; }
+  .pairing-field small { color: var(--muted); font-weight: 400; }
+  .review-box { display: grid; gap: 8px; margin: 18px 0; padding: 14px 16px; border-radius: var(--radius-md); background: var(--surface-muted); font-size: 13px; }
 
-  /* --------------------------------------------------------------------------
-     RESPONSIVE BREAKPOINTS
-     -------------------------------------------------------------------------- */
+  /* Server detail ------------------------------------------------------------- */
+  .server-heading { align-items: center; }
+  .server-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .server-avatar { display: grid; flex-shrink: 0; place-items: center; width: 46px; height: 46px; border-radius: var(--radius-lg); background: var(--accent-bg); color: var(--accent); }
+  .heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .heading-row h1 { margin: 0; }
+  .rename-button { width: 30px; height: 30px; border-color: transparent; background: transparent; opacity: 0.6; }
+  .heading-row:hover .rename-button, .rename-button:focus-visible { opacity: 1; }
+  .rename { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; animation: fade-in var(--dur-fast) var(--ease-out); }
+  .rename input { width: min(320px, 70vw); font-size: 18px; font-weight: 600; }
+
+  .server-heading-actions { display: flex; align-items: center; gap: 10px; }
+  .server-meta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 30px;
+    margin: 0 0 22px;
+    padding: 14px 20px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .meta-item { display: grid; gap: 3px; margin: 0; }
+  .meta-item dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 550; }
+  .meta-item.note dd { color: var(--warning); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.connected { background: var(--success); }
+  .dot.disconnected { background: var(--danger); }
+  .dot.never-connected { background: var(--warning); }
+  .server-actions { margin-bottom: var(--gap); }
+  .tabs button { display: inline-flex; align-items: center; gap: 7px; }
+  .tab-body { animation: fade-in var(--dur) var(--ease-out); }
+  .unavailable-panel.large :global(svg) { color: var(--muted); }
+
+  /* ------------------------------------------------------------------------
+     Responsive
+     ------------------------------------------------------------------------ */
+  @media (max-width: 1200px) {
+    .search-trigger { min-width: 0; }
+    .search-trigger span { display: none; }
+  }
+  @media (max-width: 1100px) {
+    .settings-layout { grid-template-columns: 1fr; gap: 16px; }
+    .settings-nav { position: static; display: flex; gap: 4px; padding: 4px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-muted); }
+    .settings-nav button { flex: 0 0 auto; white-space: nowrap; }
+  }
   @media (max-width: 960px) {
     .app-shell { grid-template-columns: minmax(0, 1fr); }
-    .sidebar {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      flex-direction: row;
-      align-items: center;
-      padding: 10px 20px;
-      border-right: 0;
-      border-bottom: 1px solid var(--line);
-      gap: 16px;
-    }
-    .sidebar { flex-wrap: wrap; }
-    .brand-lockup { padding: 0; flex: 1; }
-    .button.mobile-menu-toggle { display: inline-flex; min-height: 40px; }
-    .nav-list { display: none; flex: 0 0 100%; width: 100%; min-width: 0; }
-    .nav-list.menu-open { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-    .nav-item { padding: 10px 12px; white-space: normal; min-height: 44px; }
-    .sidebar-footer { display: none; }
-    .summary-grid { grid-template-columns: 1fr 1fr; }
-    .table-header, .server-row {
-      grid-template-columns: 120px 1.5fr 75px 75px 95px 36px;
-    }
-    .col-rxtx { display: none; }
+    .topbar { position: static; }
   }
-
   @media (max-width: 640px) {
-    .nav-list.menu-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .sidebar { padding: 10px 16px; }
-    .page { padding: 20px 16px 32px; }
-    .page-heading { flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
-    .summary-card { padding: 16px; }
-    .summary-grid { gap: 12px; }
-    .button, .icon-button { min-height: 40px; }
-    .topbar-actions { flex-wrap: wrap; gap: 8px; }
-    :global(input), :global(select), :global(textarea) { max-width: 100%; }
-    .topbar { padding: 12px 16px; height: auto; min-height: 58px; flex-wrap: wrap; gap: 10px; }
-    .settings-grid .panel-heading, .settings-actions { flex-wrap: wrap; }
-    .meta-row { flex-wrap: wrap; gap: 8px; overflow-wrap: anywhere; }
-    .summary-grid, .lower-grid, .metric-grid, .form-grid, .package-source-fields { grid-template-columns: 1fr; }
-    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .summary-card:last-child { grid-column: 1 / -1; }
-    .summary-card .card-header { margin-bottom: 6px; }
-    .summary-card .stat-value { font-size: 25px; margin-bottom: 6px; }
-    .summary-card .stat-label { font-size: 12px; }
-    .summary-card .stat-icon-wrap { width: 20px; height: 20px; }
-    .summary-card .stat-badge { font-size: 11px; }
-    .stat-network-card .card-corner-icon { top: 16px; right: 16px; }
-    .network-split-head { height: 20px; margin-bottom: 6px; }
-    .network-split-sep { height: 32px; }
-
-    .package-source-fields details { grid-column: auto; }
-    .table-header { display: none; }
-    .server-row:not(.alert-row) {
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-areas: 'name action' 'status action';
-      gap: 8px 12px;
-      padding: 14px 16px;
-    }
-    .server-row:not(.alert-row) .col-name { grid-area: name; min-width: 0; }
-    .server-row:not(.alert-row) .col-status { grid-area: status; }
-    .server-row:not(.alert-row) .col-action { grid-area: action; }
-    .col-meta { display: none; }
+    .topbar { height: 54px; padding: 0 16px; gap: 10px; }
+    .breadcrumbs { flex: 1; }
+    .preview-control span { display: none; }
+    .topbar-actions { gap: 6px; }
+    .breadcrumbs > :global(:not(.crumb-current)) { display: none; }
+    .add-server span { display: none; }
+    .search-trigger { min-width: 0; width: 36px; padding: 0; justify-content: center; }
+    .search-trigger span, .search-trigger kbd { display: none; }
+    :global(.page) { padding: 20px 16px 36px; }
+    :global(.page-heading) { flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    .partial-warning { margin: 12px 16px 0; }
+    .server-meta-bar { gap: 12px 20px; padding: 12px 14px; }
+    .stepper { flex-direction: column; }
   }
-  @media (prefers-reduced-motion: reduce) { :global(*), :global(*::before), :global(*::after) { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 </style>

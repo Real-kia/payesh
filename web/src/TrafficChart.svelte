@@ -3,6 +3,7 @@
   import { formatNetworkRate } from './network';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
+  import { chartColors, gradientFill } from './lib/chart';
   import type { PreviewChartData } from './preview/fixtures';
 
   let { data, timezone = 'UTC' }: { data: PreviewChartData; timezone?: string } = $props();
@@ -17,11 +18,9 @@
 
   onMount(() => {
     if (!data.networkRx || !data.networkTx || data.timestamps.length < 2) return;
-    const styles = getComputedStyle(host);
-    const muted = styles.getPropertyValue('--muted').trim() || '#94a3b8';
-    const line = styles.getPropertyValue('--line').trim() || 'rgba(255, 255, 255, 0.08)';
-    const teal = styles.getPropertyValue('--teal').trim() || '#10b981';
-    const blue = styles.getPropertyValue('--blue').trim() || '#06b6d4';
+    const { muted, line, surface, read } = chartColors(host);
+    const teal = read('--accent', '#2f6bd8');
+    const blue = read('--blue', '#1d8cb0');
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : rate(raw);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
@@ -32,16 +31,16 @@
           stroke: muted,
           space: 70,
           grid: { stroke: line, width: 1 },
-          ticks: { stroke: line, width: 1 },
-          font: '12px Segoe UI, Arial, sans-serif',
+          ticks: { show: false },
+          font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
           values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: timezone }))
         },
         {
           stroke: muted,
           size: 65,
           grid: { stroke: line, width: 1 },
-          ticks: { stroke: line, width: 1 },
-          font: '12px Segoe UI, Arial, sans-serif',
+          ticks: { show: false },
+          font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
           values: (_u, values) => values.map((v) => (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
         }
       ],
@@ -50,7 +49,7 @@
         points: {
           size: 7,
           width: 2,
-          fill: '#fff'
+          fill: surface
         }
       },
       series: [
@@ -59,7 +58,7 @@
           label: 'Download',
           stroke: teal,
           width: 2,
-          fill: 'rgba(16, 185, 129, 0.08)',
+          fill: gradientFill(teal),
           points: { show: false },
           value
         },
@@ -67,7 +66,7 @@
           label: 'Upload',
           stroke: blue,
           width: 2,
-          fill: 'rgba(6, 182, 212, 0.08)',
+          fill: gradientFill(blue),
           points: { show: false },
           value
         }
@@ -83,7 +82,11 @@
 
 <style>
   .chart-host { min-height: 240px; width: 100%; }
-  :global(.uplot) { background: transparent; font-family: inherit; }
-  :global(.uplot .u-axis) { color: var(--muted); font-size: 11px; }
-  :global(.uplot .u-cursor-x), :global(.uplot .u-cursor-y) { border-color: var(--muted); opacity: 0.4; }
+  .chart-host :global(.uplot) { background: transparent; font-family: inherit; }
+  .chart-host :global(.u-axis) { color: var(--muted); }
+  .chart-host :global(.u-cursor-x), .chart-host :global(.u-cursor-y) { border-color: var(--muted); opacity: 0.45; }
+  .chart-host :global(.u-legend) { margin-top: 6px; color: var(--muted); font-size: 12px; }
+  .chart-host :global(.u-legend .u-marker) { width: 9px; height: 9px; border-radius: 50%; }
+  .chart-host :global(.u-legend th) { font-weight: 500; }
+  .chart-host :global(.u-legend .u-value) { color: var(--ink); font-variant-numeric: tabular-nums; }
 </style>

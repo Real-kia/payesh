@@ -69,3 +69,43 @@ export function getPreviewServers(): PreviewServer[] {
   }
   return fixtureServers.map((server) => ({ ...server, capabilities: [...server.capabilities] })).sort((a, b) => severity[a.displayState] - severity[b.displayState]);
 }
+
+// Settings fixtures so every settings section can be reviewed in the preview.
+export const previewUpdateStatus = {
+  current: '0.3.0',
+  latest: '0.3.2',
+  update_available: true,
+  url: 'https://github.com/Real-kia/payesh/releases/tag/v0.3.2',
+  web_update_supported: true,
+  web_update: null,
+  releases: [
+    { version: '0.3.2', url: 'https://github.com/Real-kia/payesh/releases/tag/v0.3.2', published_at: '2026-10-06T10:00:00Z' },
+    { version: '0.3.1', url: 'https://github.com/Real-kia/payesh/releases/tag/v0.3.1', published_at: '2026-09-28T10:00:00Z' },
+    { version: '0.3.0', url: 'https://github.com/Real-kia/payesh/releases/tag/v0.3.0', published_at: '2026-09-20T10:00:00Z' },
+    { version: '0.2.18', url: 'https://github.com/Real-kia/payesh/releases/tag/v0.2.18', published_at: '2026-09-02T10:00:00Z' }
+  ]
+};
+
+export const previewStorageStatus = {
+  settings: { max_database_bytes: 1000000000, sample_seconds: 15, pressure_sample_seconds: 60, adaptive_sampling: true, notifications_enabled: true, revision: '3', pressure_state: 'normal' },
+  database_bytes: 412000000,
+  recovery_snapshot_bytes: 38000000,
+  effective_sample_seconds: 15
+};
+
+export const previewNotifications = [
+  { id: 'n-3', kind: 'storage_warning', message: 'The monitoring database is at 82% of its 1 GB limit. Old history will be compacted soon.', created_at: '2026-09-09T13:10:00Z', read: false },
+  { id: 'n-2', kind: 'storage_cleanup', message: 'Removed 3 days of full-resolution samples older than 24 hours; hourly summaries are kept.', created_at: '2026-09-08T03:00:00Z', read: true },
+  { id: 'n-1', kind: 'storage_recovered', message: 'Storage pressure cleared. Normal 15-second sampling resumed.', created_at: '2026-09-07T18:40:00Z', read: true }
+];
+
+export const previewProcesses = [
+  { pid: 1, name: 'systemd', uid: 0, state: 'S', threads: 1, memory_bytes: '13107200', cpu_percent: 0.1, read_bytes_per_second: 0, write_bytes_per_second: 0, connections: 4 },
+  { pid: 412, name: 'payesh-server', uid: 998, state: 'S', threads: 14, memory_bytes: '58720256', cpu_percent: 1.8, read_bytes_per_second: 0, write_bytes_per_second: 20480, connections: 12 },
+  { pid: 418, name: 'payesh-agent', uid: 998, state: 'S', threads: 9, memory_bytes: '20971520', cpu_percent: 0.6, read_bytes_per_second: 4096, write_bytes_per_second: 0, connections: 1 },
+  { pid: 902, name: 'nginx', uid: 33, state: 'S', threads: 4, memory_bytes: '41943040', cpu_percent: 6.4, read_bytes_per_second: 131072, write_bytes_per_second: 8192, connections: 186 },
+  { pid: 1210, name: 'postgres', uid: 70, state: 'S', threads: 7, memory_bytes: '402653184', cpu_percent: 12.3, read_bytes_per_second: 2097152, write_bytes_per_second: 1048576, connections: 32 },
+  { pid: 1311, name: 'node /srv/api/server.js', uid: 1000, state: 'R', threads: 11, memory_bytes: '268435456', cpu_percent: 27.9, read_bytes_per_second: 65536, write_bytes_per_second: 32768, connections: 74 },
+  { pid: 2077, name: 'sshd', uid: 0, state: 'S', threads: 1, memory_bytes: '8388608', cpu_percent: 0, read_bytes_per_second: null, write_bytes_per_second: null, connections: 2 },
+  { pid: 3120, name: 'redis-server', uid: 999, state: 'S', threads: 5, memory_bytes: '75497472', cpu_percent: 3.1, read_bytes_per_second: 0, write_bytes_per_second: 4096, connections: 21 }
+];

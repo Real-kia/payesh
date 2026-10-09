@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url)));
 const lock = JSON.parse(readFileSync(new URL('./package-lock.json', import.meta.url)));
@@ -10,7 +10,13 @@ const samePins = (a = {}, b = {}) => Object.keys(a).length === Object.keys(b).le
 if (!root || !samePins(root.dependencies, pkg.dependencies) || !samePins(root.devDependencies, pkg.devDependencies)) {
   throw new Error('package-lock.json is out of sync with reviewed pins');
 }
-const app = readFileSync(new URL('./src/App.svelte', import.meta.url), 'utf8');
+// The dashboard is split into components; UI contract markers may live in any
+// source file, so check them against the whole source tree.
+const sourceRoot = new URL('./src/', import.meta.url);
+const app = readdirSync(sourceRoot, { recursive: true })
+  .filter((name) => /\.(svelte|ts)$/.test(name) && !name.startsWith('preview'))
+  .map((name) => readFileSync(new URL(name, sourceRoot), 'utf8'))
+  .join('\n');
 const fixtures = readFileSync(new URL('./src/preview/fixtures.ts', import.meta.url), 'utf8');
 const chart = readFileSync(new URL('./src/ChartPreview.svelte', import.meta.url), 'utf8');
 const api = readFileSync(new URL('./src/api.ts', import.meta.url), 'utf8');

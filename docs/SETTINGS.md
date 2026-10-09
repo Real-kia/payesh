@@ -1,9 +1,15 @@
 # Settings
 
-Settings has five sections: SSL / TLS, Versions & updates, Storage & sampling,
-Notifications, and User management.
+Settings has six sections: General, SSL / TLS, Versions & updates, Storage &
+sampling, Notifications, and User management.
 User management is visible to the owner, who can search, add, edit, and remove
-users and set their role and read/edit access. Sign out remains in the profile menu.
+users and set their role and read/edit access. Sign out is in the top bar.
+
+General holds per-browser preferences: the theme (light, dark, or following the
+operating system), an accent colour, reduced animations for slow machines or
+remote desktops, compact density for large fleets, and the time zone used for
+charts, logs, and alerts. They are stored in the browser, apply before the
+dashboard draws its first frame, and do not change the hub.
 
 Versions & updates shows the installed version, latest stable release, and the
 50 most recent GitHub releases, shown five per page, with dates and links to release notes. Drafts,
