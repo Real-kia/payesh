@@ -1071,3 +1071,33 @@ func TestIsBusyErrorDetection(t *testing.T) {
 		t.Fatal("SQLITE_LOCKED string must be detected as busy error")
 	}
 }
+
+func TestScopedServerPageFiltersBeforePagination(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i, name := range []string{"A hidden", "B allowed", "C hidden", "D allowed"} {
+		server := testServer()
+		server.ID = contracts.ServerID(fmt.Sprintf("server-scope-%016d", i))
+		server.Name = name
+		if err := store.UpsertServer(ctx, server); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := []string{"server-scope-0000000000000001", "server-scope-0000000000000003"}
+	first, err := store.QueryScopedServerPage(ctx, 1, "", ids)
+	if err != nil || len(first.Items) != 1 || first.Items[0].Name != "B allowed" || first.NextCursor == "" {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	decoded, err := decodeServerCursor(first.NextCursor)
+	if err != nil || decoded.Name != "B allowed" || decoded.ID != ids[0] {
+		t.Fatalf("cursor leaks other server: %+v %v", decoded, err)
+	}
+	second, err := store.QueryScopedServerPage(ctx, 1, first.NextCursor, ids)
+	if err != nil || len(second.Items) != 1 || second.Items[0].Name != "D allowed" || second.NextCursor != "" {
+		t.Fatalf("second page: %+v %v", second, err)
+	}
+}

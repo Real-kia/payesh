@@ -6,7 +6,9 @@ import (
 	"fmt"
 )
 
-const maxAuthStateBytes = 2 << 20
+// Bound the snapshot including 256 tokens, each with 100 bounded activity
+// entries and up to 200 server scopes. Older snapshots remain compatible.
+const maxAuthStateBytes = 32 << 20
 const maxIdentityStateBytes = 4 << 20
 
 // LoadAuthState implements auth.Repository without exposing the database to

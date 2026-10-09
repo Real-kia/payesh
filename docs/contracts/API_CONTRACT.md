@@ -3,8 +3,20 @@
 `api/openapi.yaml` is the canonical API surface under `/api/v1`. Setup and
 login are the only unauthenticated operations. Every server, metric, traffic,
 log, alert/incident, module, policy, release/update, settings/backup,
-enrollment, and job operation requires the secure `payesh_session` cookie and
-returns the shared `APIError` shape on failure.
+enrollment, and job operation requires either the secure `payesh_session`
+cookie or an API token, and returns the shared `APIError` shape on failure.
+
+API tokens (`Authorization: Bearer pyt_...`) are created from a signed-in
+session through `/api-tokens`, act as their account capped at the token's
+`read` or `edit` permission, expire after at most 365 days, and are stored only
+as SHA-256 digests. Tokens, `/api-tokens`, and `/mcp` are served only over
+HTTPS (TLS terminated by the server, or a trusted proxy reporting
+`proto=https`); plain HTTP gets `403 https_required`. Token requests are exempt
+from CSRF. Tokens cannot manage
+tokens or accounts. Password resets and account deletion revoke the account's
+tokens. `POST /mcp` serves the API to Model Context Protocol clients and
+accepts only API tokens; each tool call is dispatched as an ordinary REST
+request with the caller's token. See [API and MCP access](../API_AND_MCP.md).
 
 Standalone and hub installers generate a unique owner username and password,
 store the one-time operator-readable record under `/etc/payesh`, and initialize

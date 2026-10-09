@@ -28,7 +28,7 @@
   type DetailTab = 'resources' | 'network' | 'packages' | 'processes' | 'logs' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
-  type SettingsSection = 'general' | 'users' | 'updates' | 'tls' | 'storage' | 'notifications';
+  type SettingsSection = 'general' | 'users' | 'api' | 'updates' | 'tls' | 'storage' | 'notifications';
 
   const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   // Plain HTTP to anything but this machine sends the password unencrypted.
@@ -234,6 +234,7 @@
     StorageSettings: () => import('./pages/settings/StorageSettings.svelte'),
     NotificationsSettings: () => import('./pages/settings/NotificationsSettings.svelte'),
     UsersSettings: () => import('./pages/settings/UsersSettings.svelte'),
+    ApiAccessSettings: () => import('./pages/settings/ApiAccessSettings.svelte'),
     UpdatesSettings: () => import('./pages/settings/UpdatesSettings.svelte'),
     TlsSettings: () => import('./pages/settings/TlsSettings.svelte'),
     PackageDialog: () => import('./components/PackageDialog.svelte'),
@@ -376,13 +377,14 @@
     { id: 'updates', label: 'Versions & updates', icon: 'download' },
     { id: 'storage', label: 'Storage & sampling', icon: 'database' },
     { id: 'notifications', label: 'Notifications', icon: 'bell' },
-    { id: 'users', label: 'User management', icon: 'users' }
+    { id: 'users', label: 'User management', icon: 'users' },
+    { id: 'api', label: 'API & AI access', icon: 'terminal' }
   ];
 
   let paletteOpen = false;
   $: paletteCommands = [
     ...(['overview', 'monitoring', 'servers', 'alerts', 'logs', 'packages', 'settings'] as Page[]).map((page): Command => ({ id: `page:${page}`, label: pageTitles[page], icon: page === 'monitoring' ? 'activity' : page === 'logs' ? 'terminal' : page, group: 'Pages', run: () => navigate(page) })),
-    ...settingsSections.filter((section) => section.id !== 'users' || myAccount?.role === 'owner').map((section): Command => ({ id: `settings:${section.id}`, label: section.label, icon: section.icon, group: 'Settings', keywords: section.id === 'general' ? 'appearance theme accent timezone density animations' : section.id, run: () => openSettings(section.id) })),
+    ...settingsSections.filter((section) => section.id !== 'users' || myAccount?.role === 'owner').map((section): Command => ({ id: `settings:${section.id}`, label: section.label, icon: section.icon, group: 'Settings', keywords: section.id === 'general' ? 'appearance theme accent timezone density animations' : section.id === 'api' ? 'api token mcp ai agent claude bearer' : section.id, run: () => openSettings(section.id) })),
     ...(myAccount?.permission !== 'read' ? [{ id: 'action:add-server', label: 'Add a server', icon: 'plus', group: 'Actions', keywords: 'install ssh join new node', run: () => openAddServer() } satisfies Command] : []),
     { id: 'action:theme', label: `Switch to ${theme === 'light' ? 'dark' : 'light'} theme`, icon: theme === 'light' ? 'moon' : 'sun', group: 'Actions', keywords: 'theme dark light mode appearance', run: toggleTheme } satisfies Command,
     ...(!PREVIEW_MODE && sessionState === 'authenticated' ? [{ id: 'action:sign-out', label: 'Sign out', icon: 'log-out', group: 'Actions', keywords: 'logout exit', run: () => promptSignOut() } satisfies Command] : [])
@@ -1591,6 +1593,8 @@
                 {:else if settingsSection === 'users' && myAccount?.role === 'owner'}
                   {#await lazy.UsersSettings() then { default: UsersSettings }}<UsersSettings {accounts} currentUser={myAccount.username} onChanged={loadAccounts} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onOwnPasswordChanged={handleOwnPasswordChanged} />{:catch}{@render chunkFailed()}{/await}
                   {#if accountError}<p class="form-error" role="alert">{accountError}</p>{/if}
+                {:else if settingsSection === 'api'}
+                  {#await lazy.ApiAccessSettings() then { default: ApiAccessSettings }}<ApiAccessSettings isOwner={myAccount?.role === 'owner'} currentUser={myAccount?.username ?? ''} canEdit={myAccount?.permission === 'edit'} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'updates'}
                   {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'tls'}

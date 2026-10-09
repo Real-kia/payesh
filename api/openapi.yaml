@@ -3,8 +3,16 @@ info:
   title: Payesh API
   version: 0.1.0-foundation
   description: |
-    Versioned REST contract for Payesh. Foundation endpoints are specified
-    here; implementation is intentionally deferred to later milestones.
+    Versioned REST contract for Payesh.
+
+    Browsers authenticate with the session cookie and send X-CSRF-Token on
+    mutations. Scripts, AI agents, and MCP clients send an API token as
+    `Authorization: Bearer pyt_...` instead; token requests need no CSRF
+    header. Tokens are created from a signed-in session with
+    `POST /api-tokens`, act as their account, and are capped at their own
+    read or edit permission. `POST /mcp` serves the same API to MCP clients.
+    API tokens, `/api-tokens`, and `/mcp` are HTTPS-only; over plain HTTP the
+    server answers 403 with code `https_required`.
 servers:
   - url: /api/v1
 x-max-request-bytes: 1048576
@@ -65,9 +73,104 @@ paths:
   /account/me:
     get:
       operationId: getCurrentAccount
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses:
         '200': { description: Current account and permission, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api-tokens:
+    get:
+      operationId: listAPITokens
+      summary: List API tokens including expired tokens (own tokens; the owner sees all)
+      parameters:
+        - { name: username, in: query, schema: { type: string }, description: Filter by account; only the owner may select another account. }
+        - { name: search, in: query, schema: { type: string }, description: Case-insensitive name, username, or hint search. }
+      security: [{ SessionCookie: [] }]
+      responses:
+        '200': { description: Tokens without secrets, content: { application/json: { schema: { $ref: '#/components/schemas/APITokenPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAPIToken
+      summary: Create an API token for the signed-in account
+      description: The secret is returned once. Read-only accounts can create read tokens only. API tokens cannot create tokens.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/APITokenCreateRequest' } } } }
+      responses:
+        '201': { description: Token created, content: { application/json: { schema: { $ref: '#/components/schemas/CreatedAPIToken' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      operationId: revokeAllAPITokens
+      summary: Revoke all tokens for one account
+      description: The owner must supply username. Other accounts may omit it to revoke their own tokens.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CSRFHeader' }
+        - { name: username, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Revoked count, content: { application/json: { schema: { type: object, required: [revoked], properties: { revoked: { type: integer, minimum: 0 } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api-tokens/{tokenId}:
+    patch:
+      operationId: updateAPIToken
+      summary: Rename a token, change permissions or scopes, or renew its lifetime
+      description: Only the token's own account can edit it; other accounts' tokens answer 404.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }, { name: tokenId, in: path, required: true, schema: { type: string, maxLength: 64 } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/APITokenUpdateRequest' } } } }
+      responses:
+        '200': { description: Updated token, content: { application/json: { schema: { $ref: '#/components/schemas/APIToken' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: revokeAPIToken
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }, { name: tokenId, in: path, required: true, schema: { type: string, maxLength: 64 } }]
+      responses:
+        '204': { description: Token revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api-tokens/{tokenId}/rotate:
+    post:
+      operationId: rotateAPIToken
+      summary: Replace the secret atomically; the previous secret stops working immediately
+      description: Only the token's own account can rotate it, so the owner never receives a secret acting as another user; other accounts' tokens answer 404. Omit expires_in_days or set it to zero to preserve the current expiry. A positive lifetime is measured from now.
+      security: [{ SessionCookie: [], CSRFToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }, { name: tokenId, in: path, required: true, schema: { type: string, maxLength: 64 } }]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { expires_in_days: { type: integer, minimum: 0, maximum: 365 } } } } } }
+      responses:
+        '200': { description: Rotated token with its new secret, content: { application/json: { schema: { $ref: '#/components/schemas/CreatedAPIToken' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api-tokens/{tokenId}/activity:
+    get:
+      operationId: getAPITokenActivity
+      summary: Read recent persisted requests for a token
+      security: [{ SessionCookie: [] }]
+      parameters: [{ name: tokenId, in: path, required: true, schema: { type: string, maxLength: 64 } }]
+      responses:
+        '200': { description: Token request activity, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/APITokenActivity' } } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /mcp:
+    post:
+      operationId: mcp
+      summary: Model Context Protocol endpoint (Streamable HTTP, stateless)
+      description: |
+        Accepts one JSON-RPC 2.0 MCP message and answers with application/json.
+        Requires an API token. Tools replay ordinary REST requests with the
+        caller's token, so they have exactly the token's permissions.
+      security: [{ BearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        '200': { description: JSON-RPC response, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '202': { description: Notification accepted }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /accounts:
     get:
@@ -111,6 +214,7 @@ paths:
       operationId: listServers
       security:
         - SessionCookie: []
+        - BearerAuth: []
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses:
         '200':
@@ -122,7 +226,7 @@ paths:
     post:
       operationId: createPendingServer
       summary: Create a pending node identity before SSH installation
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateServerRequest' } } } }
       responses:
@@ -136,6 +240,7 @@ paths:
       operationId: getServer
       security:
         - SessionCookie: []
+        - BearerAuth: []
       responses:
         '200': { description: Server detail, content: { application/json: { schema: { $ref: '#/components/schemas/Server' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -146,6 +251,7 @@ paths:
       security:
         - SessionCookie: []
           CSRFToken: []
+        - BearerAuth: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CSRFHeader'
@@ -166,6 +272,7 @@ paths:
       security:
         - SessionCookie: []
           CSRFToken: []
+        - BearerAuth: []
       parameters:
         - $ref: '#/components/parameters/CSRFHeader'
       requestBody:
@@ -188,7 +295,7 @@ paths:
     get:
       operationId: listProcesses
       summary: Read the enabled local process monitoring package
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters:
         - { name: sort, in: query, schema: { type: string, enum: [cpu, memory, read, write, connections, pid], default: cpu } }
         - { name: search, in: query, schema: { type: string, maxLength: 128 } }
@@ -211,6 +318,7 @@ paths:
       operationId: queryMetrics
       security:
         - SessionCookie: []
+        - BearerAuth: []
       parameters:
         - { $ref: '#/components/parameters/From' }
         - { $ref: '#/components/parameters/To' }
@@ -230,6 +338,7 @@ paths:
       operationId: getJob
       security:
         - SessionCookie: []
+        - BearerAuth: []
       responses:
         '200': { description: Durable job state, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -240,6 +349,7 @@ paths:
       security:
         - SessionCookie: []
           CSRFToken: []
+        - BearerAuth: []
       parameters:
         - $ref: '#/components/parameters/CSRFHeader'
       requestBody:
@@ -256,13 +366,13 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     post:
       operationId: enrollServer
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentRequest' } } } }
       responses: { '202': { description: Enrollment job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
     delete:
       operationId: revokeServer
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CSRFHeader' }]
       responses: { '202': { description: Revocation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
   /servers/{serverId}/enrollment-token:
@@ -271,7 +381,7 @@ paths:
       operationId: issueEnrollmentToken
       summary: Issue a short-lived, single-use node pairing token
       description: The owner may retrieve the token only in this response. The cleartext token is held in bounded process memory until expiry and is never persisted or logged.
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentTokenRequest' } } } }
       responses: { '201': { description: Pairing token issued, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentToken' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -279,12 +389,12 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: queryTraffic
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: scope, in: query, schema: { type: string, maxLength: 128 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Traffic periods, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
     post:
       operationId: configureTrafficAllowance
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAllowanceRequest' } } } }
       responses: { '200': { description: Durable traffic configuration and active-period preview, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficConfigurationResult' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
@@ -292,39 +402,39 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: forecastTraffic
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: scope, in: query, required: true, schema: { type: string, maxLength: 128 } }, { name: direction, in: query, required: true, schema: { type: string, enum: [inbound, outbound, combined] } }, { name: as_of, in: query, schema: { type: string, format: date-time } }]
       responses: { '200': { description: Labelled host-side recent-rate traffic estimate, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficForecast' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/logs/sources:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listLogSources
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Allowed log sources, content: { application/json: { schema: { $ref: '#/components/schemas/LogSourcePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /servers/{serverId}/logs:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: queryLogs
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: source, in: query, required: true, schema: { type: string, maxLength: 128 } }, { $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: severity, in: query, schema: { type: string, maxLength: 32 } }, { name: search, in: query, schema: { type: string, maxLength: 256 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Bounded log page, content: { application/json: { schema: { $ref: '#/components/schemas/LogQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/logs/live:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: tailLogs
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: source, in: query, required: true, schema: { type: string, maxLength: 128 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }, { name: max_events, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }, { name: max_bytes, in: query, schema: { type: integer, minimum: 1024, maximum: 1048576, default: 262144 } }, { name: max_duration_seconds, in: query, schema: { type: integer, minimum: 1, maximum: 300, default: 30 } }]
       responses: { '200': { description: Bounded live-log event stream for registered file or journald sources, content: { application/x-ndjson: { schema: { $ref: '#/components/schemas/LiveLogEvent' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /alerts/rules:
     get:
       operationId: listAlertRules
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Alert rules, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
     post:
       operationId: createAlertRule
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleRequest' } } } }
       responses: { '201': { description: Rule created, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
@@ -332,37 +442,37 @@ paths:
     parameters: [{ name: ruleId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
     patch:
       operationId: updateAlertRule
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleUpdateRequest' } } } }
       responses: { '200': { description: Rule updated, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
     put:
       operationId: replaceAlertRule
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleUpdateRequest' } } } }
       responses: { '200': { description: Rule replaced, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
   /alerts:
     get:
       operationId: listAlerts
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: server_id, in: query, schema: { type: string } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Alert states, content: { application/json: { schema: { $ref: '#/components/schemas/AlertStatePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /alerts/history:
     get:
       operationId: queryAlertHistory
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Alert history page, content: { application/json: { schema: { $ref: '#/components/schemas/AlertHistoryQuery' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /maintenance-windows:
     get:
       operationId: listMaintenanceWindows
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Scheduled maintenance windows, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindowPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
     post:
       operationId: createMaintenanceWindow
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindowRequest' } } } }
       responses: { '201': { description: Maintenance window created, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceWindow' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
@@ -370,19 +480,19 @@ paths:
     parameters: [{ name: incidentId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
     get:
       operationId: getIncident
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: Incident snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/IncidentSnapshot' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
   /modules:
     get:
       operationId: listModules
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: refresh, in: query, schema: { type: boolean, default: false } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: GitHub package catalog with cached fallback, content: { application/json: { schema: { $ref: '#/components/schemas/ModulePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /servers/{serverId}/modules:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listServerModules
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Module installations, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallationPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /servers/{serverId}/modules/{moduleId}/install:
@@ -390,7 +500,7 @@ paths:
     post:
       operationId: installModule
       summary: Verify a signed manifest/archive and stage a module to installed-disabled
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallRequest' } } } }
       responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -398,7 +508,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
       operationId: enableModule
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
       responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -407,7 +517,7 @@ paths:
     post:
       operationId: disableModule
       summary: Revert active policies for this module (see the module's DeactivateHooks) before disabling
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
       responses: { '200': { description: Resulting module installation state, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -415,7 +525,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/ModuleID' }]
     post:
       operationId: removeModule
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleLifecycleRequest' } } } }
       responses: { '200': { description: Resulting module installation state; only legal once installed-disabled or failed, content: { application/json: { schema: { $ref: '#/components/schemas/ModuleInstallation' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -423,14 +533,14 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listCPUPolicies
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: CPU control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/cpu-policies/{targetKind}/{targetName}/preview:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/TargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
       operationId: previewCPUPolicy
       summary: Read-only current-vs-proposed quota comparison; applies nothing
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreviewRequest' } } } }
       responses: { '200': { description: Preview of the effect of applying this quota, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -439,7 +549,7 @@ paths:
     post:
       operationId: applyCPUPolicy
       summary: Write, read back, and durably record a cgroup v2 CPU quota for this dedicated target
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyApplyRequest' } } } }
       responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -448,7 +558,7 @@ paths:
     post:
       operationId: revertCPUPolicy
       summary: Restore exactly the quota (or absence of one) the matching apply found beforehand
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyRevertRequest' } } } }
       responses: { '200': { description: Resulting control policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -456,14 +566,14 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listBandwidthPolicies
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: Bandwidth control policies, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /servers/{serverId}/bandwidth-policies/{bandwidthTargetKind}/{targetName}/preview:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
       operationId: previewBandwidthPolicy
       summary: Validate scope, direction, action, ownership assumptions, and management exclusions without applying
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRequest' } } } }
       responses: { '200': { description: Bandwidth policy preview, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -471,7 +581,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
       operationId: applyBandwidthPolicy
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRequest' } } } }
       responses: { '200': { description: Durable configured or active policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -479,7 +589,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { $ref: '#/components/parameters/BandwidthTargetKind' }, { $ref: '#/components/parameters/TargetName' }]
     post:
       operationId: revertBandwidthPolicy
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BandwidthPolicyRevertRequest' } } } }
       responses: { '200': { description: Reverted durable policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -487,12 +597,12 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
       operationId: listPortTrafficScopes
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: Durable desired port-traffic scopes, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
     post:
       operationId: configurePortTrafficScope
       summary: Persist a validated desired scope as pending until the privileged module activates owned nftables rules
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PortTrafficScopeRequest' } } } }
       responses: { '200': { description: Pending durable scope policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
@@ -500,21 +610,21 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ServerID' }, { name: scopeId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:-]+$' } }]
     post:
       operationId: revertPortTrafficScope
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CPUPolicyRevertRequest' } } } }
       responses: { '200': { description: Reverted durable scope policy, content: { application/json: { schema: { $ref: '#/components/schemas/Policy' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
   /releases:
     get:
       operationId: listReleases
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Verified release metadata, content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /updates:
     post:
       summary: Owner-authorized signed fleet rollout
       operationId: startUpdate
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
       responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' } }
@@ -522,7 +632,7 @@ paths:
     get:
       operationId: checkLatestGitHubRelease
       summary: Compare this installation with the latest GitHub release
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses:
         '200':
           description: Latest release and update status
@@ -551,7 +661,7 @@ paths:
     post:
       operationId: startSSHInstallation
       summary: Enqueue a host-key-verified SSH installation without persisting credentials
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SSHInstallRequest' } } } }
       responses: { '202': { description: SSH installation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
@@ -560,25 +670,25 @@ paths:
     post:
       operationId: startServerSSHInstallation
       summary: Enqueue an SSH installation for a selected server
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SSHInstallRequest' } } } }
       responses: { '202': { description: SSH installation job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
   /updates/preflight:
     post:
       operationId: preflightUpdate
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdatePreflightRequest' } } } }
       responses: { '200': { description: Per-machine compatibility and headroom results, content: { application/json: { schema: { $ref: '#/components/schemas/UpdatePreflight' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /settings:
     get:
       operationId: getSettings
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: Owner settings, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
     patch:
       operationId: updateSettings
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsRequest' } } } }
       responses: { '200': { description: Settings updated, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
@@ -586,7 +696,7 @@ paths:
     get:
       operationId: getStorageSettings
       summary: Read storage usage and sampling settings
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses:
         '200': { description: Live database and retained recovery snapshot usage, content: { application/json: { schema: { $ref: '#/components/schemas/StorageStatus' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -594,7 +704,7 @@ paths:
     put:
       operationId: updateStorageSettings
       summary: Change owner storage and sampling settings
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StorageSettings' } } } }
       responses:
@@ -615,7 +725,7 @@ paths:
       revoked anchors are rejected. Restart pagination when the fleet changes.
     get:
       operationId: getNodeTransportSettings
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
         - { name: cursor, in: query, schema: { type: string, maxLength: 256 }, description: Opaque next_cursor returned by the preceding page. }
@@ -627,7 +737,7 @@ paths:
     patch:
       operationId: changeNodeTransportPort
       summary: Reserve a TLS node port and begin migration; requires edit permission
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       x-max-request-bytes: 1024
       requestBody:
@@ -651,7 +761,7 @@ paths:
       operationId: retirePreviousNodeTransportEndpoints
       summary: Close historical node listeners after migration; requires edit permission
       description: Also disables legacy node access on dashboard listeners. Does not delete nodes or the current listener.
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       responses:
         '200': { description: Historical endpoints retired, content: { application/json: { schema: { $ref: '#/components/schemas/NodeTransportStatus' } } } }
@@ -663,19 +773,19 @@ paths:
     get:
       operationId: getHTTPSSettings
       summary: Dashboard domain and automatic certificate state
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses: { '200': { description: HTTPS state, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
     put:
       operationId: setHTTPSDomain
       summary: Set the dashboard domain and request a Let's Encrypt certificate in the background
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSSettingsRequest' } } } }
       responses: { '202': { description: Certificate request started; poll GET for the result, content: { application/json: { schema: { $ref: '#/components/schemas/HTTPSStatus' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
     patch:
       operationId: changeDashboardPort
       summary: Reserve and persist a dashboard port while retaining node endpoints
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody:
         required: true
@@ -695,46 +805,46 @@ paths:
     delete:
       operationId: removeHTTPSDomain
       summary: Remove the domain and certificate; the dashboard returns to plain HTTP
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       responses: { '204': { description: Domain removed }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /backups:
     get:
       operationId: listBackups
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Backup records, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
     post:
       operationId: createBackup
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BackupRequest' } } } }
       responses: { '202': { description: Backup job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /backups/export:
     post:
       operationId: exportBackup
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExportRequest' } } } }
       responses: { '202': { description: Protected export job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /backups/import:
     post:
       operationId: importBackup
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ImportRequest' } } } }
       responses: { '202': { description: Verified import job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /role-transitions:
     post:
       operationId: startRoleTransition
-      security: [{ SessionCookie: [], CSRFToken: [] }]
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoleTransitionRequest' } } } }
       responses: { '202': { description: Preflighted role-transition job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
   /audit-events:
     get:
       operationId: listAuditEvents
-      security: [{ SessionCookie: [] }]
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }, { name: target_id, in: query, schema: { type: string, maxLength: 128 } }, { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }, { name: cursor, in: query, schema: { type: string, maxLength: 256 } }]
       responses: { '200': { description: Redacted audit-event page, content: { application/json: { schema: { $ref: '#/components/schemas/AuditEventPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' } }
 components:
@@ -749,6 +859,10 @@ components:
       in: header
       name: X-CSRF-Token
       description: Per-session token required on browser-originated mutations.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API token (`pyt_...`) created with POST /api-tokens. Acts as its account, capped at the token's permission.
   parameters:
     ServerID:
       name: serverId
@@ -778,8 +892,8 @@ components:
     CSRFHeader:
       name: X-CSRF-Token
       in: header
-      required: true
-      description: CSRF token issued with the authenticated session.
+      required: false
+      description: CSRF token issued with the authenticated session. Required for session-cookie requests; not used with BearerAuth.
       schema: { type: string, minLength: 16, maxLength: 256 }
     ModuleID:
       name: moduleId
@@ -891,6 +1005,63 @@ components:
         username: { type: string, minLength: 3, maxLength: 128 }
         role: { type: string, enum: [owner, admin, member] }
         permission: { type: string, enum: [read, edit] }
+        token_count: { type: integer, minimum: 0, description: Active token count, returned by the owner account list. }
+    APIToken:
+      type: object
+      required: [id, name, username, permission, hint, created_at, expires_at]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        username: { type: string }
+        permission: { type: string, enum: [read, edit] }
+        status: { type: string, enum: [active, expiring, expired] }
+        server_ids: { type: array, maxItems: 200, items: { type: string }, description: Empty means all servers. }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] }, description: Empty means all actions allowed by permission. }
+        last_used_ip: { type: string }
+        hint: { type: string, description: First characters of the secret, for recognition. }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+    APITokenPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/APIToken' } }
+    APITokenCreateRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        permission: { type: string, enum: [read, edit], default: read }
+        expires_in_days: { type: integer, minimum: 1, maximum: 365, default: 90 }
+        server_ids: { type: array, maxItems: 200, items: { type: string } }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] } }
+    APITokenUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        permission: { type: string, enum: [read, edit] }
+        expires_in_days: { type: integer, minimum: 1, maximum: 365, description: New lifetime from now, including renewal of an expired token. }
+        server_ids: { type: array, maxItems: 200, items: { type: string } }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] } }
+    APITokenActivity:
+      type: object
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        method: { type: string }
+        path: { type: string }
+        ip: { type: string }
+        status: { type: integer }
+    CreatedAPIToken:
+      allOf:
+        - $ref: '#/components/schemas/APIToken'
+        - type: object
+          required: [token]
+          properties:
+            token: { type: string, description: The bearer secret. Shown only in this response. }
     AccountPage:
       type: object
       required: [items]

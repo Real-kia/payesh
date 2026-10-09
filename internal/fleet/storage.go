@@ -18,13 +18,8 @@ func (a *API) storageSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		writeStorageJSON(w, 200, result)
 	case http.MethodPut:
-		cookie, err := r.Cookie(a.sessions.SessionCookieName())
-		if err != nil {
-			writeFleetError(w, 403, "owner_required", "only the owner can change storage settings", false)
-			return
-		}
-		account, ok := a.sessions.SessionAccount(cookie.Value)
-		if !ok || account.Role != "owner" {
+		principal, ok := a.sessions.Authenticate(r)
+		if !ok || principal.Role != "owner" {
 			writeFleetError(w, 403, "owner_required", "only the owner can change storage settings", false)
 			return
 		}

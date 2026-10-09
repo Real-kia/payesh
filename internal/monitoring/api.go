@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
 )
 
@@ -179,7 +180,7 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_limit", "limit must be 1..200", false)
 		return
 	}
-	page, err := a.Store.QueryServerPage(r.Context(), limit, r.URL.Query().Get("cursor"))
+	page, err := a.Store.QueryScopedServerPage(r.Context(), limit, r.URL.Query().Get("cursor"), auth.AllowedServerIDs(r))
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error(), false)
 		return

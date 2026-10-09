@@ -57,7 +57,11 @@ export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_
 export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'failed'; target?: string; message?: string; updated_at: string };
 export type UpdateStatus = { current: string; latest: string; update_available: boolean; installed_ahead?: boolean; url: string; releases?: { version: string; url: string; published_at: string }[]; web_update_supported?: boolean; web_update?: WebUpdateState | null };
 export type UpdateProgress = { current: string; web_update_supported: boolean; web_update: WebUpdateState | null };
-export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit' };
+export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit'; token_count?: number };
+export type ApiToken = { id: string; name: string; username: string; permission: 'read' | 'edit'; hint: string; created_at: string; expires_at: string; last_used_at?: string; last_used_ip?: string; status?: 'active' | 'expiring' | 'expired'; server_ids?: string[]; actions?: string[] };
+export type CreatedApiToken = ApiToken & { token: string };
+export type ApiTokenUpdate = { name?: string; permission?: 'read' | 'edit'; expires_in_days?: number; server_ids?: string[]; actions?: string[] };
+export type ApiTokenActivity = { at: string; method: string; path: string; status: number; ip: string };
 export type Module = { repository?: string; release?: string; install_supported?: boolean; id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string; source?: string; stale?: boolean; warning?: string };
 export type ModuleInstallation = { server_id: string; module_id: string; version?: string; state: 'unavailable' | 'available' | 'downloading' | 'verifying' | 'installing' | 'installed-disabled' | 'enabled' | 'updating' | 'removing' | 'failed'; revision: string; updated_at: string; error?: ApiErrorBody };
@@ -242,6 +246,13 @@ export class ApiClient {
   createAccount(body: Account & { password: string }): Promise<void> { return this.request<void>('/accounts', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   updateAccount(username: string, body: { username?: string; role?: string; permission?: string; password?: string }): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   deleteAccount(username: string): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
+  listApiTokens(params: { username?: string; search?: string } = {}): Promise<{ items: ApiToken[] }> { return this.request<{ items: ApiToken[] }>(`/api-tokens${queryString(params)}`); }
+  createApiToken(body: { name: string; permission: 'read' | 'edit'; expires_in_days: number; server_ids?: string[]; actions?: string[] }): Promise<CreatedApiToken> { return this.request<CreatedApiToken>('/api-tokens', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  updateApiToken(id: string, body: ApiTokenUpdate): Promise<ApiToken> { return this.request<ApiToken>(`/api-tokens/${encodeURIComponent(id)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  rotateApiToken(id: string, body: { expires_in_days?: number } = {}): Promise<CreatedApiToken> { return this.request<CreatedApiToken>(`/api-tokens/${encodeURIComponent(id)}/rotate`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  getApiTokenActivity(id: string): Promise<{ items: ApiTokenActivity[] }> { return this.request<{ items: ApiTokenActivity[] }>(`/api-tokens/${encodeURIComponent(id)}/activity`); }
+  revokeAllApiTokens(username?: string): Promise<void> { return this.request<void>(`/api-tokens${queryString({ username })}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
+  revokeApiToken(id: string): Promise<void> { return this.request<void>(`/api-tokens/${encodeURIComponent(id)}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
 
   async logout(options: QueryOptions = {}): Promise<void> {
     await this.request<void>('/session', { method: 'DELETE', headers: this.mutationHeaders(), signal: options.signal });
@@ -341,8 +352,8 @@ export class ApiClient {
     return this.request<Job>('/installations', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
   }
 
-  listServers(options: QueryOptions = {}): Promise<ServerPage> {
-    return this.request<ServerPage>(`/servers${queryString({ limit: 200 })}`, { signal: options.signal });
+  listServers(options: QueryOptions & { cursor?: string } = {}): Promise<ServerPage> {
+    return this.request<ServerPage>(`/servers${queryString({ limit: 200, cursor: options.cursor })}`, { signal: options.signal });
   }
 
   createServer(body: { name: string; address: string }, options: QueryOptions = {}): Promise<Server> {

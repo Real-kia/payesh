@@ -16,22 +16,23 @@ type accountRequest struct {
 }
 
 func (a *API) accountHTTP(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(a.sessions.SessionCookieName())
-	if err != nil {
-		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
-		return
-	}
-	current, ok := a.sessions.SessionAccount(cookie.Value)
+	principal, ok := a.sessions.Authenticate(r)
 	if !ok {
 		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
 		return
 	}
+	current := principal.Account
 	if r.URL.Path == "/api/v1/account/me" {
 		if r.Method != http.MethodGet {
 			writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
 			return
 		}
 		writeAccountJSON(w, current)
+		return
+	}
+	// A leaked API token must not be able to create lasting credentials.
+	if principal.TokenID != "" {
+		writeFleetError(w, http.StatusForbidden, "session_required", "account management requires a signed-in browser session", false)
 		return
 	}
 	if current.Role != "owner" {

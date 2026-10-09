@@ -15,14 +15,17 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Real-kia/payesh/api"
 	"github.com/Real-kia/payesh/internal/alerts"
 	"github.com/Real-kia/payesh/internal/auth"
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/mcp"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/traffic"
 	"github.com/Real-kia/payesh/internal/transport"
 	"github.com/Real-kia/payesh/internal/updater"
+	"github.com/Real-kia/payesh/internal/version"
 )
 
 const maxBodyBytes = 1 << 20
@@ -51,6 +54,7 @@ type API struct {
 	enrollmentAuthority   *transport.CertificateAuthority
 	httpsSettings         http.Handler
 	nodeTransportSettings http.Handler
+	mcp                   *mcp.Server
 }
 
 func NewAPI(store *monitoring.Store, setupSecret string) (*API, error) {
@@ -196,11 +200,36 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.NodeTransportSettings != nil {
 		nodeSettingsHandler = sessions.Middleware(options.NodeTransportSettings)
 	}
-	return &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}, nil
+	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
+	result.mcp = &mcp.Server{API: http.HandlerFunc(result.serveHTTP), OpenAPI: api.OpenAPI, Version: version.Value}
+	return result, nil
+}
+
+// serveMCP accepts only API tokens. MCP clients are programs, and refusing the
+// browser cookie keeps a cross-site page from driving the endpoint. Tool calls
+// re-enter serveHTTP with the same token, which enforces its permission.
+func (a *API) serveMCP(w http.ResponseWriter, r *http.Request) {
+	principal, ok := a.sessions.Authenticate(r)
+	if !ok || principal.TokenID == "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="payesh"`)
+		writeFleetError(w, http.StatusUnauthorized, "token_required", "the MCP endpoint requires an API token (Authorization: Bearer)", false)
+		return
+	}
+	a.mcp.ServeHTTP(w, r)
 }
 
 func (a *API) Handler() http.Handler { return http.HandlerFunc(a.serveHTTP) }
+
+// FlushTokenActivity writes batched API token activity; call it on shutdown.
+func (a *API) FlushTokenActivity() error { return a.sessions.FlushTokenActivity() }
 func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	r = auth.WithClientIP(r, loginKeyWithTrustedProxies(r, a.trustedProxies))
+	// API tokens are long-lived credentials, so they are only accepted, issued,
+	// and listed over HTTPS. Plain HTTP would expose them on the network.
+	if (auth.HasBearerToken(r) || r.URL.Path == "/api/v1/mcp" || isFleetResourcePath(r.URL.Path, "/api/v1/api-tokens")) && !a.secureRequest(r) {
+		writeFleetError(w, http.StatusForbidden, "https_required", "API tokens and MCP are not supported over HTTP; connect with HTTPS", false)
+		return
+	}
 	if a.installDownloads != nil && strings.HasPrefix(r.URL.Path, "/api/v1/install-artifacts/") {
 		a.installDownloads.ServeHTTP(w, r)
 		return
@@ -231,6 +260,14 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			a.sessions.Middleware(http.HandlerFunc(a.createPendingServer)).ServeHTTP(w, r)
 			return
 		}
+	}
+	if isFleetResourcePath(r.URL.Path, "/api/v1/api-tokens") {
+		a.sessions.SelfServiceMiddleware(http.HandlerFunc(a.apiTokenHTTP)).ServeHTTP(w, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/mcp" {
+		a.serveMCP(w, r)
+		return
 	}
 	if r.URL.Path == "/api/v1/account/me" || isFleetResourcePath(r.URL.Path, "/api/v1/accounts") {
 		a.sessions.Middleware(http.HandlerFunc(a.accountHTTP)).ServeHTTP(w, r)
@@ -501,6 +538,33 @@ func (a *API) loginKey(r *http.Request) string {
 
 func loginKey(r *http.Request) string {
 	return loginKeyWithTrustedProxies(r, nil)
+}
+
+// secureRequest reports whether the client reached Payesh over HTTPS: TLS
+// terminated by this server, or by a configured trusted reverse proxy that
+// says so. Forwarding headers from any other peer are ignored.
+func (a *API) secureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	peer, ok := parseIPAddress(r.RemoteAddr)
+	if !ok || !ipInNetworks(peer, a.trustedProxies) {
+		return false
+	}
+	// The nearest proxy writes the last value, so only that one is trusted.
+	if values := r.Header.Values("Forwarded"); len(values) > 0 {
+		elements := strings.Split(values[len(values)-1], ",")
+		for _, pair := range strings.Split(elements[len(elements)-1], ";") {
+			if key, value, found := strings.Cut(strings.TrimSpace(pair), "="); found && strings.EqualFold(key, "proto") {
+				return strings.EqualFold(strings.Trim(value, `"`), "https")
+			}
+		}
+	}
+	if values := r.Header.Values("X-Forwarded-Proto"); len(values) > 0 {
+		parts := strings.Split(values[len(values)-1], ",")
+		return strings.EqualFold(strings.TrimSpace(parts[len(parts)-1]), "https")
+	}
+	return false
 }
 
 func loginKeyWithTrustedProxies(r *http.Request, trustedProxies []*net.IPNet) string {

@@ -93,6 +93,12 @@ export const previewStorageStatus = {
   effective_sample_seconds: 15
 };
 
+export const previewApiTokens = [
+  { id: 'tok-claude', name: 'Claude Code', username: 'admin', permission: 'read' as const, hint: 'pyt_Q2x9', created_at: '2026-09-30T09:12:00Z', expires_at: '2026-12-29T09:12:00Z', last_used_at: '2026-10-09T17:45:00Z', last_used_ip: '192.0.2.10', status: 'active' as const, server_ids: [], actions: ['monitoring'] },
+  { id: 'tok-deploy', name: 'deploy script', username: 'admin', permission: 'edit' as const, hint: 'pyt_7fKd', created_at: '2026-08-14T15:30:00Z', expires_at: '2027-08-14T15:30:00Z', status: 'active' as const, server_ids: [], actions: [] },
+  { id: 'tok-ops', name: 'on-call bot', username: 'ops', permission: 'read' as const, hint: 'pyt_m3Rv', created_at: '2026-10-01T08:00:00Z', expires_at: '2026-10-14T08:00:00Z', last_used_at: '2026-10-09T21:02:00Z', last_used_ip: '198.51.100.24', status: 'expiring' as const, server_ids: [], actions: ['monitoring'] }
+];
+
 export const previewNotifications = [
   { id: 'n-3', kind: 'storage_warning', message: 'The monitoring database is at 82% of its 1 GB limit. Old history will be compacted soon.', created_at: '2026-09-09T13:10:00Z', read: false },
   { id: 'n-2', kind: 'storage_cleanup', message: 'Removed 3 days of full-resolution samples older than 24 hours; hourly summaries are kept.', created_at: '2026-09-08T03:00:00Z', read: true },

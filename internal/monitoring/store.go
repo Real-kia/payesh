@@ -1205,16 +1205,34 @@ type serverCursor struct {
 }
 
 func (s *Store) QueryServerPage(ctx context.Context, limit int, cursor string) (ServerPage, error) {
+	return s.QueryScopedServerPage(ctx, limit, cursor, nil)
+}
+
+// QueryScopedServerPage filters before pagination so cursors only describe
+// authorized servers. An empty scope preserves the unrestricted collection.
+func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor string, ids []string) (ServerPage, error) {
 	limit = clampLimit(limit)
 	decoded, err := decodeServerCursor(cursor)
 	if err != nil {
 		return ServerPage{}, err
 	}
 	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers`
-	args := make([]any, 0, 3)
+	args := make([]any, 0, len(ids)+4)
+	conditions := []string{}
+	if len(ids) > 0 {
+		placeholders := make([]string, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		conditions = append(conditions, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
 	if decoded.Name != "" {
-		query += ` WHERE (name > ? OR (name = ? AND id > ?))`
+		conditions = append(conditions, `(name > ? OR (name = ? AND id > ?))`)
 		args = append(args, decoded.Name, decoded.Name, decoded.ID)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	query += ` ORDER BY name ASC, id ASC LIMIT ?`
 	args = append(args, limit+1)

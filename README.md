@@ -42,6 +42,7 @@ must publish signed checksum metadata including the bootstrap script; see
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — one-line install, dashboard access, and building from source
+- [API and AI agent (MCP) access](docs/API_AND_MCP.md) — API tokens, the REST API, and connecting Claude or other MCP clients
 - [Update and recovery](docs/UPDATE_AND_RECOVERY.md)
 - [Uninstall and detachment](docs/UNINSTALL.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)

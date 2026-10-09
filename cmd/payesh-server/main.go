@@ -172,6 +172,7 @@ func main() {
 		_ = store.Close()
 	}()
 	var handler http.Handler
+	flushTokenActivity := func() error { return nil }
 	trafficService, trafficErr := traffic.NewService(store)
 	if trafficErr != nil {
 		fmt.Fprintln(os.Stderr, "create traffic service:", trafficErr)
@@ -389,6 +390,7 @@ func main() {
 			os.Exit(1)
 		}
 		handler = api.Handler()
+		flushTokenActivity = api.FlushTokenActivity
 	} else {
 		api, apiErr := monitoring.NewAPI(store, *token)
 		if apiErr != nil {
@@ -444,7 +446,9 @@ func main() {
 		MaxHeaderBytes: 16 << 10,
 		ErrorLog:       serverErrorLog(os.Stderr),
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -452,6 +456,11 @@ func main() {
 			_ = nodeServer.Shutdown(shutdownCtx)
 		}
 		_ = server.Shutdown(shutdownCtx)
+		// Requests have finished; save their batched token activity before
+		// the deferred store close.
+		if err := flushTokenActivity(); err != nil {
+			fmt.Fprintln(os.Stderr, "save API token activity:", err)
+		}
 	}()
 
 	// Bind before announcing readiness. Apart from surfacing bind errors before
@@ -488,6 +497,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		os.Exit(1)
 	}
+	<-shutdownDone
 }
 
 func nodeTransportHandler(hub *transport.Hub) http.Handler {

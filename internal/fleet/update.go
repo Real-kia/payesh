@@ -88,11 +88,7 @@ func (s *UpdateService) serveApply(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
 		return
 	}
-	cookie, err := r.Cookie(s.Sessions.SessionCookieName())
-	account, ok := auth.Account{}, false
-	if err == nil {
-		account, ok = s.Sessions.SessionAccount(cookie.Value)
-	}
+	account, ok := s.Sessions.Authenticate(r)
 	if !ok {
 		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
 		return
@@ -218,11 +214,7 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
 		return
 	}
-	cookie, err := r.Cookie(s.Sessions.SessionCookieName())
-	account, ok := auth.Account{}, false
-	if err == nil {
-		account, ok = s.Sessions.SessionAccount(cookie.Value)
-	}
+	account, ok := s.Sessions.Authenticate(r)
 	if !ok {
 		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
 		return

@@ -35,6 +35,12 @@ for (const [path, item] of Object.entries(document.paths)) {
       }
       continue;
     }
+    if (path === '/mcp' && method === 'post') {
+      if (!operation.security?.some((scheme) => scheme.BearerAuth) || operation.security.some((scheme) => scheme.SessionCookie)) {
+        throw new Error('the MCP endpoint must require an API token and no session cookie');
+      }
+      continue;
+    }
     const mutation = ['post', 'put', 'patch', 'delete'].includes(method);
     if (mutation && !operation.security?.some((scheme) => scheme.SessionCookie && scheme.CSRFToken)) {
       throw new Error(`mutation lacks session+CSRF security: ${method} ${path}`);

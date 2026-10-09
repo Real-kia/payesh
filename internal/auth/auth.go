@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -46,6 +47,7 @@ type Account struct {
 	Username   string `json:"username"`
 	Role       string `json:"role"`
 	Permission string `json:"permission"`
+	TokenCount int    `json:"token_count"`
 }
 type accountRecord struct {
 	Account
@@ -68,9 +70,14 @@ type Manager struct {
 	configured  bool
 	setupDigest []byte
 	sessions    map[string]sessionRecord // keyed by a SHA-256 session digest
-	throttle    map[string]throttleRecord
-	now         func() time.Time
-	repository  Repository
+	tokens      map[string]tokenRecord   // keyed by a SHA-256 API token digest
+	// activityPending marks token activity not yet written; see
+	// activityFlushDelay.
+	activityPending bool
+	activityTimer   *time.Timer
+	throttle        map[string]throttleRecord
+	now             func() time.Time
+	repository      Repository
 }
 
 func New(setupSecret string) (*Manager, error) {
@@ -84,7 +91,7 @@ func NewPersistent(setupSecret string, repository Repository) (*Manager, error) 
 		return nil, errors.New("setup secret must contain at least 16 characters")
 	}
 	d := sha256.Sum256([]byte(setupSecret))
-	m := &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), accounts: make(map[string]accountRecord), throttle: make(map[string]throttleRecord), now: time.Now, repository: repository}
+	m := &Manager{setupDigest: d[:], sessions: make(map[string]sessionRecord), tokens: make(map[string]tokenRecord), accounts: make(map[string]accountRecord), throttle: make(map[string]throttleRecord), now: time.Now, repository: repository}
 	if repository == nil {
 		return m, nil
 	}
@@ -324,6 +331,13 @@ func (m *Manager) Accounts() []Account {
 	for _, a := range m.accounts {
 		result = append(result, a.Account)
 	}
+	for i := range result {
+		for _, r := range m.tokens {
+			if r.Username == result[i].Username && m.now().Before(r.ExpiresAt) {
+				result[i].TokenCount++
+			}
+		}
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Username < result[j].Username })
 	return result
 }
@@ -390,9 +404,12 @@ func (m *Manager) DeleteAccount(username string) error {
 			delete(m.sessions, key)
 		}
 	}
+	previousTokens := m.copyTokensLocked()
+	m.deleteTokensLocked(username)
 	if err := m.persistLocked(); err != nil {
 		m.accounts[username] = old
 		m.sessions = previousSessions
+		m.tokens = previousTokens
 		return err
 	}
 	return nil
@@ -440,6 +457,7 @@ func (m *Manager) UpdateAccount(oldName, newName, role, permission, password str
 	for key, value := range m.sessions {
 		previousSessions[key] = value
 	}
+	previousTokens := m.copyTokensLocked()
 	if owner {
 		m.username = newName
 		if password != "" {
@@ -475,8 +493,9 @@ func (m *Manager) UpdateAccount(oldName, newName, role, permission, password str
 			m.sessions[key] = session
 		}
 	}
+	m.renameTokensLocked(oldName, newName, password != "")
 	if err := m.persistLocked(); err != nil {
-		m.username, m.owner, m.accounts, m.sessions = previousUsername, previousOwner, previousAccounts, previousSessions
+		m.username, m.owner, m.accounts, m.sessions, m.tokens = previousUsername, previousOwner, previousAccounts, previousSessions, previousTokens
 		return err
 	}
 	return nil
@@ -485,9 +504,57 @@ func (m *Manager) UpdateAccount(oldName, newName, role, permission, password str
 // Middleware protects browser routes with an HttpOnly SameSite cookie. Mutating
 // requests additionally require the per-session CSRF header.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
+	return m.middleware(next, true)
+}
+
+// SelfServiceMiddleware is Middleware for routes where read-only accounts may
+// still change their own credentials. It keeps the session and CSRF checks and
+// leaves the permission decision to the handler.
+func (m *Manager) SelfServiceMiddleware(next http.Handler) http.Handler {
+	return m.middleware(next, false)
+}
+
+func (m *Manager) middleware(next http.Handler, requireEdit bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/api/v1/setup" || (r.URL.Path == "/api/v1/session" && r.Method == http.MethodPost) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// API tokens are sent explicitly by the client rather than attached by
+		// the browser, so they are not exposed to CSRF and skip that check.
+		if token, ok := bearerToken(r); ok {
+			principal, ok := m.tokenPrincipal(token)
+			if !ok {
+				unauthorized(w)
+				return
+			}
+			// Every token request, including denied ones, is recorded with its
+			// final status once the handler returns.
+			aw := &activityWriter{ResponseWriter: w}
+			event := TokenActivity{ID: randomToken(9), At: m.now().UTC(), Method: r.Method, Path: r.URL.Path, IP: requestIP(r)}
+			defer func() {
+				panicValue := recover()
+				event.Status = aw.status
+				if panicValue != nil {
+					event.Status = http.StatusInternalServerError
+				} else if event.Status == 0 {
+					event.Status = http.StatusOK
+				}
+				m.recordTokenActivity(principal.TokenID, event)
+				if panicValue != nil {
+					panic(panicValue)
+				}
+			}()
+			if requireEdit && !safeMethod(r.Method) && principal.Permission != "edit" {
+				writeAuthError(aw, http.StatusForbidden, "read_only", "this API token has read-only access", false)
+				return
+			}
+			if !tokenAllows(principal, r) {
+				writeAuthError(aw, http.StatusForbidden, "token_scope", "request is outside this token's scope", false)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), requestScopeKey{}, requestScope{Principal: principal, IP: event.IP}))
+			next.ServeHTTP(aw, r)
 			return
 		}
 		c, err := r.Cookie("payesh_session")
@@ -500,13 +567,13 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if !safeMethod(r.Method) {
 			if subtle.ConstantTimeCompare([]byte(csrf), []byte(r.Header.Get("X-CSRF-Token"))) != 1 {
 				writeAuthError(w, http.StatusForbidden, "csrf_required", "csrf token required", false)
 				return
 			}
 			account, ok := m.SessionAccount(c.Value)
-			if !ok || account.Permission != "edit" {
+			if !ok || requireEdit && account.Permission != "edit" {
 				writeAuthError(w, http.StatusForbidden, "read_only", "this account has read-only access", false)
 				return
 			}
@@ -518,8 +585,13 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+func safeMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
 func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Cookie realm="payesh"`)
+	w.Header().Add("WWW-Authenticate", `Bearer realm="payesh"`)
+	w.Header().Add("WWW-Authenticate", `Cookie realm="payesh"`)
 	writeAuthError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
 }
 
@@ -590,6 +662,13 @@ type persistedState struct {
 	Accounts   map[string]persistedAccount  `json:"accounts,omitempty"`
 	Sessions   map[string]persistedSession  `json:"sessions,omitempty"`
 	Throttle   map[string]persistedThrottle `json:"throttle,omitempty"`
+	Tokens     map[string]persistedToken    `json:"tokens,omitempty"`
+}
+
+type persistedToken struct {
+	APIToken
+	Digest   []byte          `json:"digest"`
+	Activity []TokenActivity `json:"activity,omitempty"`
 }
 
 type persistedSession struct {
@@ -615,7 +694,7 @@ func (m *Manager) persistLocked() error {
 	if m.repository == nil {
 		return nil
 	}
-	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Username: m.username, Accounts: make(map[string]persistedAccount, len(m.accounts)), Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle))}
+	state := persistedState{Configured: m.configured, OwnerSalt: m.owner.salt, OwnerHash: m.owner.digest, Username: m.username, Accounts: make(map[string]persistedAccount, len(m.accounts)), Sessions: make(map[string]persistedSession, len(m.sessions)), Throttle: make(map[string]persistedThrottle, len(m.throttle)), Tokens: make(map[string]persistedToken, len(m.tokens))}
 	for name, a := range m.accounts {
 		state.Accounts[name] = persistedAccount{Role: a.Role, Permission: a.Permission, Salt: a.password.salt, Hash: a.password.digest}
 	}
@@ -625,11 +704,18 @@ func (m *Manager) persistLocked() error {
 	for key, record := range m.throttle {
 		state.Throttle[key] = persistedThrottle{Failures: record.failures, Since: record.since, BlockedUntil: record.blockedUntil}
 	}
+	for key, record := range m.tokens {
+		state.Tokens[key] = persistedToken{APIToken: record.APIToken, Digest: record.digest, Activity: record.Activity}
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	return m.repository.SaveAuthState(data)
+	if err := m.repository.SaveAuthState(data); err != nil {
+		return err
+	}
+	m.activityPending = false
+	return nil
 }
 
 func (m *Manager) restore(data []byte) error {
@@ -640,7 +726,7 @@ func (m *Manager) restore(data []byte) error {
 	if !state.Configured || len(state.OwnerSalt) != 16 || len(state.OwnerHash) != 32 {
 		return errors.New("invalid persisted owner record")
 	}
-	if len(state.Sessions) > maxSessions || len(state.Throttle) > maxThrottleEntries {
+	if len(state.Sessions) > maxSessions || len(state.Throttle) > maxThrottleEntries || len(state.Tokens) > maxTokens {
 		return errors.New("persisted authentication state exceeds bounds")
 	}
 	m.configured = true
@@ -682,6 +768,30 @@ func (m *Manager) restore(data []byte) error {
 		if key != "" && value.failures > 0 && now.Before(throttleExpiry(value)) {
 			m.throttle[key] = value
 		}
+	}
+	for key, record := range state.Tokens {
+		if len(record.Digest) != sha256.Size || record.ID == "" || (record.Permission != "read" && record.Permission != "edit") {
+			continue
+		}
+		if _, exists := m.accountLocked(record.Username); !exists {
+			continue
+		}
+		// A damaged token is dropped rather than failing startup, which would
+		// lock every account out of the dashboard.
+		if err := validateTokenOptions(TokenOptions{record.ServerIDs, record.Actions}); err != nil {
+			continue
+		}
+		activity := make([]TokenActivity, 0, min(len(record.Activity), maxTokenActivity))
+		for _, event := range record.Activity[max(0, len(record.Activity)-maxTokenActivity):] {
+			if len(event.Method) > 16 || len(event.IP) > 64 {
+				continue
+			}
+			if len(event.Path) > maxActivityPathBytes {
+				event.Path = event.Path[:maxActivityPathBytes]
+			}
+			activity = append(activity, event)
+		}
+		m.tokens[key] = tokenRecord{APIToken: record.APIToken, digest: append([]byte(nil), record.Digest...), Activity: activity}
 	}
 	return nil
 }

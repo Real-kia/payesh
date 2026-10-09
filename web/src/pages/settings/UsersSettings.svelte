@@ -69,6 +69,16 @@
     finally { busy = false; }
   }
 
+  function revokeTokens(account: Account): void {
+    onConfirm({ title: `Revoke all tokens for ${account.username}?`, description: 'Their agents and scripts lose access immediately. Dashboard sessions stay signed in.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Revoke all tokens', cancelText: 'Cancel', action: async () => {
+      try {
+        await apiClient.revokeAllApiTokens(account.username);
+        await onChanged();
+        onNotice('All tokens for this user revoked.');
+      } catch (err) { error = err instanceof Error ? err.message : 'Could not revoke tokens.'; }
+    } });
+  }
+
   function remove(account: Account): void {
     onConfirm({ title: `Remove ${account.username}?`, description: 'Their active sessions will be revoked.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Remove user', cancelText: 'Cancel', action: async () => {
       error = '';
@@ -101,13 +111,15 @@
 
   <label class="search"><Icon name="search" size={14} /><input type="search" bind:value={search} placeholder="Search by username" aria-label="Search users" /></label>
   <div class="table">
-    <div class="head"><span>User</span><span>Role</span><span>Access</span><span></span></div>
+    <div class="head"><span>User</span><span>Role</span><span>Access</span><span>Active tokens</span><span></span></div>
     {#each visible as account (account.username)}
       <div class="row">
         <span class="who"><span class="avatar" aria-hidden="true">{account.username.slice(0, 1).toUpperCase()}</span><strong>{account.username}</strong>{#if account.username === currentUser}<span class="you">You</span>{/if}</span>
         <span class={`role ${account.role}`}>{account.role}</span>
         <span class="muted">{account.permission === 'read' ? 'Read only' : 'Can edit'}</span>
+        <span class="muted">{account.token_count ?? 0} active tokens</span>
         <span class="actions">
+          <button class="button ghost small" type="button" disabled={!account.token_count} onclick={() => revokeTokens(account)}>Revoke tokens</button>
           <button class="button ghost small" type="button" onclick={() => (editing === account.username ? (editing = '') : startEditing(account))}>{editing === account.username ? 'Close' : 'Edit'}</button>
           {#if account.role !== 'owner'}<button class="button ghost small" type="button" onclick={() => remove(account)}>Remove</button>{/if}
         </span>
@@ -137,7 +149,7 @@
   .search:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
   .search input { flex: 1; border: 0; background: transparent; box-shadow: none; padding-left: 0; }
   .search input:focus { box-shadow: none; }
-  .head, .row { display: grid; grid-template-columns: minmax(140px, 1fr) 90px 100px 150px; gap: 12px; align-items: center; }
+  .head, .row { display: grid; grid-template-columns: minmax(140px, 1fr) 90px 100px 100px 230px; gap: 12px; align-items: center; }
   .head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; }
   .row { padding: 12px 0; border-bottom: 1px solid var(--line-light); font-size: 13px; }
   .who { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
@@ -149,7 +161,7 @@
   .actions { display: flex; justify-content: flex-end; gap: 6px; }
   .edit { margin: 4px 0 12px; }
   .none { padding: 16px 0; }
-  @media (max-width: 760px) {
+  @media (max-width: 1000px) {
     .head { display: none; }
     .row { grid-template-columns: 1fr auto; }
     .actions { grid-column: 1 / -1; justify-content: flex-start; }
