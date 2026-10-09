@@ -297,6 +297,7 @@
     font-size: 0.84375rem;
     line-height: 1.45;
     color: var(--ink-secondary);
+    white-space: pre-line;
   }
 
   .modal-body {

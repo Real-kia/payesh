@@ -14,7 +14,7 @@
   import { getSavedTimezone, saveTimezone, getAvailableTimezones, formatTimeInTz, formatDateTimeInTz, formatHeartbeatInTz, formatLogTimeInTz } from './timezone';
 
   type Theme = 'light' | 'dark';
-  type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
+  type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'logs' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
   type DetailTab = 'resources' | 'network' | 'logs' | 'processes' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
@@ -29,8 +29,14 @@
 
   let currentTimezone = getSavedTimezone();
   function changeTimezone(tz: string) {
+    if (tz === currentTimezone) return;
+    const oldTz = currentTimezone;
     currentTimezone = tz;
     saveTimezone(tz);
+    showSettingsSavedDialog(
+      'Timezone updated',
+      `Active timezone changed from "${oldTz}" to "${tz}".\n\nAll dashboard charts, event logs, alerts, and time displays now reflect your local time (${formatTimeInTz(new Date(), tz, true)} · ${formatDateTimeInTz(new Date(), tz)}).`
+    );
   }
 
   let alertsPage = 0;
@@ -106,6 +112,41 @@
   let logState: PreviewState = 'ready';
   let logError = '';
   let logEntries: PreviewLogEntry[] = [];
+  type FleetLogEntry = {
+    id: string;
+    serverId: string;
+    serverName: string;
+    timestamp: string;
+    level: 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+    text: string;
+    source: string;
+    cursor: string;
+  };
+
+  let fleetLogServerFilter: string = 'all';
+  let fleetLogLevelFilter: 'all' | 'error' | 'warn' | 'info' = 'all';
+  let fleetLogSearchQuery: string = '';
+  let fleetLogEntries: FleetLogEntry[] = [];
+  let fleetLogState: PreviewState = 'loading';
+  let fleetLogError = '';
+  let fleetLogAbortController: AbortController | null = null;
+
+  $: errorCount = fleetLogEntries.filter((e) => e.level === 'ERROR').length;
+  $: warnCount = fleetLogEntries.filter((e) => e.level === 'WARN').length;
+  $: infoCount = fleetLogEntries.filter((e) => e.level === 'INFO').length;
+
+  $: filteredFleetLogs = fleetLogEntries.filter((entry) => {
+    if (fleetLogLevelFilter === 'error' && entry.level !== 'ERROR') return false;
+    if (fleetLogLevelFilter === 'warn' && entry.level !== 'WARN') return false;
+    if (fleetLogLevelFilter === 'info' && entry.level !== 'INFO') return false;
+    if (fleetLogSearchQuery.trim()) {
+      const q = fleetLogSearchQuery.toLowerCase();
+      if (!entry.text.toLowerCase().includes(q) && !entry.serverName.toLowerCase().includes(q) && !entry.source.toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
   let apiAbortController: AbortController | null = null;
   let nodeTransportStatus: NodeTransportStatus | null = null;
   let nodePort = '';
@@ -156,6 +197,10 @@
     try {
       storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: storageNotificationsEnabled });
       storageSaved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
+      showSettingsSavedDialog(
+        'Storage & sampling updated',
+        `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${storageNotificationsEnabled ? 'Enabled' : 'Disabled'}\n\nCollection settings take effect on the next sampling cycle.`
+      );
       await loadNotifications();
     } catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
@@ -187,7 +232,11 @@
     finally { storageRefreshBusy = false; }
   }
   async function markNotificationsRead(): Promise<void> {
-    try { await apiClient.markNotificationsRead(); await loadNotifications(); }
+    try {
+      await apiClient.markNotificationsRead();
+      await loadNotifications();
+      showSettingsSavedDialog('Notifications updated', 'All fleet storage notifications have been marked as read.');
+    }
     catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
       notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.';
@@ -376,6 +425,18 @@
     };
   }
 
+  function showSettingsSavedDialog(title: string, description: string) {
+    openConfirmModal({
+      title,
+      description,
+      tone: 'info',
+      icon: 'check',
+      confirmText: 'Done',
+      hideCancel: true,
+      action: () => {}
+    });
+  }
+
   function closeConfirmModal() {
     if (modalDialog.busy) return;
     modalDialog.open = false;
@@ -472,7 +533,7 @@
   $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
   $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
   $: chartData = selectedServer?.metricHistory?.ranges[chartRange] ?? null;
-  $: availableTabs = selectedServer ? (['resources', 'network', 'logs', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
+  $: availableTabs = selectedServer ? (['resources', 'network', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
   $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
@@ -509,7 +570,7 @@
     if (parts[0] === 'servers' && parts[1] === 'new' && parts.length === 2) return { activePage: 'add-server' };
     if (parts[0] === 'servers' && parts[1] && parts.length === 2) return { activePage: 'server', selectedServerId: decodeURIComponent(parts[1]) };
     if (parts[0] === 'servers' && parts.length === 1) return { activePage: 'servers' };
-    if (parts.length === 1 && ['monitoring', 'alerts', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
+    if (parts.length === 1 && ['monitoring', 'alerts', 'logs', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
     return { activePage: 'overview' };
   }
 
@@ -545,6 +606,7 @@
     if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
+    if (page === 'logs') void loadFleetLogs();
     if (page === 'settings' && !PREVIEW_MODE) { void loadHTTPS(); void loadAccounts(); void checkLatestUpdate(); if (settingsSection === 'storage') void loadStorageSettings(); void loadNotifications(); }
   }
 
@@ -628,9 +690,11 @@
     if (!accountUsername.trim() || !accountPassword || accountBusy) return;
     accountBusy = true; accountError = '';
     try {
-      await apiClient.createAccount({ username: accountUsername.trim(), password: accountPassword, role: accountRole, permission: accountPermission });
+      const createdUser = accountUsername.trim();
+      await apiClient.createAccount({ username: createdUser, password: accountPassword, role: accountRole, permission: accountPermission });
       accountUsername = ''; accountPassword = ''; addingUser = false;
       await loadAccounts(); showNotice('User added.');
+      showSettingsSavedDialog('User created', `User "${createdUser}" was created with role "${accountRole}" and ${accountPermission === 'read' ? 'read-only' : 'read/write'} access.`);
     } catch (error) { accountError = error instanceof Error ? error.message : 'Could not add account.'; }
     finally { accountBusy = false; }
   }
@@ -647,9 +711,16 @@
     try {
       await apiClient.updateAccount(account.username, { username: editUsername.trim(), ...(editPassword ? { password: editPassword } : {}), ...(account.role === 'owner' ? {} : { role: editRole, permission: editPermission }) });
       const changedOwnPassword = account.role === 'owner' && editPassword !== '';
+      const updatedUser = editUsername.trim();
       editingAccount = ''; editPassword = '';
-      if (changedOwnPassword) { sessionState = 'signed-out'; authExpired = true; navigate('overview'); showNotice('Password changed. Sign in again.'); }
-      else { await loadAccounts(); showNotice('User updated.'); }
+      if (changedOwnPassword) {
+        sessionState = 'signed-out'; authExpired = true; navigate('overview');
+        showSettingsSavedDialog('Password changed', 'Your account password has been changed. Please sign in again.');
+      } else {
+        await loadAccounts();
+        showNotice('User updated.');
+        showSettingsSavedDialog('User updated', `User "${updatedUser}" has been updated successfully.`);
+      }
     } catch (error) { accountError = error instanceof Error ? error.message : 'Could not update account.'; }
     finally { accountBusy = false; }
   }
@@ -657,7 +728,12 @@
   function removeAccount(account: Account): void {
     openConfirmModal({ title: `Remove ${account.username}?`, description: 'Their active sessions will be revoked.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Remove user', cancelText: 'Cancel', action: async () => {
       accountError = '';
-      try { await apiClient.deleteAccount(account.username); await loadAccounts(); showNotice('User removed.'); }
+      try {
+        await apiClient.deleteAccount(account.username);
+        await loadAccounts();
+        showNotice('User removed.');
+        showSettingsSavedDialog('User removed', `User "${account.username}" has been removed from the fleet.`);
+      }
       catch (error) { accountError = error instanceof Error ? error.message : 'Could not remove user.'; }
     } });
   }
@@ -699,6 +775,7 @@
       nodePort = nodeTransportStatus.port;
       nodePageCursor = ''; nodePageHistory = [];
       showNotice('Node port opened. Nodes will verify the new connection and migrate automatically.');
+      showSettingsSavedDialog('Node port updated', `Node transport port updated to ${nodePort}. Connected nodes will migrate to this port automatically.`);
     } catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not change node port.'; }
     finally { nodePortBusy = false; }
   }
@@ -718,7 +795,12 @@
   function retireNodePorts(): void {
     openConfirmModal({ title: 'Retire previous node endpoints?', description: 'All enrolled nodes have connected to the current node port. Previous node ports and node access through the dashboard will be disabled.', tone: 'warning', icon: 'alert-triangle', confirmText: 'Retire endpoints', cancelText: 'Cancel', action: async () => {
       nodePortBusy = true; nodePortError = '';
-      try { nodeTransportStatus = await apiClient.retireNodeTransportPorts(); nodePageCursor = ''; nodePageHistory = []; showNotice('Previous node endpoints retired.'); }
+      try {
+        nodeTransportStatus = await apiClient.retireNodeTransportPorts();
+        nodePageCursor = ''; nodePageHistory = [];
+        showNotice('Previous node endpoints retired.');
+        showSettingsSavedDialog('Endpoints retired', 'Previous node transport endpoints have been retired.');
+      }
       catch (error) { nodePortError = error instanceof Error ? error.message : 'Could not retire previous endpoints.'; }
       finally { nodePortBusy = false; }
     } });
@@ -752,6 +834,7 @@
     httpsBusy = true;
     try {
       httpsStatus = await apiClient.setHTTPSDomain({ domain: httpsDomain.trim(), email: httpsEmail.trim() || undefined, cloudflare_api_token: httpsToken.trim() || undefined });
+      showSettingsSavedDialog('SSL / TLS updated', `Domain "${httpsDomain.trim()}" has been configured for HTTPS.\n\nAutomatic certificate request and validation have started.`);
       httpsToken = '';
       httpsPoll = setTimeout(() => void loadHTTPS(), 3000);
     } catch (error) {
@@ -787,8 +870,9 @@
       cancelText: 'Keep HTTPS',
       action: async () => {
         await apiClient.removeHTTPSDomain();
-        httpsDomain = '';
+        httpsDomain = ''; httpsEmail = ''; httpsToken = '';
         await loadHTTPS();
+        showSettingsSavedDialog('Domain removed', 'Custom domain and SSL certificate have been removed. The dashboard returned to default HTTP.');
       }
     });
   }
@@ -1671,6 +1755,7 @@
       previewState = servers.length ? 'ready' : 'empty';
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
+      if (activePage === 'logs') void loadFleetLogs();
       if (activePage === 'settings') void loadHTTPS();
       void loadNotifications();
       const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
@@ -1686,6 +1771,128 @@
         authExpired = true;
         sessionState = 'signed-out';
       }
+    }
+  }
+
+  function generatePreviewFleetLogs(): FleetLogEntry[] {
+    const now = Date.now();
+    const demoServers = servers.length > 0
+      ? servers
+      : [
+          { id: 'srv-master', name: 'Master-Control-01', role: 'master' },
+          { id: 'srv-worker-1', name: 'Worker-Node-Frankfurt', role: 'node' },
+          { id: 'srv-worker-2', name: 'Worker-Node-Helsinki', role: 'node' },
+        ];
+
+    const templates: Array<{ offsetSec: number; level: FleetLogEntry['level']; serverIdx: number; text: string; source: string }> = [
+      { offsetSec: 15, level: 'INFO', serverIdx: 0, text: 'Telemetry ingest batch processed 48 samples in 1.2ms', source: 'payesh-server' },
+      { offsetSec: 42, level: 'INFO', serverIdx: 1, text: 'Agent collected CPU (14.2%), Memory (42.8%), Disk (56.1%)', source: 'payesh-agent' },
+      { offsetSec: 95, level: 'WARN', serverIdx: 2, text: 'Memory pressure warning: usage exceeded 85% threshold (86.4%)', source: 'cgroup-monitor' },
+      { offsetSec: 140, level: 'INFO', serverIdx: 0, text: 'Health ping received from Worker-Node-Frankfurt (latency: 18ms)', source: 'payesh-server' },
+      { offsetSec: 210, level: 'ERROR', serverIdx: 1, text: 'Failed to bind ephemeral socket: address already in use (EADDRINUSE :8081)', source: 'network-monitor' },
+      { offsetSec: 320, level: 'WARN', serverIdx: 0, text: 'SSL certificate for payesh.internal expires in 12 days', source: 'webtls' },
+      { offsetSec: 450, level: 'INFO', serverIdx: 2, text: 'Log rotation executed: archived /var/log/payesh/agent.err.1', source: 'logrotate' },
+      { offsetSec: 600, level: 'INFO', serverIdx: 1, text: 'Transport handshake successful via TLS 1.3 (cipher: TLS_AES_128_GCM_SHA256)', source: 'payesh-agent' },
+      { offsetSec: 850, level: 'ERROR', serverIdx: 2, text: 'Upstream gateway 192.168.1.1 packet loss spike: 4.8% packet drop detected', source: 'bandwidth-probe' },
+      { offsetSec: 1200, level: 'INFO', serverIdx: 0, text: 'Database hourly compact finished: 0 orphaned rows removed, vacuum complete', source: 'payesh-db' },
+      { offsetSec: 1540, level: 'WARN', serverIdx: 1, text: 'High disk I/O wait detected: queue depth 8.2 on /dev/nvme0n1', source: 'disk-stat' },
+      { offsetSec: 2100, level: 'INFO', serverIdx: 2, text: 'Systemd service payesh-agent reloaded with PID 18420', source: 'systemd' },
+      { offsetSec: 2900, level: 'ERROR', serverIdx: 0, text: 'Database lock contention averted: SQLite busy handler waited 42ms', source: 'payesh-db' },
+      { offsetSec: 3600, level: 'INFO', serverIdx: 1, text: 'Heartbeat cycle healthy: 0 alerts active across 12 targets', source: 'payesh-agent' },
+    ];
+
+    return templates
+      .filter((t) => fleetLogServerFilter === 'all' || demoServers[t.serverIdx % demoServers.length].id === fleetLogServerFilter)
+      .map((tmpl, idx) => {
+        const srv = demoServers[tmpl.serverIdx % demoServers.length];
+        const iso = new Date(now - tmpl.offsetSec * 1000).toISOString();
+        return {
+          id: `preview-log-${idx}`,
+          serverId: srv.id,
+          serverName: srv.name,
+          timestamp: iso,
+          level: tmpl.level,
+          text: tmpl.text,
+          source: tmpl.source,
+          cursor: String(2000 + idx),
+        };
+      });
+  }
+
+  async function loadFleetLogs(targetServerId = fleetLogServerFilter) {
+    fleetLogAbortController?.abort();
+    const controller = new AbortController();
+    fleetLogAbortController = controller;
+    fleetLogState = 'loading';
+    fleetLogError = '';
+
+    if (PREVIEW_MODE) {
+      fleetLogEntries = generatePreviewFleetLogs();
+      fleetLogState = fleetLogEntries.length ? 'ready' : 'empty';
+      return;
+    }
+
+    try {
+      const targetServers = targetServerId === 'all'
+        ? servers
+        : servers.filter((s) => s.id === targetServerId);
+
+      if (targetServers.length === 0) {
+        fleetLogEntries = [];
+        fleetLogState = 'empty';
+        return;
+      }
+
+      const window = rangeWindow('24h');
+      const results: FleetLogEntry[] = [];
+
+      await Promise.allSettled(
+        targetServers.map(async (server) => {
+          try {
+            const sources = await apiClient.listLogSources(server.id, { signal: controller.signal });
+            for (const source of sources.items) {
+              try {
+                const queryRes = await apiClient.queryLogs(server.id, {
+                  source: source.id,
+                  ...window,
+                  limit: targetServerId === 'all' ? 100 : 200,
+                  signal: controller.signal
+                });
+                for (const entry of queryRes.entries) {
+                  const rawLevel = (entry.severity ?? 'INFO').toUpperCase();
+                  const level: FleetLogEntry['level'] = (rawLevel === 'WARN' || rawLevel === 'WARNING') ? 'WARN'
+                    : (rawLevel === 'ERROR' || rawLevel === 'ERR' || rawLevel === 'CRITICAL' || rawLevel === 'EMERGENCY' || rawLevel === 'FATAL') ? 'ERROR'
+                    : rawLevel === 'DEBUG' ? 'DEBUG' : 'INFO';
+                  results.push({
+                    id: `${server.id}-${source.id}-${entry.cursor || Math.random().toString(36).slice(2)}`,
+                    serverId: server.id,
+                    serverName: server.name,
+                    timestamp: entry.timestamp,
+                    level,
+                    text: entry.text,
+                    source: source.label || source.id,
+                    cursor: entry.cursor
+                  });
+                }
+              } catch {
+                // If single source fails, continue
+              }
+            }
+          } catch {
+            // If single server fails, continue
+          }
+        })
+      );
+
+      if (controller.signal.aborted) return;
+
+      results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      fleetLogEntries = results;
+      fleetLogState = fleetLogEntries.length ? 'ready' : 'empty';
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      fleetLogError = err instanceof Error ? err.message : 'Unable to load fleet logs.';
+      fleetLogState = 'error';
     }
   }
 
@@ -1714,7 +1921,7 @@
 
   function restoreState(state: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null) {
     if (!state) return;
-    if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
+    if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'logs', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
     if (state.detailTab) detailTab = state.detailTab === 'metrics' ? 'resources' : state.detailTab === 'traffic' ? 'network' : state.detailTab;
@@ -1820,6 +2027,10 @@
         {:else}
           <span class="nav-count neutral">0</span>
         {/if}
+      </button>
+      <button class:active={activePage === 'logs'} class="nav-item" type="button" on:click={() => navigate('logs')} aria-current={activePage === 'logs' ? 'page' : undefined}>
+        <Icon name="terminal" size={17} />
+        <span>Logs</span>
       </button>
       <button class:active={activePage === 'packages'} class="nav-item" type="button" on:click={() => navigate('packages')}>
         <Icon name="packages" size={17} />
@@ -2251,6 +2462,112 @@
               <button class="button ghost small" type="button" disabled={alertsPage >= totalAlertPages - 1} on:click={() => alertsPage++}>Next</button>
             </div>
           {/if}
+        {/if}
+      </section>
+
+    {:else if activePage === 'logs'}
+      <section class="page" aria-labelledby="logs-title">
+        <div class="page-heading">
+          <div>
+            <h1 id="logs-title" tabindex="-1">Logs</h1>
+          </div>
+          <div class="heading-actions">
+            <button class="button ghost small" type="button" disabled={fleetLogState === 'loading'} on:click={() => void loadFleetLogs()}>
+              <Icon name="refresh" size={13} />
+              <span>{fleetLogState === 'loading' ? 'Loading…' : 'Reload'}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="logs-toolbar panel">
+          <div class="logs-toolbar-filters">
+            <!-- Node Selector -->
+            <div class="log-control-group">
+              <label for="log-server-filter" class="control-label">Node</label>
+              <select id="log-server-filter" bind:value={fleetLogServerFilter} on:change={() => void loadFleetLogs()}>
+                <option value="all">All nodes ({servers.length})</option>
+                {#each servers as server}
+                  <option value={server.id}>{server.name} ({server.role === 'node' ? 'Node' : 'Master'})</option>
+                {/each}
+              </select>
+            </div>
+
+            <!-- Severity Filter Buttons -->
+            <div class="log-control-group">
+              <span class="control-label">Severity</span>
+              <div class="level-chip-group" role="group" aria-label="Filter logs by severity">
+                <button type="button" class="level-chip" class:active={fleetLogLevelFilter === 'all'} on:click={() => fleetLogLevelFilter = 'all'}>
+                  All <span class="chip-count">{fleetLogEntries.length}</span>
+                </button>
+                <button type="button" class="level-chip error" class:active={fleetLogLevelFilter === 'error'} on:click={() => fleetLogLevelFilter = 'error'}>
+                  <span class="chip-dot error"></span> Errors <span class="chip-count">{errorCount}</span>
+                </button>
+                <button type="button" class="level-chip warn" class:active={fleetLogLevelFilter === 'warn'} on:click={() => fleetLogLevelFilter = 'warn'}>
+                  <span class="chip-dot warn"></span> Warnings <span class="chip-count">{warnCount}</span>
+                </button>
+                <button type="button" class="level-chip info" class:active={fleetLogLevelFilter === 'info'} on:click={() => fleetLogLevelFilter = 'info'}>
+                  <span class="chip-dot info"></span> Info <span class="chip-count">{infoCount}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Search filter input -->
+          <div class="logs-toolbar-search">
+            <div class="log-search-input-box">
+              <Icon name="search" size={14} />
+              <input type="search" placeholder="Search message, node, or source…" bind:value={fleetLogSearchQuery} />
+              {#if fleetLogSearchQuery}
+                <button type="button" class="search-clear-btn" on:click={() => fleetLogSearchQuery = ''} aria-label="Clear search">
+                  <Icon name="x" size={12} />
+                </button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        {#if fleetLogState === 'loading'}
+          <div class="state-panel">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <h2>Loading logs…</h2>
+          </div>
+        {:else if fleetLogState === 'error'}
+          <div class="unavailable-panel">
+            <strong>Could not load logs</strong>
+            <span>{fleetLogError}</span>
+            <button class="button ghost small" type="button" on:click={() => void loadFleetLogs()}>Retry</button>
+          </div>
+        {:else if fleetLogState === 'empty' || filteredFleetLogs.length === 0}
+          <div class="unavailable-panel">
+            <strong>No log entries found</strong>
+            <span>{fleetLogEntries.length > 0 ? 'No entries match your current level or search filter.' : 'No entries returned from the selected node(s).'}</span>
+            {#if fleetLogEntries.length > 0}
+              <button class="button ghost small" type="button" on:click={() => { fleetLogLevelFilter = 'all'; fleetLogSearchQuery = ''; }}>Clear filters</button>
+            {:else}
+              <button class="button ghost small" type="button" on:click={() => void loadFleetLogs()}>Reload</button>
+            {/if}
+          </div>
+        {:else}
+          <div class="terminal-log-viewer fleet-log-viewer">
+            <div class="fleet-log-header-info">
+              <span class="mono faint">Showing {filteredFleetLogs.length} of {fleetLogEntries.length} entries · {currentTimezone}</span>
+            </div>
+            <div class="log-list">
+              {#each filteredFleetLogs as entry (entry.id)}
+                <div class="log-entry">
+                  <time class="mono tabular">{formatLogTimeInTz(entry.timestamp, currentTimezone)}</time>
+                  {#if fleetLogServerFilter === 'all'}
+                    <span class="log-server-badge">{entry.serverName}</span>
+                  {/if}
+                  <span class={`log-level-badge ${entry.level.toLowerCase()}`}>{entry.level}</span>
+                  <span class="log-text mono">
+                    <span>{entry.text}</span>
+                    <small class="faint">{entry.source} #{entry.cursor}</small>
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
         {/if}
       </section>
 
@@ -2687,7 +3004,7 @@
         {#if selectedServer.connectionState === 'connected' && availableTabs.length > 0}
           <div class="tabs" role="tablist" aria-label="Server detail sections">
             {#each availableTabs as tab}
-              <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); if (tab === 'logs') void loadLogs(selectedServer.id); }}>
+              <button class:active={detailTab === tab} type="button" role="tab" aria-selected={detailTab === tab} on:click={() => { detailTab = tab; saveUiState(); }}>
                 {tabLabel(tab)}
               </button>
             {/each}
@@ -2898,44 +3215,6 @@
             </div>
           {/if}
 
-        {:else if detailTab === 'logs' && hasCapability(selectedServer, 'logs')}
-          <article class="panel logs-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>System Event Stream</h2>
-              </div>
-              <button class="button ghost small" type="button" on:click={() => PREVIEW_MODE ? showNotice('Live tail is connected in package 03.') : void loadLogs(selectedServer.id)}>
-                <Icon name="refresh" size={13} />
-                <span>Reload</span>
-              </button>
-            </div>
-            {#if !PREVIEW_MODE && logState === 'loading'}
-              <div class="state-panel"><div class="loading-spinner" aria-hidden="true"></div><h2>Streaming logs…</h2></div>
-            {:else if !PREVIEW_MODE && logState === 'error'}
-              <div class="unavailable-panel">
-                <strong>Could not load logs</strong>
-                <span>{logError}</span>
-                <button class="button ghost small" type="button" on:click={() => void loadLogs(selectedServer.id)}>Retry</button>
-              </div>
-            {:else if !PREVIEW_MODE && logState === 'empty'}
-              <div class="unavailable-panel"><strong>No log entries recorded</strong><span>No entries returned for this server.</span></div>
-            {:else}
-              <div class="terminal-log-viewer">
-                <div class="log-list">
-                  {#each PREVIEW_MODE ? previewLogEntries : logEntries as entry}
-                    <div class="log-entry">
-                      <time class="mono tabular">{entry.time}</time>
-                      <span class={`log-level-badge ${entry.level.toLowerCase()}`}>{entry.level}</span>
-                      <span class="log-text mono">
-                        <span>{entry.text}</span>
-                        <small class="faint">{entry.source} #{entry.cursor}</small>
-                      </span>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          </article>
 
         {:else if selectedServer && detailTab !== 'metrics' && !hasCapability(selectedServer, detailTab)}
           <div class="unavailable-panel large"><strong>{tabLabel(detailTab)} unavailable</strong><span>{capabilityMessage(selectedServer, detailTab)}</span></div>
@@ -4300,6 +4579,216 @@
   .log-level-badge.error { color: #ef4444; }
   .log-text { color: #e2e8f0; word-break: break-all; }
   .log-text small { display: block; margin-top: 2px; font-size: 11px; }
+
+  /* --------------------------------------------------------------------------
+     FLEET LOGS VIEW & TOOLBAR
+     -------------------------------------------------------------------------- */
+  .logs-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+  }
+  .logs-toolbar-filters {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .log-control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .control-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+  }
+  .log-control-group select {
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--ink);
+  }
+  .level-chip-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--surface-muted);
+    padding: 3px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+  }
+  .level-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .level-chip:hover {
+    color: var(--ink);
+    background: var(--surface);
+  }
+  .level-chip.active {
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+    border-color: var(--line);
+  }
+  .level-chip.error.active {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.25);
+  }
+  .level-chip.warn.active {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    border-color: rgba(245, 158, 11, 0.25);
+  }
+  .level-chip.info.active {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.25);
+  }
+  .chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .chip-dot.error { background: #ef4444; }
+  .chip-dot.warn { background: #f59e0b; }
+  .chip-dot.info { background: #10b981; }
+  .chip-count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 10px;
+    background: var(--line);
+    color: var(--muted);
+  }
+  .level-chip.active .chip-count {
+    background: var(--line-strong, var(--line));
+    color: var(--ink);
+  }
+  .logs-toolbar-search {
+    flex: 1;
+    max-width: 320px;
+    min-width: 200px;
+  }
+  .log-search-input-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+  }
+  .log-search-input-box input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    font-size: 13px;
+    color: var(--ink);
+    padding: 0;
+  }
+  .search-clear-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px;
+    display: grid;
+    place-items: center;
+  }
+  .search-clear-btn:hover {
+    color: var(--ink);
+  }
+  .fleet-log-header-info {
+    padding: 6px 4px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .fleet-log-viewer .log-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .fleet-log-viewer .log-entry time {
+    flex-shrink: 0;
+    min-width: 75px;
+    color: #64748b;
+  }
+  .log-server-badge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: var(--radius-xs);
+    background: rgba(20, 184, 166, 0.12);
+    color: var(--teal);
+    border: 1px solid rgba(20, 184, 166, 0.25);
+    white-space: nowrap;
+  }
+  .fleet-log-viewer .log-level-badge {
+    flex-shrink: 0;
+    min-width: 48px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 11px;
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .fleet-log-viewer .log-level-badge.info {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+  }
+  .fleet-log-viewer .log-level-badge.warn {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  .fleet-log-viewer .log-level-badge.error {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+  }
+  .fleet-log-viewer .log-level-badge.debug {
+    background: rgba(148, 163, 184, 0.12);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+  }
+  .fleet-log-viewer .log-text {
+    flex: 1;
+    min-width: 0;
+    color: #e2e8f0;
+    word-break: break-word;
+  }
 
   /* --------------------------------------------------------------------------
      PACKAGE CARDS & MODULES
