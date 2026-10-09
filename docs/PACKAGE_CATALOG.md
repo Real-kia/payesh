@@ -37,3 +37,17 @@ supported by this core show **Requires Payesh update**. New privileged
 integrations still need a reviewed executor and trusted signing key; publishing
 metadata does not authorize arbitrary executables. Existing signature,
 checksum, eligibility and core-compatibility checks remain in place.
+
+## Installing, updating and following package changes
+
+Install from the Packages page or from a server's **Packages** tab. Choosing a
+server that already has the package updates it in place: the new archive goes
+through the same signature, checksum and eligibility checks, and a package that
+was enabled is restarted on the new version. **All connected servers** installs
+on each connected server in turn and reports every server's result separately;
+one failure does not hide the others, and offline servers are not targeted.
+
+Each server's **Packages** tab lists what is installed with the installed and
+catalog versions, and enables, disables, updates or removes a package.
+Successful installs and updates, and failures with their reason, are recorded
+in that server's logs under the **Package manager** source on the Logs page.

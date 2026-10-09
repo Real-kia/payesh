@@ -173,6 +173,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("manifest_verification_failed", verifyErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
+		m.recordPackageEvent(ctx, req.ServerID, "ERROR", fmt.Sprintf("Module %s v%s was not installed: manifest verification failed: %v", req.ModuleID, req.Manifest.ModuleVersion, verifyErr))
 		return contracts.ModuleInstallation{}, fmt.Errorf("modules: manifest verification failed: %w", verifyErr)
 	}
 	if m.CoreVersion != "" {
@@ -186,6 +187,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("manifest_policy_failed", policyErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
+		m.recordPackageEvent(ctx, req.ServerID, "ERROR", fmt.Sprintf("Module %s v%s was not installed: %v", req.ModuleID, req.Manifest.ModuleVersion, policyErr))
 		return contracts.ModuleInstallation{}, policyErr
 	}
 
@@ -206,6 +208,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("install_failed", stageErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
+		m.recordPackageEvent(ctx, req.ServerID, "ERROR", fmt.Sprintf("Module %s v%s failed to install: %v", req.ModuleID, req.Manifest.ModuleVersion, stageErr))
 		return contracts.ModuleInstallation{}, stageErr
 	}
 
@@ -219,41 +222,35 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 	}
 
 	if isUpdate && beforeState == contracts.ModuleEnabled && m.Executor != nil {
-		_ = m.Executor.Invoke(ctx, ModuleInvocation{
+		if err := m.Executor.Invoke(ctx, ModuleInvocation{
 			ServerID:      req.ServerID,
 			ModuleID:      req.ModuleID,
 			ModuleVersion: req.Manifest.ModuleVersion,
 			Operation:     "enable",
 			InstallDir:    active,
-		})
+		}); err != nil {
+			// The new version is installed; make a failed restart visible
+			// instead of silently reporting it as running.
+			m.recordPackageEvent(ctx, req.ServerID, "ERROR", fmt.Sprintf("Module %s v%s was updated but could not be restarted: %v", req.ModuleID, req.Manifest.ModuleVersion, err))
+		}
 	}
 
 	actionVerb := "installed"
 	if isUpdate {
 		actionVerb = "updated"
 	}
-	_ = m.appendModuleLog(ctx, req.ServerID, "INFO", fmt.Sprintf("Module %s v%s successfully %s", req.ModuleID, req.Manifest.ModuleVersion, actionVerb))
+	m.recordPackageEvent(ctx, req.ServerID, "INFO", fmt.Sprintf("Module %s v%s successfully %s", req.ModuleID, req.Manifest.ModuleVersion, actionVerb))
 
 	return installation, nil
 }
 
-func (m *Manager) appendModuleLog(ctx context.Context, serverID contracts.ServerID, severity, text string) error {
-	if m.Store == nil || len(serverID) < 16 {
-		return nil
+// recordPackageEvent adds a package event to the server's logs. Logging is
+// best effort: it must never change the outcome of the package operation.
+func (m *Manager) recordPackageEvent(ctx context.Context, serverID contracts.ServerID, severity, text string) {
+	if m.Store == nil {
+		return
 	}
-	now := m.now()
-	cursor := fmt.Sprintf("mod-%d", now.UnixNano())
-	_, err := m.Store.InsertLogEntries(ctx, []monitoring.LogEntry{
-		{
-			ServerID:  serverID,
-			SourceID:  "package-manager",
-			Cursor:    cursor,
-			Timestamp: now,
-			Severity:  severity,
-			Text:      text,
-		},
-	})
-	return err
+	_ = m.Store.AppendStoredLog(ctx, serverID, monitoring.PackageLogSourceID, severity, text, m.now())
 }
 
 func (m *Manager) verifyManifest(req InstallRequest) error {

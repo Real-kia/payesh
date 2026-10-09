@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -351,5 +352,31 @@ func TestManagerRejectsRemoteNodeWithoutExecutor(t *testing.T) {
 	manifest, signature := signedManifest(t, priv, "port-traffic", archive)
 	if _, err := manager.Install(context.Background(), InstallRequest{ServerID: server.ID, ModuleID: "port-traffic", Manifest: manifest, ManifestSignatureB64: signature, Archive: archive}); err == nil {
 		t.Fatal("expected remote install to fail rather than modify hub-local files")
+	}
+}
+
+func TestManagerRecordsPackageEventsInServerLogs(t *testing.T) {
+	manager, priv, server := testManager(t)
+	ctx := context.Background()
+	archive := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("v1")}})
+	manifest, sig := signedManifest(t, priv, "port-traffic", archive)
+	if _, err := manager.Install(ctx, InstallRequest{ServerID: server.ID, ModuleID: "port-traffic", Manifest: manifest, ManifestSignatureB64: sig, Archive: archive, ExpectedRevision: 0}); err != nil {
+		t.Fatal(err)
+	}
+	// A tampered signature fails verification and must be recorded as an error.
+	bad, badSig := signedManifest(t, priv, "cpu-controls", archive)
+	badSig = strings.Repeat("A", len(badSig))
+	if _, err := manager.Install(ctx, InstallRequest{ServerID: server.ID, ModuleID: "cpu-controls", Manifest: bad, ManifestSignatureB64: badSig, Archive: archive, ExpectedRevision: 0}); err == nil {
+		t.Fatal("tampered package installed")
+	}
+	page, err := manager.Store.QueryLogsFilteredOrdered(ctx, server.ID, monitoring.PackageLogSourceID, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), "", "", 10, "", "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("want install and failure entries, got %#v", page.Entries)
+	}
+	if page.Entries[0].Severity != "INFO" || !strings.Contains(page.Entries[0].Text, "port-traffic") || page.Entries[1].Severity != "ERROR" || !strings.Contains(page.Entries[1].Text, "cpu-controls") {
+		t.Fatalf("unexpected package log entries: %#v", page.Entries)
 	}
 }

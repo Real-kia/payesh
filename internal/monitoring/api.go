@@ -332,7 +332,7 @@ func (a *API) queryLogs(w http.ResponseWriter, r *http.Request, serverID contrac
 				return
 			}
 		}
-	} else {
+	} else if !IsStoredLogSource(source.ID) {
 		// An empty path denotes a registered journald unit. The source ID is
 		// already a bounded identifier and is passed as a fixed journalctl -u
 		// argument by ReadJournal; no shell command or arbitrary path is accepted.
@@ -400,6 +400,10 @@ func (a *API) tailLogs(w http.ResponseWriter, r *http.Request, serverID contract
 		}
 		if !found {
 			writeAPIError(w, http.StatusNotFound, "log_source_not_found", "configured log source was not found", false)
+			return
+		}
+		if IsStoredLogSource(source.ID) {
+			writeAPIError(w, http.StatusBadRequest, "tail_unsupported", "this log source has no live stream; query it instead", false)
 			return
 		}
 		var result LogReadResult
