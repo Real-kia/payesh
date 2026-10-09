@@ -1928,7 +1928,6 @@
           <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
           <article class="summary-card stat-network-card">
             <div class="card-header">
-              <span class="stat-label">Download & Upload</span>
               <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
             </div>
             <div class="network-split">
@@ -3024,7 +3023,6 @@
 
             <article class="summary-card stat-network-card">
               <div class="card-header">
-                <span class="stat-label">Download & Upload</span>
                 <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
               </div>
               <div class="network-split">
@@ -3863,6 +3861,10 @@
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+  }
+  .stat-network-card .card-header {
+    justify-content: flex-end;
+    margin-bottom: 6px;
   }
   .network-split {
     display: flex;
