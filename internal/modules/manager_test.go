@@ -120,6 +120,61 @@ func TestManagerFullLifecycle(t *testing.T) {
 	}
 }
 
+func TestManagerUpdateAlreadyInstalledModule(t *testing.T) {
+	manager, priv, server := testManager(t)
+	archive1 := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("v1")}})
+	manifest1, sig1 := signedManifest(t, priv, "port-traffic", archive1)
+
+	installed, err := manager.Install(context.Background(), InstallRequest{
+		ServerID: server.ID, ModuleID: "port-traffic",
+		Manifest: manifest1, ManifestSignatureB64: sig1, Archive: archive1, ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.State != contracts.ModuleInstalledDisabled {
+		t.Fatalf("expected installed-disabled, got %s", installed.State)
+	}
+
+	// Re-install / update while disabled
+	archive2 := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("v2")}})
+	manifest2, sig2 := signedManifest(t, priv, "port-traffic", archive2)
+
+	updated, err := manager.Install(context.Background(), InstallRequest{
+		ServerID: server.ID, ModuleID: "port-traffic",
+		Manifest: manifest2, ManifestSignatureB64: sig2, Archive: archive2, ExpectedRevision: installed.Revision,
+	})
+	if err != nil {
+		t.Fatalf("expected update to succeed, got %v", err)
+	}
+	if updated.State != contracts.ModuleInstalledDisabled {
+		t.Fatalf("expected installed-disabled, got %s", updated.State)
+	}
+
+	// Enable then update while enabled
+	enabled, err := manager.Enable(context.Background(), server.ID, "port-traffic", updated.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled.State != contracts.ModuleEnabled {
+		t.Fatalf("expected enabled, got %s", enabled.State)
+	}
+
+	archive3 := buildTarGz(t, []tarEntry{{name: "bin/port-traffic", typeflag: tar.TypeReg, body: []byte("v3")}})
+	manifest3, sig3 := signedManifest(t, priv, "port-traffic", archive3)
+
+	updatedActive, err := manager.Install(context.Background(), InstallRequest{
+		ServerID: server.ID, ModuleID: "port-traffic",
+		Manifest: manifest3, ManifestSignatureB64: sig3, Archive: archive3, ExpectedRevision: enabled.Revision,
+	})
+	if err != nil {
+		t.Fatalf("expected update of enabled module to succeed, got %v", err)
+	}
+	if updatedActive.State != contracts.ModuleEnabled {
+		t.Fatalf("expected enabled, got %s", updatedActive.State)
+	}
+}
+
 func TestManagerInstallRejectsUncuratedModule(t *testing.T) {
 	manager, priv, server := testManager(t)
 	archive := buildTarGz(t, []tarEntry{{name: "f", typeflag: tar.TypeReg}})

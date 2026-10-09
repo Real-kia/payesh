@@ -162,7 +162,7 @@ func ReadJournal(ctx context.Context, source LogSource, options JournalOptions) 
 			timestamp = time.Unix(0, micros*int64(time.Microsecond)).UTC()
 		}
 		text, redacted := redact(strings.ToValidUTF8(raw.Message, "�"))
-		entry := LogEntry{ServerID: source.ServerID, SourceID: source.ID, Cursor: raw.Cursor, Timestamp: timestamp, Severity: journalSeverity(raw.Priority), Text: text, Redacted: redacted}
+		entry := LogEntry{ServerID: source.ServerID, SourceID: source.ID, Cursor: raw.Cursor, Timestamp: timestamp, Severity: DetectSeverity(text, journalSeverity(raw.Priority)), Text: text, Redacted: redacted}
 		if entry.Cursor == "" {
 			entry.Cursor = fmt.Sprintf("journal:%d", len(result.Entries))
 		}
@@ -282,6 +282,50 @@ func journalSeverity(priority string) string {
 	default:
 		return "DEBUG"
 	}
+}
+
+// DetectSeverity inspects log message text for common error and warning patterns,
+// returning the elevated severity or the fallback value when no higher priority pattern matches.
+func DetectSeverity(text string, fallback string) string {
+	upper := strings.ToUpper(text)
+	// Explicit error markers
+	if strings.HasPrefix(upper, "[ERROR]") || strings.HasPrefix(upper, "[ERR]") ||
+		strings.HasPrefix(upper, "[FATAL]") || strings.HasPrefix(upper, "[CRIT]") ||
+		strings.HasPrefix(upper, "[EMERG]") || strings.HasPrefix(upper, "[ALERT]") ||
+		strings.HasPrefix(upper, "ERROR:") || strings.HasPrefix(upper, "ERR:") ||
+		strings.HasPrefix(upper, "FATAL:") || strings.HasPrefix(upper, "PANIC:") ||
+		strings.HasPrefix(upper, "CRITICAL:") || strings.HasPrefix(upper, "EMERGENCY:") ||
+		strings.Contains(upper, "LEVEL=ERROR") || strings.Contains(upper, `LEVEL="ERROR"`) ||
+		strings.Contains(upper, `"LEVEL":"ERROR"`) || strings.Contains(upper, `"LEVEL": "ERROR"`) ||
+		strings.Contains(upper, "LVL=ERROR") || strings.Contains(upper, "LVL=ERR") ||
+		strings.Contains(upper, "STATUS=1/FAILURE") || strings.Contains(upper, "RESULT 'EXIT-CODE'") ||
+		strings.Contains(upper, "SQLITE_BUSY") || strings.Contains(upper, "DATABASE IS LOCKED") {
+		return "ERROR"
+	}
+	// Explicit warning markers
+	if strings.HasPrefix(upper, "[WARN]") || strings.HasPrefix(upper, "[WARNING]") ||
+		strings.HasPrefix(upper, "WARN:") || strings.HasPrefix(upper, "WARNING:") ||
+		strings.Contains(upper, "LEVEL=WARN") || strings.Contains(upper, `LEVEL="WARN"`) ||
+		strings.Contains(upper, `"LEVEL":"WARN"`) || strings.Contains(upper, `"LEVEL": "WARN"`) ||
+		strings.Contains(upper, "LVL=WARN") || strings.Contains(upper, "QUEUE DEPTH") ||
+		(strings.Contains(upper, "EXCEEDED") && strings.Contains(upper, "THRESHOLD")) {
+		if fallback == "ERROR" || fallback == "CRITICAL" {
+			return fallback
+		}
+		return "WARN"
+	}
+	// Debug markers
+	if strings.HasPrefix(upper, "[DEBUG]") || strings.HasPrefix(upper, "DEBUG:") ||
+		strings.Contains(upper, "LEVEL=DEBUG") || strings.Contains(upper, `"LEVEL":"DEBUG"`) {
+		if fallback == "ERROR" || fallback == "WARN" {
+			return fallback
+		}
+		return "DEBUG"
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "INFO"
 }
 
 func readConfiguredLogAtOffset(ctx context.Context, source LogSource, options LogReadOptions, startOffset int64) (LogReadResult, error) {
@@ -694,7 +738,14 @@ func parseLogLine(line string, now time.Time) (severity, text string, timestamp 
 			trimmed = strings.TrimSpace(trimmed[len(prefix):])
 			break
 		}
+		colonPrefix := level + ":"
+		if strings.HasPrefix(upper, colonPrefix) {
+			severity = level
+			trimmed = strings.TrimSpace(trimmed[len(colonPrefix):])
+			break
+		}
 	}
+	severity = DetectSeverity(trimmed, severity)
 	return severity, trimmed, timestamp, false
 }
 

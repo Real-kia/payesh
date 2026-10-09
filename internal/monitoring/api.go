@@ -355,7 +355,15 @@ func (a *API) queryLogs(w http.ResponseWriter, r *http.Request, serverID contrac
 			}
 		}
 	}
-	page, err := a.Store.QueryLogsFiltered(r.Context(), serverID, sourceID, from, to, severity, search, limit, r.URL.Query().Get("cursor"))
+	order := strings.ToLower(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_order", "order must be asc or desc", false)
+		return
+	}
+	page, err := a.Store.QueryLogsFilteredOrdered(r.Context(), serverID, sourceID, from, to, severity, search, limit, r.URL.Query().Get("cursor"), order)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error(), false)
 		return

@@ -101,7 +101,7 @@ type lifecycleRequest struct {
 	Source               *PackageSource            `json:"source,omitempty"`
 }
 
-var moduleActions = map[string]bool{"install": true, "enable": true, "disable": true, "remove": true}
+var moduleActions = map[string]bool{"install": true, "update": true, "enable": true, "disable": true, "remove": true}
 
 func (s *Service) lifecycle(w http.ResponseWriter, r *http.Request, serverID contracts.ServerID, moduleID, action string) {
 	if !moduleActions[action] {
@@ -160,7 +160,7 @@ func (s *Service) lifecycle(w http.ResponseWriter, r *http.Request, serverID con
 
 func (s *Service) runAction(r *http.Request, serverID contracts.ServerID, moduleID, action string, request lifecycleRequest) (contracts.ModuleInstallation, error) {
 	switch action {
-	case "install":
+	case "install", "update":
 		if request.Source != nil {
 			if request.Manifest != nil || request.ArchiveBase64 != "" || request.ManifestSignatureB64 != "" {
 				return contracts.ModuleInstallation{}, errors.New("choose a package source or inline package data")

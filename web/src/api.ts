@@ -402,8 +402,8 @@ export class ApiClient {
     return this.request<LogSourcePage>(`/servers/${encodeURIComponent(serverId)}/logs/sources${queryString({ limit: 200 })}`, { signal: options.signal });
   }
 
-  queryLogs(serverId: string, params: { source: string; from?: string; to?: string; severity?: string; search?: string; limit?: number } & QueryOptions): Promise<LogQuery> {
-    return this.request<LogQuery>(`/servers/${encodeURIComponent(serverId)}/logs${queryString({ source: params.source, from: params.from, to: params.to, severity: params.severity, search: params.search, limit: params.limit ?? 200 })}`, { signal: params.signal });
+  queryLogs(serverId: string, params: { source: string; from?: string; to?: string; severity?: string; search?: string; limit?: number; cursor?: string; order?: 'asc' | 'desc' } & QueryOptions): Promise<LogQuery> {
+    return this.request<LogQuery>(`/servers/${encodeURIComponent(serverId)}/logs${queryString({ source: params.source, from: params.from, to: params.to, severity: params.severity, search: params.search, limit: params.limit ?? 100, cursor: params.cursor, order: params.order ?? 'desc' })}`, { signal: params.signal });
   }
 }
 

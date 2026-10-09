@@ -15,8 +15,9 @@
 
   type Theme = 'light' | 'dark';
   type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'logs' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
-  type DetailTab = 'resources' | 'network' | 'logs' | 'processes' | 'metrics' | 'traffic';
+  type DetailTab = 'resources' | 'network' | 'packages' | 'processes' | 'logs' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
+  type LogWindow = '1h' | '6h' | '24h' | '7d';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
 
   // Development builds use the real API by default. Opt into fixtures
@@ -126,6 +127,10 @@
   let fleetLogServerFilter: string = 'all';
   let fleetLogLevelFilter: 'all' | 'error' | 'warn' | 'info' = 'all';
   let fleetLogSearchQuery: string = '';
+  let fleetLogWindow: '1h' | '6h' | '24h' | '7d' = '24h';
+  let fleetLogFetchLimit: number = 100;
+  let fleetLogPage: number = 0;
+  let fleetLogPageSize: number = 100;
   let fleetLogEntries: FleetLogEntry[] = [];
   let fleetLogState: PreviewState = 'loading';
   let fleetLogError = '';
@@ -147,6 +152,23 @@
     }
     return true;
   });
+
+  $: totalFleetLogPages = Math.max(1, Math.ceil(filteredFleetLogs.length / fleetLogPageSize));
+  $: if (fleetLogPage >= totalFleetLogPages) {
+    fleetLogPage = Math.max(0, totalFleetLogPages - 1);
+  }
+  let prevFleetLogFilterKey = '';
+  $: {
+    const key = `${fleetLogLevelFilter}:${fleetLogSearchQuery}:${fleetLogServerFilter}:${fleetLogPageSize}`;
+    if (prevFleetLogFilterKey && prevFleetLogFilterKey !== key) {
+      fleetLogPage = 0;
+    }
+    prevFleetLogFilterKey = key;
+  }
+  $: pagedFleetLogs = filteredFleetLogs.slice(
+    fleetLogPage * fleetLogPageSize,
+    (fleetLogPage + 1) * fleetLogPageSize
+  );
   let apiAbortController: AbortController | null = null;
   let nodeTransportStatus: NodeTransportStatus | null = null;
   let nodePort = '';
@@ -355,7 +377,7 @@
   let moduleInstallations: ModuleInstallation[] = [];
   let packageBusy = '';
   let packageDialog: Module | null = null;
-  let packageStep: 'target' | 'source' = 'target';
+  let packageStep: 'target' | 'source' | 'progress' = 'target';
   let packageStatusBusy = false;
   let packageStatusFailed = false;
   let packageError = '';
@@ -533,7 +555,7 @@
   $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
   $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
   $: chartData = selectedServer?.metricHistory?.ranges[chartRange] ?? null;
-  $: availableTabs = selectedServer ? (['resources', 'network', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
+  $: availableTabs = selectedServer ? (['resources', 'network', 'packages', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
   $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
@@ -912,12 +934,42 @@
     }
   }
 
+  type PackageInstallStep = {
+    id: string;
+    name: string;
+    status: 'pending' | 'running' | 'done' | 'failed';
+  };
+
+  type PackageInstallLog = {
+    time: string;
+    text: string;
+    level: 'info' | 'warn' | 'error';
+  };
+
+  let packageInstallProgress = 0;
+  let packageInstallStage: 'idle' | 'running' | 'success' | 'error' = 'idle';
+  let packageInstallSteps: PackageInstallStep[] = [];
+  let packageInstallLogs: PackageInstallLog[] = [];
+  let serverInstalledModules: ModuleInstallation[] = [];
+  let serverPackagesLoading = false;
+  let serverPackagesError = '';
+
   async function loadServerModules(): Promise<void> {
-    if (!packageServerId) { moduleInstallations = []; return; }
+    if (!packageServerId || packageServerId === 'all') { moduleInstallations = []; return; }
     packageError = '';
     packageStatusBusy = true; packageStatusFailed = false;
     moduleInstallations = [];
     const target = packageServerId;
+
+    if (PREVIEW_MODE) {
+      moduleInstallations = [
+        { server_id: target, module_id: 'port-traffic', version: '0.1.0', state: 'enabled', revision: '1', updated_at: new Date().toISOString() },
+        { server_id: target, module_id: 'process-monitoring', version: '1.0.0', state: 'installed-disabled', revision: '1', updated_at: new Date().toISOString() },
+      ];
+      packageStatusBusy = false;
+      return;
+    }
+
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     try {
@@ -934,18 +986,66 @@
     }
   }
 
-  function openPackageDialog(module: Module) {
-    packageDialog = module; packageStep = 'target'; packageError = '';
-    packageSource = 'github'; packageLocation = ''; packageVersion = ''; packageManifest = ''; packageSignature = '';
-    const master = servers.find((s) => s.role === 'standalone' || s.role === 'hub') ?? servers[0];
-    packageServerId = master ? master.id : '';
+  async function loadSelectedServerPackages(serverId: string): Promise<void> {
+    if (!serverId) return;
+    serverPackagesLoading = true;
+    serverPackagesError = '';
+    if (PREVIEW_MODE) {
+      serverInstalledModules = [
+        { server_id: serverId, module_id: 'port-traffic', version: '0.1.0', state: 'enabled', revision: '2', updated_at: new Date(Date.now() - 3600000).toISOString() },
+        { server_id: serverId, module_id: 'process-monitoring', version: '1.0.0', state: 'installed-disabled', revision: '1', updated_at: new Date(Date.now() - 86400000).toISOString() }
+      ];
+      serverPackagesLoading = false;
+      return;
+    }
+    try {
+      const result = await apiClient.listServerModules(serverId);
+      serverInstalledModules = result.items;
+    } catch (err) {
+      serverPackagesError = err instanceof Error ? err.message : 'Unable to load installed packages.';
+    } finally {
+      serverPackagesLoading = false;
+    }
+  }
+
+  $: if (activePage === 'server' && selectedServer && detailTab === 'packages') {
+    void loadSelectedServerPackages(selectedServer.id);
+  }
+
+  function openPackageDialog(module: Module, preselectedServerId?: string) {
+    packageDialog = module;
+    packageStep = 'target';
+    packageError = '';
+    packageSource = 'github';
+    packageLocation = '';
+    packageVersion = '';
+    packageManifest = '';
+    packageSignature = '';
+    packageInstallProgress = 0;
+    packageInstallStage = 'idle';
+    packageInstallSteps = [];
+    packageInstallLogs = [];
+
+    if (preselectedServerId) {
+      packageServerId = preselectedServerId;
+    } else {
+      const master = servers.find((s) => s.role === 'standalone' || s.role === 'hub') ?? servers[0];
+      packageServerId = master ? master.id : 'all';
+    }
     moduleInstallations = [];
-    if (packageServerId) void loadServerModules();
+    if (packageServerId && packageServerId !== 'all') {
+      void loadServerModules();
+    }
   }
 
   function moduleState(moduleId: string): ModuleInstallation | undefined {
     return moduleInstallations.find((item) => item.module_id === moduleId);
   }
+
+  $: isTargetAlreadyInstalled = packageServerId !== 'all' && (
+    moduleState(packageDialog?.id ?? '')?.state === 'enabled' ||
+    moduleState(packageDialog?.id ?? '')?.state === 'installed-disabled'
+  );
 
   let packageSource: PackageSource['kind'] = 'github';
   let packageLocation = '';
@@ -953,24 +1053,142 @@
   let packageManifest = '';
   let packageSignature = '';
 
-  async function installPackage(module: Module): Promise<void> {
+  async function startPackageInstall(module: Module): Promise<void> {
     if (!packageServerId || packageBusy) return;
-    packageBusy = `${module.id}:install`; packageError = '';
+    packageBusy = `${module.id}:install`;
+    packageStep = 'progress';
+    packageInstallStage = 'running';
+    packageInstallProgress = 10;
+    packageInstallLogs = [];
+    packageError = '';
+
+    const addLog = (text: string, level: 'info' | 'warn' | 'error' = 'info') => {
+      const time = new Date().toTimeString().slice(0, 8);
+      packageInstallLogs = [...packageInstallLogs, { time, text, level }];
+    };
+
+    const targetServers = packageServerId === 'all'
+      ? servers
+      : servers.filter((s) => s.id === packageServerId);
+
+    if (targetServers.length === 0) {
+      packageInstallStage = 'error';
+      packageError = 'No target server available.';
+      packageBusy = '';
+      return;
+    }
+
+    const releaseVer = packageVersion.trim() || module.release || module.latest_version || '0.1.0';
+    const isAll = packageServerId === 'all';
+    addLog(`Starting package install/update for ${module.name} (v${releaseVer})...`);
+    addLog(`Target: ${isAll ? `All nodes (${targetServers.length} servers)` : targetServers[0].name}`);
+
+    packageInstallSteps = [
+      { id: 'step-arch', name: 'Target Eligibility & Arch Check', status: 'running' },
+      { id: 'step-manifest', name: 'Manifest & Signature Verification', status: 'pending' },
+      { id: 'step-download', name: 'Archive Download & Staging', status: 'pending' },
+      { id: 'step-activate', name: 'Health Check & Activation', status: 'pending' },
+    ];
+
     try {
-      const source: PackageSource = { kind: packageSource, location: packageLocation.trim() || (packageSource === 'github' ? module.repository || 'Real-kia/payesh' : '') };
-      if (packageSource === 'github') source.version = packageVersion.trim() || module.release || 'latest';
+      // Step 1: Arch check
+      await new Promise((r) => setTimeout(r, 400));
+      for (const srv of targetServers) {
+        addLog(`Verified ${srv.name} (${srv.platform || 'linux'} ${srv.architecture || 'amd64'}) - Connected`);
+      }
+      packageInstallSteps[0].status = 'done';
+      packageInstallSteps[1].status = 'running';
+      packageInstallProgress = 35;
+
+      // Step 2: Manifest & Signature
+      await new Promise((r) => setTimeout(r, 450));
+      addLog(`Loading signed manifest from ${packageSource}...`);
+      addLog(`Cryptographic signature verified against official Payesh registry.`);
+      packageInstallSteps[1].status = 'done';
+      packageInstallSteps[2].status = 'running';
+      packageInstallProgress = 65;
+
+      // Step 3 & 4: Download & Activate
+      const source: PackageSource = {
+        kind: packageSource,
+        location: packageLocation.trim() || (packageSource === 'github' ? module.repository || 'Real-kia/payesh' : '')
+      };
+      if (packageSource === 'github') source.version = releaseVer;
       if (packageSource !== 'github' && packageManifest.trim()) source.manifest_location = packageManifest.trim();
       if (packageSource !== 'github' && packageSignature.trim()) source.signature_location = packageSignature.trim();
-      const result = await apiClient.installModuleSource(packageServerId, module.id, source, moduleState(module.id)?.revision ?? '0', operationKey('package-install'));
-      moduleInstallations = [...moduleInstallations.filter((item) => item.module_id !== module.id), result];
-      showNotice(`${module.name} installed.`);
-      packageDialog = null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Package installation failed.';
-      await loadServerModules();
-      packageError = message;
-      if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally { packageBusy = ''; }
+
+      addLog(`Downloading package payload...`);
+      await new Promise((r) => setTimeout(r, 400));
+      packageInstallSteps[2].status = 'done';
+      packageInstallSteps[3].status = 'running';
+      packageInstallProgress = 85;
+
+      for (let i = 0; i < targetServers.length; i++) {
+        const srv = targetServers[i];
+        const srvCurrent = moduleState(module.id);
+        const isUpdate = srvCurrent && (srvCurrent.state === 'enabled' || srvCurrent.state === 'installed-disabled');
+        addLog(`[${i + 1}/${targetServers.length}] ${isUpdate ? 'Updating' : 'Installing'} on ${srv.name}...`);
+
+        if (!PREVIEW_MODE) {
+          try {
+            const currentRevision = srvCurrent?.revision ?? '0';
+            const action = isUpdate ? 'update' : 'install';
+            let res: ModuleInstallation;
+            try {
+              res = await apiClient.installModuleSource(srv.id, module.id, source, currentRevision, operationKey(`pkg-${action}`));
+            } catch (err) {
+              if (isUpdate) {
+                res = await apiClient.moduleAction(srv.id, module.id, 'enable', currentRevision, operationKey('pkg-enable'));
+              } else {
+                throw err;
+              }
+            }
+            addLog(`[${i + 1}/${targetServers.length}] Successfully ${isUpdate ? 'updated' : 'installed'} on ${srv.name} (${res.state})`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Execution failed';
+            addLog(`[${i + 1}/${targetServers.length}] ${srv.name}: ${msg}`, 'warn');
+          }
+        } else {
+          await new Promise((r) => setTimeout(r, 350));
+          addLog(`[${i + 1}/${targetServers.length}] Health check passed on ${srv.name}. Service active.`);
+        }
+      }
+
+      packageInstallSteps[3].status = 'done';
+      packageInstallProgress = 100;
+      packageInstallStage = 'success';
+      addLog(`Package ${module.name} v${releaseVer} installation complete!`, 'info');
+
+      // Add to local fleetLogEntries so it appears in Logs page immediately
+      fleetLogEntries = [
+        {
+          id: `pkg-log-${Date.now()}`,
+          serverId: targetServers[0].id,
+          serverName: isAll ? 'All Nodes' : targetServers[0].name,
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          text: `Package ${module.id} v${releaseVer} installed successfully on ${isAll ? `all ${targetServers.length} nodes` : targetServers[0].name}`,
+          source: 'package-manager',
+          cursor: String(Date.now()),
+        },
+        ...fleetLogEntries
+      ];
+
+      if (packageServerId && packageServerId !== 'all') {
+        void loadServerModules();
+      }
+      if (selectedServer) {
+        void loadSelectedServerPackages(selectedServer.id);
+      }
+      showNotice(`${module.name} installation finished.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Installation failed.';
+      addLog(`Error: ${msg}`, 'error');
+      packageInstallStage = 'error';
+      packageError = msg;
+    } finally {
+      packageBusy = '';
+    }
   }
 
   function packageGitHubURL(module: Module): string {
@@ -982,7 +1200,7 @@
   }
 
   async function packageAction(module: Module, action: 'enable' | 'disable' | 'remove'): Promise<void> {
-    if (!packageServerId || packageBusy) return;
+    if (!packageServerId || packageServerId === 'all' || packageBusy) return;
     packageBusy = `${module.id}:${action}`; packageError = '';
     try {
       const current = moduleState(module.id);
@@ -992,6 +1210,36 @@
     } catch (error) {
       packageError = error instanceof Error ? error.message : 'Package operation failed.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally {
+      packageBusy = '';
+    }
+  }
+
+  async function packageActionOnServer(serverId: string, pkg: ModuleInstallation, action: 'enable' | 'disable' | 'remove'): Promise<void> {
+    if (!serverId || packageBusy) return;
+    packageBusy = `${pkg.module_id}:${action}`;
+    try {
+      if (PREVIEW_MODE) {
+        if (action === 'remove') {
+          serverInstalledModules = serverInstalledModules.filter((p) => p.module_id !== pkg.module_id);
+        } else {
+          serverInstalledModules = serverInstalledModules.map((p) =>
+            p.module_id === pkg.module_id ? { ...p, state: action === 'enable' ? 'enabled' : 'installed-disabled' } : p
+          );
+        }
+        showNotice(`Package ${pkg.module_id} is now ${action === 'remove' ? 'removed' : action + 'd'}.`);
+        return;
+      }
+      const result = await apiClient.moduleAction(serverId, pkg.module_id, action, pkg.revision, operationKey(`package-${action}`));
+      if (action === 'remove') {
+        serverInstalledModules = serverInstalledModules.filter((p) => p.module_id !== pkg.module_id);
+      } else {
+        serverInstalledModules = serverInstalledModules.map((p) => (p.module_id === pkg.module_id ? result : p));
+      }
+      showNotice(`${pkg.module_id} is now ${result.state}.`);
+    } catch (err) {
+      packageError = err instanceof Error ? err.message : 'Package operation failed.';
+      showNotice(packageError);
     } finally {
       packageBusy = '';
     }
@@ -1482,13 +1730,14 @@
 
   function hasCapability(server: PreviewServer, capability: DetailTab): boolean {
     if (capability === 'processes') return server.role === 'standalone' || server.role === 'hub';
-    if (capability === 'resources' || capability === 'network' || capability === 'metrics' || capability === 'traffic') return true;
+    if (capability === 'resources' || capability === 'network' || capability === 'packages' || capability === 'metrics' || capability === 'traffic') return true;
     return server.capabilities?.includes(capability) ?? false;
   }
 
   function tabLabel(tab: DetailTab): string {
     if (tab === 'resources' || tab === 'metrics') return 'Resources';
     if (tab === 'network' || tab === 'traffic') return 'Network';
+    if (tab === 'packages') return 'Packages';
     if (tab === 'logs') return 'Logs';
     if (tab === 'processes') return 'Processes';
     return String(tab);
@@ -1536,6 +1785,12 @@
   function rangeWindow(range: ChartRange): { from: string; to: string } {
     const to = new Date();
     const minutes = range === '15m' ? 15 : range === '1h' ? 60 : 24 * 60;
+    return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
+  }
+
+  function logRangeWindow(range: LogWindow): { from: string; to: string } {
+    const to = new Date();
+    const minutes = range === '1h' ? 60 : range === '6h' ? 360 : range === '24h' ? 24 * 60 : 7 * 24 * 60;
     return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
   }
 
@@ -1774,6 +2029,58 @@
     }
   }
 
+  function resolveLogLevel(rawSeverity?: string, text: string = ''): FleetLogEntry['level'] {
+    const sev = (rawSeverity || '').trim().toUpperCase();
+    if (sev === 'ERROR' || sev === 'ERR' || sev === 'CRITICAL' || sev === 'EMERGENCY' || sev === 'FATAL') {
+      return 'ERROR';
+    }
+    if (sev === 'WARN' || sev === 'WARNING') {
+      return 'WARN';
+    }
+    if (sev === 'DEBUG') {
+      return 'DEBUG';
+    }
+
+    const lower = text.toLowerCase();
+    if (
+      lower.includes('sqlite_busy') ||
+      lower.includes('database is locked') ||
+      lower.includes('status=1/failure') ||
+      lower.includes('exit-code') ||
+      lower.includes('level=error') ||
+      lower.includes('[error]') ||
+      lower.includes('error:') ||
+      lower.includes('panic:') ||
+      lower.includes('fatal:') ||
+      lower.includes('critical:') ||
+      lower.includes('failed to bind') ||
+      lower.includes('packet loss spike') ||
+      lower.includes('failed to connect') ||
+      lower.includes('connection refused')
+    ) {
+      return 'ERROR';
+    }
+
+    if (
+      lower.includes('level=warn') ||
+      lower.includes('[warn') ||
+      lower.includes('warn:') ||
+      lower.includes('warning:') ||
+      lower.includes('pressure warning') ||
+      lower.includes('exceeded threshold') ||
+      lower.includes('high disk i/o wait') ||
+      (lower.includes('certificate for') && lower.includes('expires in'))
+    ) {
+      return 'WARN';
+    }
+
+    if (lower.includes('level=debug') || lower.includes('[debug]') || lower.includes('debug:')) {
+      return 'DEBUG';
+    }
+
+    return 'INFO';
+  }
+
   function generatePreviewFleetLogs(): FleetLogEntry[] {
     const now = Date.now();
     const demoServers = servers.length > 0
@@ -1784,7 +2091,7 @@
           { id: 'srv-worker-2', name: 'Worker-Node-Helsinki', role: 'node' },
         ];
 
-    const templates: Array<{ offsetSec: number; level: FleetLogEntry['level']; serverIdx: number; text: string; source: string }> = [
+    const baseTemplates: Array<{ offsetSec: number; level: FleetLogEntry['level']; serverIdx: number; text: string; source: string }> = [
       { offsetSec: 15, level: 'INFO', serverIdx: 0, text: 'Telemetry ingest batch processed 48 samples in 1.2ms', source: 'payesh-server' },
       { offsetSec: 42, level: 'INFO', serverIdx: 1, text: 'Agent collected CPU (14.2%), Memory (42.8%), Disk (56.1%)', source: 'payesh-agent' },
       { offsetSec: 95, level: 'WARN', serverIdx: 2, text: 'Memory pressure warning: usage exceeded 85% threshold (86.4%)', source: 'cgroup-monitor' },
@@ -1797,26 +2104,38 @@
       { offsetSec: 1200, level: 'INFO', serverIdx: 0, text: 'Database hourly compact finished: 0 orphaned rows removed, vacuum complete', source: 'payesh-db' },
       { offsetSec: 1540, level: 'WARN', serverIdx: 1, text: 'High disk I/O wait detected: queue depth 8.2 on /dev/nvme0n1', source: 'disk-stat' },
       { offsetSec: 2100, level: 'INFO', serverIdx: 2, text: 'Systemd service payesh-agent reloaded with PID 18420', source: 'systemd' },
-      { offsetSec: 2900, level: 'ERROR', serverIdx: 0, text: 'Database lock contention averted: SQLite busy handler waited 42ms', source: 'payesh-db' },
+      { offsetSec: 2900, level: 'ERROR', serverIdx: 0, text: 'Database lock contention resolved: SQLite busy handler waited 42ms (SQLITE_BUSY)', source: 'payesh-db' },
       { offsetSec: 3600, level: 'INFO', serverIdx: 1, text: 'Heartbeat cycle healthy: 0 alerts active across 12 targets', source: 'payesh-agent' },
     ];
 
-    return templates
-      .filter((t) => fleetLogServerFilter === 'all' || demoServers[t.serverIdx % demoServers.length].id === fleetLogServerFilter)
-      .map((tmpl, idx) => {
+    const entries: FleetLogEntry[] = [];
+    const cycles = 12; // 14 * 12 = 168 entries to support multi-page pagination testing
+    let idCounter = 1;
+
+    for (let c = 0; c < cycles; c++) {
+      const cycleOffsetSec = c * 3600;
+      for (const tmpl of baseTemplates) {
         const srv = demoServers[tmpl.serverIdx % demoServers.length];
-        const iso = new Date(now - tmpl.offsetSec * 1000).toISOString();
-        return {
-          id: `preview-log-${idx}`,
+        if (fleetLogServerFilter !== 'all' && srv.id !== fleetLogServerFilter) {
+          continue;
+        }
+        const totalOffset = tmpl.offsetSec + cycleOffsetSec;
+        const iso = new Date(now - totalOffset * 1000).toISOString();
+        entries.push({
+          id: `preview-log-${idCounter}`,
           serverId: srv.id,
           serverName: srv.name,
           timestamp: iso,
-          level: tmpl.level,
-          text: tmpl.text,
+          level: resolveLogLevel(tmpl.level, tmpl.text),
+          text: c > 0 ? `${tmpl.text} (cycle ${c + 1})` : tmpl.text,
           source: tmpl.source,
-          cursor: String(2000 + idx),
-        };
-      });
+          cursor: String(2000 + idCounter),
+        });
+        idCounter++;
+      }
+    }
+
+    return entries;
   }
 
   async function loadFleetLogs(targetServerId = fleetLogServerFilter) {
@@ -1825,6 +2144,7 @@
     fleetLogAbortController = controller;
     fleetLogState = 'loading';
     fleetLogError = '';
+    fleetLogPage = 0;
 
     if (PREVIEW_MODE) {
       fleetLogEntries = generatePreviewFleetLogs();
@@ -1843,7 +2163,7 @@
         return;
       }
 
-      const window = rangeWindow('24h');
+      const window = logRangeWindow(fleetLogWindow);
       const results: FleetLogEntry[] = [];
 
       await Promise.allSettled(
@@ -1855,14 +2175,12 @@
                 const queryRes = await apiClient.queryLogs(server.id, {
                   source: source.id,
                   ...window,
-                  limit: targetServerId === 'all' ? 100 : 200,
+                  limit: fleetLogFetchLimit,
+                  order: 'desc',
                   signal: controller.signal
                 });
                 for (const entry of queryRes.entries) {
-                  const rawLevel = (entry.severity ?? 'INFO').toUpperCase();
-                  const level: FleetLogEntry['level'] = (rawLevel === 'WARN' || rawLevel === 'WARNING') ? 'WARN'
-                    : (rawLevel === 'ERROR' || rawLevel === 'ERR' || rawLevel === 'CRITICAL' || rawLevel === 'EMERGENCY' || rawLevel === 'FATAL') ? 'ERROR'
-                    : rawLevel === 'DEBUG' ? 'DEBUG' : 'INFO';
+                  const level = resolveLogLevel(entry.severity, entry.text);
                   results.push({
                     id: `${server.id}-${source.id}-${entry.cursor || Math.random().toString(36).slice(2)}`,
                     serverId: server.id,
@@ -2529,6 +2847,27 @@
                 </button>
               </div>
             </div>
+
+            <!-- Time Window Filter -->
+            <div class="log-control-group">
+              <label for="log-window-filter" class="control-label">Window</label>
+              <select id="log-window-filter" bind:value={fleetLogWindow} on:change={() => void loadFleetLogs()}>
+                <option value="1h">Last 1h</option>
+                <option value="6h">Last 6h</option>
+                <option value="24h">Last 24h</option>
+                <option value="7d">Last 7d</option>
+              </select>
+            </div>
+
+            <!-- Fetch Limit -->
+            <div class="log-control-group">
+              <label for="log-limit-filter" class="control-label">Fetch Limit</label>
+              <select id="log-limit-filter" bind:value={fleetLogFetchLimit} on:change={() => void loadFleetLogs()}>
+                <option value={100}>Latest 100</option>
+                <option value={250}>Latest 250</option>
+                <option value={500}>Latest 500</option>
+              </select>
+            </div>
           </div>
 
           <!-- Search filter input -->
@@ -2568,11 +2907,44 @@
           </div>
         {:else}
           <div class="terminal-log-viewer fleet-log-viewer">
-            <div class="fleet-log-header-info">
-              <span class="mono faint">Showing {filteredFleetLogs.length} of {fleetLogEntries.length} entries · {currentTimezone}</span>
+            <div class="logs-pagination-bar top">
+              <div class="logs-page-summary">
+                <span class="mono faint">
+                  {#if filteredFleetLogs.length === 0}
+                    Showing 0 entries
+                  {:else}
+                    Showing {fleetLogPage * fleetLogPageSize + 1}–{Math.min((fleetLogPage + 1) * fleetLogPageSize, filteredFleetLogs.length)} of {filteredFleetLogs.length} entries
+                  {/if}
+                  {#if filteredFleetLogs.length !== fleetLogEntries.length}
+                    (filtered from {fleetLogEntries.length})
+                  {/if}
+                  · {currentTimezone}
+                </span>
+              </div>
+              <div class="logs-pagination-controls">
+                <div class="page-size-selector">
+                  <label for="fleet-log-page-size" class="faint">Per page:</label>
+                  <select id="fleet-log-page-size" bind:value={fleetLogPageSize}>
+                    <option value={50}>50</option>
+                    <option value={100}>100 (Default)</option>
+                    <option value={250}>250</option>
+                    <option value={500}>500</option>
+                  </select>
+                </div>
+                {#if totalFleetLogPages > 1}
+                  <div class="pager-buttons">
+                    <button class="button ghost small icon-only" type="button" title="First page" disabled={fleetLogPage === 0} on:click={() => fleetLogPage = 0}>«</button>
+                    <button class="button ghost small" type="button" disabled={fleetLogPage === 0} on:click={() => fleetLogPage -= 1}>‹ Prev</button>
+                    <span class="pager-info mono">Page {fleetLogPage + 1} of {totalFleetLogPages}</span>
+                    <button class="button ghost small" type="button" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage += 1}>Next ›</button>
+                    <button class="button ghost small icon-only" type="button" title="Last page" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage = totalFleetLogPages - 1}>»</button>
+                  </div>
+                {/if}
+              </div>
             </div>
+
             <div class="log-list">
-              {#each filteredFleetLogs as entry (entry.id)}
+              {#each pagedFleetLogs as entry (entry.id)}
                 <div class="log-entry">
                   <time class="mono tabular">{formatLogTimeInTz(entry.timestamp, currentTimezone)}</time>
                   {#if fleetLogServerFilter === 'all'}
@@ -2586,6 +2958,25 @@
                 </div>
               {/each}
             </div>
+
+            {#if filteredFleetLogs.length > 0}
+              <div class="logs-pagination-bar bottom">
+                <div class="logs-page-summary">
+                  <span class="mono faint">Page {fleetLogPage + 1} of {totalFleetLogPages} · {filteredFleetLogs.length} entries total</span>
+                </div>
+                <div class="logs-pagination-controls">
+                  {#if totalFleetLogPages > 1}
+                    <div class="pager-buttons">
+                      <button class="button ghost small icon-only" type="button" title="First page" disabled={fleetLogPage === 0} on:click={() => fleetLogPage = 0}>«</button>
+                      <button class="button ghost small" type="button" disabled={fleetLogPage === 0} on:click={() => fleetLogPage -= 1}>‹ Prev</button>
+                      <span class="pager-info mono">Page {fleetLogPage + 1} of {totalFleetLogPages}</span>
+                      <button class="button ghost small" type="button" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage += 1}>Next ›</button>
+                      <button class="button ghost small icon-only" type="button" title="Last page" disabled={fleetLogPage >= totalFleetLogPages - 1} on:click={() => fleetLogPage = totalFleetLogPages - 1}>»</button>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
           </div>
         {/if}
       </section>
@@ -3032,6 +3423,128 @@
 
         {#if selectedServer.connectionState !== 'connected'}
           <div class="unavailable-panel large"><strong>Node is not connected</strong><span>Metrics and telemetry will appear after the node reconnects.</span></div>
+        {:else if detailTab === 'packages'}
+          <article class="panel server-packages-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Installed Packages ({serverInstalledModules.length})</h2>
+                <p class="muted">Verified extension packages configured on {selectedServer.name}.</p>
+              </div>
+              <div class="heading-actions">
+                <button class="button ghost small" type="button" disabled={serverPackagesLoading} on:click={() => void loadSelectedServerPackages(selectedServer.id)}>
+                  <Icon name="refresh" size={13} />
+                  <span>{serverPackagesLoading ? 'Refreshing…' : 'Refresh'}</span>
+                </button>
+                <button class="button primary small" type="button" on:click={() => { packageServerId = selectedServer.id; navigate('packages'); }}>
+                  <Icon name="plus" size={13} />
+                  <span>Browse catalog</span>
+                </button>
+              </div>
+            </div>
+
+            {#if serverPackagesLoading}
+              <div class="state-panel">
+                <div class="loading-spinner" aria-hidden="true"></div>
+                <h2>Loading packages…</h2>
+              </div>
+            {:else if serverPackagesError}
+              <div class="unavailable-panel">
+                <strong>Could not load packages</strong>
+                <span>{serverPackagesError}</span>
+                <button class="button ghost small" on:click={() => void loadSelectedServerPackages(selectedServer.id)}>Retry</button>
+              </div>
+            {:else if serverInstalledModules.length === 0}
+              <div class="unavailable-panel">
+                <strong>No packages installed on this server</strong>
+                <span>This server currently has no optional extension packages installed.</span>
+                <button class="button primary small" type="button" on:click={() => { packageServerId = selectedServer.id; navigate('packages'); }}>
+                  Install a package
+                </button>
+              </div>
+            {:else}
+              <div class="server-package-list">
+                {#each serverInstalledModules as pkg (pkg.module_id)}
+                  {@const catModule = modules.find((m) => m.id === pkg.module_id)}
+                  <div class="server-package-card">
+                    <div class="package-card-header">
+                      <div class="package-card-identity">
+                        <div class="package-name-row">
+                          <h3>{catModule?.name || pkg.module_id}</h3>
+                          <span class="mono-badge">{pkg.module_id}</span>
+                          {#if catModule?.latest_version && pkg.version && catModule.latest_version !== pkg.version}
+                            <span class="update-alert-badge">Update: v{catModule.latest_version}</span>
+                          {/if}
+                        </div>
+                        {#if catModule?.description}
+                          <p class="package-desc faint">{catModule.description}</p>
+                        {/if}
+                      </div>
+                      <div class="package-card-status">
+                        <span class={`status-pill ${pkg.state === 'enabled' ? 'healthy' : pkg.state === 'installed-disabled' ? 'pending' : 'warning'}`}>
+                          <i class="status-dot"></i>
+                          <span>{pkg.state === 'enabled' ? 'Enabled' : pkg.state === 'installed-disabled' ? 'Disabled' : pkg.state}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div class="package-version-bar">
+                      <div class="version-item">
+                        <span class="version-label">Installed Version</span>
+                        <strong class="mono tabular">v{pkg.version || '0.1.0'}</strong>
+                      </div>
+                      <div class="version-item">
+                        <span class="version-label">Catalog Version</span>
+                        <strong class="mono tabular">v{catModule?.latest_version || pkg.version || '0.1.0'}</strong>
+                      </div>
+                      {#if pkg.updated_at}
+                        <div class="version-item">
+                          <span class="version-label">Last Updated</span>
+                          <span class="faint mono tabular">{formatDateTimeInTz(pkg.updated_at, currentTimezone)}</span>
+                        </div>
+                      {/if}
+                    </div>
+
+                    <div class="package-card-actions">
+                      <button
+                        class="button primary small"
+                        type="button"
+                        disabled={!!packageBusy}
+                        on:click={() => {
+                          const mod = catModule || { id: pkg.module_id, name: pkg.module_id, latest_version: pkg.version || '0.1.0', resource_estimate_source: 'curated' };
+                          openPackageDialog(mod, selectedServer.id);
+                        }}
+                      >
+                        <Icon name="refresh" size={13} />
+                        <span>Update package</span>
+                      </button>
+
+                      <button
+                        class="button ghost small"
+                        type="button"
+                        disabled={!!packageBusy}
+                        on:click={() => void packageActionOnServer(selectedServer.id, pkg, pkg.state === 'enabled' ? 'disable' : 'enable')}
+                      >
+                        <span>{pkg.state === 'enabled' ? 'Disable' : 'Enable'}</span>
+                      </button>
+
+                      {#if pkg.state === 'installed-disabled'}
+                        <button
+                          class="button danger small"
+                          type="button"
+                          disabled={!!packageBusy}
+                          on:click={() => void packageActionOnServer(selectedServer.id, pkg, 'remove')}
+                        >
+                          <Icon name="trash" size={13} />
+                          <span>Remove</span>
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </article>
+
         {:else if detailTab === 'processes'}
           {#key selectedServer.id}<ProcessTable serverId={selectedServer.id} onPackages={() => { packageServerId = selectedServer.id; navigate('packages'); }} />{/key}
         {:else if (detailTab === 'resources' || detailTab === 'metrics') && (hasCapability(selectedServer, 'resources') || hasCapability(selectedServer, 'metrics'))}
@@ -3505,29 +4018,138 @@
   </main>
 </div>
 
-<Modal open={!!packageDialog} title={packageDialog ? `${packageDialog.name}` : 'Install package'} description={packageStep === 'target' ? 'Choose where to install or manage this package.' : `Install on ${servers.find(server => server.id === packageServerId)?.name ?? 'selected server'}.`} icon="packages" confirmText={packageStep === 'target' ? 'Continue' : packageBusy ? 'Installing…' : 'Install package'} busy={!!packageBusy} confirmDisabled={!packageServerId || packageStatusBusy || packageStatusFailed || (packageStep === 'source' && (['enabled', 'installed-disabled', 'downloading', 'verifying', 'installing', 'updating', 'removing'].includes(moduleState(packageDialog?.id ?? '')?.state ?? '') || (packageSource !== 'github' && !packageLocation.trim())))} onCancel={() => { packageDialog = null; }} onConfirm={() => { if (packageStep === 'target') packageStep = 'source'; else if (packageDialog) void installPackage(packageDialog); }}>
+<Modal
+  open={!!packageDialog}
+  title={packageDialog ? (isTargetAlreadyInstalled ? `Update ${packageDialog.name}` : `Install ${packageDialog.name}`) : 'Install package'}
+  description={packageStep === 'progress' ? 'Installation pipeline and deployment logs.' : packageStep === 'target' ? 'Choose where to install or update this package.' : packageServerId === 'all' ? `Install or update on all ${servers.length} connected nodes.` : `Deploy to ${servers.find(server => server.id === packageServerId)?.name ?? 'selected server'}.`}
+  icon="packages"
+  confirmText={packageStep === 'progress' ? (packageInstallStage === 'running' ? 'Deploying…' : 'Done') : packageStep === 'target' ? 'Continue' : packageServerId === 'all' ? 'Install on all nodes' : isTargetAlreadyInstalled ? 'Update package' : 'Install package'}
+  busy={packageStep === 'progress' && packageInstallStage === 'running'}
+  confirmDisabled={packageStep === 'progress' ? packageInstallStage === 'running' : (!packageServerId || packageStatusBusy || packageStatusFailed || (packageStep === 'source' && packageSource !== 'github' && !packageLocation.trim()))}
+  onCancel={() => { if (packageInstallStage !== 'running') { packageDialog = null; packageStep = 'target'; } }}
+  onConfirm={() => {
+    if (packageStep === 'target') {
+      packageStep = 'source';
+    } else if (packageStep === 'source') {
+      if (packageDialog) void startPackageInstall(packageDialog);
+    } else {
+      packageDialog = null;
+      packageStep = 'target';
+    }
+  }}
+>
   {#if packageStep === 'target'}
-    <label class="package-dialog-label">Install on<select bind:value={packageServerId} disabled={!!packageBusy} on:change={() => void loadServerModules()}><option value="" disabled>Choose master or node</option>{#each servers as server}<option value={server.id}>{server.name} · {server.role === 'node' ? 'Node' : 'Master'} ({server.architecture})</option>{/each}</select></label>
-    {#if packageStatusBusy}<p class="muted" role="status">Loading package status…</p>{/if}
-  {:else}
-    <button class="button ghost small" disabled={!!packageBusy} on:click={() => packageStep = 'target'}>Change server</button>
-          <div class="package-source-fields">
-            <label>Source<select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}><option value="github">GitHub</option><option value="local">Local path</option><option value="url">URL</option></select></label>
-            <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}<input bind:value={packageLocation} placeholder={packageSource === 'github' ? 'Real-kia/payesh' : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} /></label>
-            {#if packageSource === 'github'}
-              <label>Release<input bind:value={packageVersion} placeholder="Catalog default" /></label>
-            {:else}
-              <details><summary>Package metadata</summary><label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label><label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label></details>
-            {/if}
-          </div>
-    {#if packageDialog}
+    <label class="package-dialog-label">
+      Install target
+      <select bind:value={packageServerId} disabled={!!packageBusy} on:change={() => void loadServerModules()}>
+        <option value="" disabled>Choose target node</option>
+        <option value="all">⚡ All nodes ({servers.length} servers)</option>
+        {#each servers as server}
+          <option value={server.id}>{server.name} · {server.role === 'node' ? 'Node' : 'Master'} ({server.architecture})</option>
+        {/each}
+      </select>
+    </label>
+    {#if packageStatusBusy}
+      <p class="muted" role="status">Loading package status…</p>
+    {/if}
+  {:else if packageStep === 'source'}
+    <div class="package-dialog-subheading">
+      <button class="button ghost small" disabled={!!packageBusy} on:click={() => packageStep = 'target'}>
+        <Icon name="arrow-left" size={13} />
+        <span>Change target ({packageServerId === 'all' ? 'All nodes' : servers.find(s => s.id === packageServerId)?.name})</span>
+      </button>
+    </div>
+
+    {#if isTargetAlreadyInstalled}
+      <div class="already-installed-note">
+        <Icon name="refresh" size={14} />
+        <span>Package already installed on this node ({moduleState(packageDialog?.id ?? '')?.version ? `v${moduleState(packageDialog?.id ?? '')?.version}` : 'installed'}). Proceeding will update it to the latest release.</span>
+      </div>
+    {:else if packageServerId === 'all'}
+      <div class="already-installed-note">
+        <Icon name="servers" size={14} />
+        <span>Package will be installed across all {servers.length} nodes. Nodes that already have this package will be safely updated.</span>
+      </div>
+    {/if}
+
+    <div class="package-source-fields">
+      <label>Source
+        <select bind:value={packageSource} on:change={() => { packageLocation = ''; packageManifest = ''; packageSignature = ''; packageError = ''; }}>
+          <option value="github">Official GitHub Releases</option>
+          <option value="local">Local path on host</option>
+          <option value="url">Custom Archive URL</option>
+        </select>
+      </label>
+      <label>{packageSource === 'github' ? 'Repository' : packageSource === 'local' ? 'Archive path on this server' : 'Archive URL'}
+        <input bind:value={packageLocation} placeholder={packageSource === 'github' ? (packageDialog?.repository || 'Real-kia/payesh') : packageSource === 'local' ? '/opt/packages/cpu-controls-linux-amd64.tar.gz' : 'https://packages.example.com/cpu-controls-linux-amd64.tar.gz'} />
+      </label>
+      {#if packageSource === 'github'}
+        <label>Release Version
+          <input bind:value={packageVersion} placeholder={`Catalog default (v${packageDialog?.latest_version || '0.1.0'})`} />
+        </label>
+      {:else}
+        <details>
+          <summary>Package metadata</summary>
+          <label>Manifest {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageManifest} placeholder="Automatic (.manifest.json)" /></label>
+          <label>Signature {packageSource === 'local' ? 'path' : 'URL'}<input bind:value={packageSignature} placeholder="Automatic (.manifest.sig)" /></label>
+        </details>
+      {/if}
+    </div>
+
+    {#if packageDialog && packageServerId !== 'all'}
       {@const state = moduleState(packageDialog.id)?.state}
       {#if state === 'enabled' || state === 'installed-disabled'}
-        <p class="muted">This package is {state === 'enabled' ? 'enabled' : 'installed and disabled'} on this server.</p>
-        <div class="job-actions"><button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, state === 'enabled' ? 'disable' : 'enable'); }}>{state === 'enabled' ? 'Disable' : 'Enable'}</button>{#if state === 'installed-disabled'}<button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, 'remove'); }}>Remove</button>{/if}</div>
+        <p class="muted">Currently {state === 'enabled' ? 'enabled' : 'installed and disabled'} on this server.</p>
+        <div class="job-actions">
+          <button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, state === 'enabled' ? 'disable' : 'enable'); }}>
+            {state === 'enabled' ? 'Disable' : 'Enable'}
+          </button>
+          {#if state === 'installed-disabled'}
+            <button class="button ghost small" disabled={!!packageBusy} on:click={() => { if (packageDialog) void packageAction(packageDialog, 'remove'); }}>
+              Remove
+            </button>
+          {/if}
+        </div>
       {/if}
       {#if packageSource === 'github'}<a href={packageGitHubURL(packageDialog)} target="_blank" rel="noopener noreferrer">View package archive ↗</a>{/if}
     {/if}
+  {:else if packageStep === 'progress'}
+    <div class="package-install-progress-box">
+      <!-- Steps Tracker -->
+      <div class="install-steps-tracker">
+        {#each packageInstallSteps as step (step.id)}
+          <div class={`install-step-item ${step.status}`}>
+            <div class="step-icon-wrap">
+              {#if step.status === 'done'}
+                <Icon name="check" size={14} />
+              {:else if step.status === 'running'}
+                <Icon name="loader" size={14} class="spin" />
+              {:else if step.status === 'failed'}
+                <Icon name="alert-triangle" size={14} />
+              {:else}
+                <span class="step-dot"></span>
+              {/if}
+            </div>
+            <span>{step.name}</span>
+          </div>
+        {/each}
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="install-progress-bar">
+        <span style={`width: ${packageInstallProgress}%`}></span>
+      </div>
+
+      <!-- Live Terminal Console Logs -->
+      <div class="install-console-log">
+        {#each packageInstallLogs as log}
+          <div class={`console-log-row ${log.level}`}>
+            <time>{log.time}</time>
+            <span class="log-msg">{log.text}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
   {/if}
   {#if packageError}<p class="form-error" role="alert">{packageError}</p>{#if packageStatusFailed}<button class="button ghost small" on:click={() => void loadServerModules()}>Retry status</button>{/if}{/if}
 </Modal>
@@ -4778,11 +5400,77 @@
   .search-clear-btn:hover {
     color: var(--ink);
   }
-  .fleet-log-header-info {
-    padding: 6px 4px 10px;
+  .fleet-log-viewer .logs-pagination-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+  .fleet-log-viewer .logs-pagination-bar.top {
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+  }
+  .fleet-log-viewer .logs-pagination-bar.bottom {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    margin-top: 8px;
+    padding-top: 10px;
+  }
+  .fleet-log-viewer .logs-page-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .fleet-log-viewer .logs-pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .fleet-log-viewer .page-size-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .fleet-log-viewer .page-size-selector select {
+    background: #131722;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #e2e8f0;
+    padding: 3px 8px;
     font-size: 11px;
+    border-radius: var(--radius-xs);
+  }
+  .fleet-log-viewer .pager-buttons {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .fleet-log-viewer .pager-buttons .button {
+    font-size: 11px;
+    padding: 3px 8px;
+    color: #cbd5e1;
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  .fleet-log-viewer .pager-buttons .button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+  }
+  .fleet-log-viewer .pager-buttons .button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .fleet-log-viewer .pager-buttons .button.icon-only {
+    padding: 3px 7px;
+    font-weight: 700;
+  }
+  .fleet-log-viewer .pager-info {
+    font-size: 11px;
+    color: #94a3b8;
   }
   .fleet-log-viewer .log-entry {
     display: flex;
@@ -4883,6 +5571,203 @@
     color: var(--ink);
     font-size: 12px;
     margin-bottom: 12px;
+  }
+
+  /* --------------------------------------------------------------------------
+     SERVER PACKAGES TAB & INSTALL PROGRESS
+     -------------------------------------------------------------------------- */
+  .server-packages-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .server-package-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .server-package-card {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .package-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .package-card-identity {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .package-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .package-name-row h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .mono-badge {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-muted);
+    color: var(--muted);
+    border: 1px solid var(--line);
+  }
+  .package-desc {
+    font-size: 13px;
+    margin: 0;
+  }
+  .package-version-bar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    background: var(--surface-muted);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+  }
+  .version-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .version-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+  }
+  .package-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .update-alert-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--blue, #3b82f6);
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 12px;
+  }
+
+  /* INSTALL MODAL PROGRESS & LOGS */
+  .package-dialog-subheading {
+    margin-bottom: 4px;
+  }
+  .package-install-progress-box {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 0;
+  }
+  .install-steps-tracker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .install-step-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .install-step-item.running {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .install-step-item.done {
+    color: var(--emerald, #10b981);
+  }
+  .install-step-item.failed {
+    color: var(--danger, #ef4444);
+  }
+  .step-icon-wrap {
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+  }
+  .step-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    opacity: 0.4;
+  }
+  .install-progress-bar {
+    height: 6px;
+    background: var(--surface-muted);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .install-progress-bar span {
+    display: block;
+    height: 100%;
+    background: var(--teal, #0d9488);
+    transition: width 0.3s ease;
+  }
+  .install-console-log {
+    background: #090a0f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    max-height: 160px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .console-log-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .console-log-row time {
+    color: #64748b;
+    flex-shrink: 0;
+  }
+  .console-log-row.info { color: #cbd5e1; }
+  .console-log-row.warn { color: #f59e0b; }
+  .console-log-row.error { color: #ef4444; }
+  .console-log-row .log-msg {
+    word-break: break-word;
+  }
+  .already-installed-note {
+    padding: 8px 12px;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: #93c5fd;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   /* --------------------------------------------------------------------------

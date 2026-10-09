@@ -184,3 +184,29 @@ func TestJournalAdapterRejectsShellLikeUnits(t *testing.T) {
 		t.Fatal("journal unit accepted shell syntax")
 	}
 }
+
+func TestDetectSeverityAndOrderedLogQuery(t *testing.T) {
+	cases := []struct {
+		text     string
+		fallback string
+		expected string
+	}{
+		{"payesh: database is locked (5) (SQLITE_BUSY)", "INFO", "ERROR"},
+		{"Main process exited, code=exited, status=1/FAILURE", "INFO", "ERROR"},
+		{"Failed with result 'exit-code'.", "INFO", "ERROR"},
+		{"ERROR: could not bind socket", "INFO", "ERROR"},
+		{"level=error msg=\"timeout\"", "INFO", "ERROR"},
+		{"[ERROR] failed to connect", "INFO", "ERROR"},
+		{"WARN: High disk I/O wait detected: queue depth 8.2", "INFO", "WARN"},
+		{"level=warn msg=\"disk full warning\"", "INFO", "WARN"},
+		{"[WARN] memory threshold exceeded", "INFO", "WARN"},
+		{"Started payesh-server.service successfully", "INFO", "INFO"},
+		{"debug trace log", "DEBUG", "DEBUG"},
+	}
+	for _, tc := range cases {
+		actual := DetectSeverity(tc.text, tc.fallback)
+		if actual != tc.expected {
+			t.Errorf("DetectSeverity(%q, %q) = %q, expected %q", tc.text, tc.fallback, actual, tc.expected)
+		}
+	}
+}

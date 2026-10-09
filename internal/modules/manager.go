@@ -144,18 +144,33 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		return contracts.ModuleInstallation{}, monitoring.ErrModuleRevisionConflict
 	}
 
-	installation, err := m.advance(ctx, req.ServerID, req.ModuleID, current, EventDownloadStart, "", req.Manifest.ModuleVersion, nil)
-	if err != nil {
-		return contracts.ModuleInstallation{}, err
-	}
-	installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyStart, "", req.Manifest.ModuleVersion, nil)
-	if err != nil {
-		return contracts.ModuleInstallation{}, err
+	isUpdate := current.State == contracts.ModuleEnabled || current.State == contracts.ModuleInstalledDisabled
+	beforeState := current.State
+
+	var installation contracts.ModuleInstallation
+	if isUpdate {
+		installation, err = m.advance(ctx, req.ServerID, req.ModuleID, current, EventUpdateStart, beforeState, req.Manifest.ModuleVersion, nil)
+		if err != nil {
+			return contracts.ModuleInstallation{}, err
+		}
+	} else {
+		installation, err = m.advance(ctx, req.ServerID, req.ModuleID, current, EventDownloadStart, "", req.Manifest.ModuleVersion, nil)
+		if err != nil {
+			return contracts.ModuleInstallation{}, err
+		}
+		installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyStart, "", req.Manifest.ModuleVersion, nil)
+		if err != nil {
+			return contracts.ModuleInstallation{}, err
+		}
 	}
 
 	verifyErr := m.verifyManifest(req)
 	if verifyErr != nil {
-		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyFailed, "", req.Manifest.ModuleVersion, wireError("manifest_verification_failed", verifyErr)); failErr != nil {
+		failEvent := EventVerifyFailed
+		if isUpdate {
+			failEvent = EventUpdateFailed
+		}
+		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("manifest_verification_failed", verifyErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
 		return contracts.ModuleInstallation{}, fmt.Errorf("modules: manifest verification failed: %w", verifyErr)
@@ -164,27 +179,81 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (contracts.Mo
 		server.Version = m.CoreVersion
 	}
 	if policyErr := validateManifestPolicy(req.Manifest, entry, server, m.now()); policyErr != nil {
-		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, EventVerifyFailed, "", req.Manifest.ModuleVersion, wireError("manifest_policy_failed", policyErr)); failErr != nil {
+		failEvent := EventVerifyFailed
+		if isUpdate {
+			failEvent = EventUpdateFailed
+		}
+		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("manifest_policy_failed", policyErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
 		return contracts.ModuleInstallation{}, policyErr
 	}
 
-	installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, EventInstallStart, "", req.Manifest.ModuleVersion, nil)
-	if err != nil {
-		return contracts.ModuleInstallation{}, err
+	if !isUpdate {
+		installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, EventInstallStart, "", req.Manifest.ModuleVersion, nil)
+		if err != nil {
+			return contracts.ModuleInstallation{}, err
+		}
 	}
 
 	staged := m.stagingDir(req.ServerID, req.ModuleID, req.Manifest.ModuleVersion)
 	active := m.installDir(req.ServerID, req.ModuleID)
 	if stageErr := m.stageAndActivate(ctx, req, staged, active); stageErr != nil {
-		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, EventInstallFailed, "", req.Manifest.ModuleVersion, wireError("install_failed", stageErr)); failErr != nil {
+		failEvent := EventInstallFailed
+		if isUpdate {
+			failEvent = EventUpdateFailed
+		}
+		if _, failErr := m.advance(ctx, req.ServerID, req.ModuleID, installation, failEvent, beforeState, req.Manifest.ModuleVersion, wireError("install_failed", stageErr)); failErr != nil {
 			return contracts.ModuleInstallation{}, failErr
 		}
 		return contracts.ModuleInstallation{}, stageErr
 	}
 
-	return m.advance(ctx, req.ServerID, req.ModuleID, installation, EventInstallOK, "", req.Manifest.ModuleVersion, nil)
+	okEvent := EventInstallOK
+	if isUpdate {
+		okEvent = EventUpdateOK
+	}
+	installation, err = m.advance(ctx, req.ServerID, req.ModuleID, installation, okEvent, beforeState, req.Manifest.ModuleVersion, nil)
+	if err != nil {
+		return contracts.ModuleInstallation{}, err
+	}
+
+	if isUpdate && beforeState == contracts.ModuleEnabled && m.Executor != nil {
+		_ = m.Executor.Invoke(ctx, ModuleInvocation{
+			ServerID:      req.ServerID,
+			ModuleID:      req.ModuleID,
+			ModuleVersion: req.Manifest.ModuleVersion,
+			Operation:     "enable",
+			InstallDir:    active,
+		})
+	}
+
+	actionVerb := "installed"
+	if isUpdate {
+		actionVerb = "updated"
+	}
+	_ = m.appendModuleLog(ctx, req.ServerID, "INFO", fmt.Sprintf("Module %s v%s successfully %s", req.ModuleID, req.Manifest.ModuleVersion, actionVerb))
+
+	return installation, nil
+}
+
+func (m *Manager) appendModuleLog(ctx context.Context, serverID contracts.ServerID, severity, text string) error {
+	if m.Store == nil || len(serverID) < 16 {
+		return nil
+	}
+	now := m.now()
+	cursor := fmt.Sprintf("mod-%d", now.UnixNano())
+	_, err := m.Store.InsertLogEntries(ctx, []monitoring.LogEntry{
+		{
+			ServerID:  serverID,
+			SourceID:  "package-manager",
+			Cursor:    cursor,
+			Timestamp: now,
+			Severity:  severity,
+			Text:      text,
+		},
+	})
+	return err
 }
 
 func (m *Manager) verifyManifest(req InstallRequest) error {

@@ -2739,12 +2739,18 @@ func (s *Store) QueryLogs(ctx context.Context, serverID contracts.ServerID, sour
 // required by the local log API. QueryLogs remains as a source-compatible
 // wrapper for callers that do not need filtering.
 func (s *Store) QueryLogsFiltered(ctx context.Context, serverID contracts.ServerID, sourceID string, from, to time.Time, severity, search string, limit int, cursor string) (LogPage, error) {
+	return s.QueryLogsFilteredOrdered(ctx, serverID, sourceID, from, to, severity, search, limit, cursor, "asc")
+}
+
+// QueryLogsFilteredOrdered applies filtering and allows specifying sort order ("asc" or "desc").
+func (s *Store) QueryLogsFilteredOrdered(ctx context.Context, serverID contracts.ServerID, sourceID string, from, to time.Time, severity, search string, limit int, cursor string, order string) (LogPage, error) {
 	if serverID == "" || sourceID == "" || len(sourceID) > 128 || !isSafeIdentifier(sourceID) {
 		return LogPage{}, errors.New("log source identity is invalid")
 	}
 	if len(severity) > 32 || len(search) > 256 {
 		return LogPage{}, errors.New("log filter exceeds limit")
 	}
+	isDesc := strings.ToLower(order) == "desc"
 	limit = clampLimit(limit)
 	decoded, err := decodeLogCursor(cursor)
 	if err != nil {
@@ -2774,10 +2780,18 @@ func (s *Store) QueryLogsFiltered(ctx context.Context, serverID contracts.Server
 			return LogPage{}, errors.New("invalid log cursor")
 		}
 		persistedCursor := FormatPersistedTime(cursorTime)
-		query += ` AND (timestamp > ? OR (timestamp = ? AND cursor > ?))`
+		if isDesc {
+			query += ` AND (timestamp < ? OR (timestamp = ? AND cursor < ?))`
+		} else {
+			query += ` AND (timestamp > ? OR (timestamp = ? AND cursor > ?))`
+		}
 		args = append(args, persistedCursor, persistedCursor, decoded.Cursor)
 	}
-	query += ` ORDER BY timestamp ASC, cursor ASC LIMIT ?`
+	if isDesc {
+		query += ` ORDER BY timestamp DESC, cursor DESC LIMIT ?`
+	} else {
+		query += ` ORDER BY timestamp ASC, cursor ASC LIMIT ?`
+	}
 	args = append(args, limit+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

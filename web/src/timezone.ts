@@ -85,7 +85,7 @@ export function formatHeartbeatInTz(isoString: string | null | undefined, tz: st
     const d = new Date(isoString);
     if (isNaN(d.getTime())) return `Heartbeat ${isoString.slice(11, 16)}`;
     const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: tz });
-    return `Heartbeat ${time} (${tz})`;
+    return `Heartbeat ${time}`;
   } catch {
     return `Heartbeat ${isoString.slice(11, 16)}`;
   }
