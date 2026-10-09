@@ -180,23 +180,6 @@ func checkEndpointReachable(ctx context.Context, endpoint SSHEndpoint) error {
 	return fmt.Errorf("could not connect to %s: %w", addr, err2)
 }
 
-func loadGitHubDeployKey() []byte {
-	candidates := []string{
-		os.Getenv("PAYESH_GITHUB_KEY_PATH"),
-		"/var/lib/payesh/github_deploy_key",
-		"/etc/payesh/github_deploy_key",
-	}
-	for _, p := range candidates {
-		if strings.TrimSpace(p) == "" {
-			continue
-		}
-		if data, err := os.ReadFile(p); err == nil && len(bytes.TrimSpace(data)) > 0 {
-			return bytes.TrimSpace(data)
-		}
-	}
-	return nil
-}
-
 func sshFormatError(stageErr *sshInstallError) string {
 	if stageErr == nil || stageErr.Err == nil {
 		return ""
@@ -456,13 +439,6 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		return result, sshStage("node configuration staging", err)
 	}
 	if opts.DownloadArtifacts == nil && (opts.Role == "node" || opts.Role == "cli-only") {
-		deployKey := loadGitHubDeployKey()
-		if len(deployKey) > 0 {
-			keyCmd := fmt.Sprintf("cat << 'EOF' > %s/id_github\n%s\nEOF\nchmod 600 %s/id_github",
-				remoteDir, string(deployKey), remoteDir)
-			_, _ = transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, keyCmd, nil)
-		}
-
 		writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
 			remoteDir, scriptBody, remoteDir)
 
@@ -1331,74 +1307,30 @@ set_status() {
 }
 
 exec >> "$LOG_FILE" 2>&1
-log "Starting Payesh GitHub bootstrap installer for role '${ROLE}' (arch: ${ARCH})..."
+log "Starting Payesh bootstrap installer for role '${ROLE}' (arch: ${ARCH})..."
 set_status "RUNNING:github_fetch"
 
-# Fetch precompiled binaries from GitHub binaries branch
-if [ ! -d "${DIR}/payesh-repo" ]; then
-	log "Fetching Payesh binaries from GitHub (Real-kia/payesh:binaries)..."
-	GIT_CMD="git clone --quiet --branch binaries --depth 1"
-	if [ -s "${DIR}/id_github" ]; then
-		export GIT_SSH_COMMAND="ssh -i ${DIR}/id_github -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-		$GIT_CMD git@github.com:Real-kia/payesh.git "${DIR}/payesh-repo" >/dev/null 2>&1 || true
-	fi
-	if [ ! -d "${DIR}/payesh-repo" ]; then
-		$GIT_CMD https://github.com/Real-kia/payesh.git "${DIR}/payesh-repo" >/dev/null 2>&1 || true
-	fi
-fi
-
+# Only artifacts already staged in DIR are used. Anything missing is uploaded
+# by the hub from its own verified copies (FALLBACK below); stale or unrelated
+# downloads would only fail the digest check further down.
 fetch_bin() {
 	NAME="$1"
 	TARGET="${DIR}/${NAME}"
-	rm -f "${TARGET}.tmp"
 	if [ -s "${TARGET}" ]; then
 		chmod 700 "${TARGET}"
 		return 0
 	fi
-
-	# 1. Look in cloned GitHub binaries branch
-	if [ -d "${DIR}/payesh-repo/matrix" ]; then
-		SRC="${DIR}/payesh-repo/matrix/${NAME}-linux-${ARCH}"
-		if [ -s "$SRC" ]; then
-			cp -f "$SRC" "$TARGET"
-			chmod 700 "$TARGET"
-			log "Acquired $NAME for ${ARCH} from GitHub binaries branch"
-			return 0
-		fi
-	fi
-
-	# 2. Look in direct raw / release URLs (for when repo is public or has releases)
-	URLS="https://raw.githubusercontent.com/Real-kia/payesh/binaries/matrix/${NAME}-linux-${ARCH} https://github.com/Real-kia/payesh/releases/latest/download/${NAME}-linux-${ARCH} https://raw.githubusercontent.com/Real-kia/payesh/master/dist/matrix/${NAME}-linux-${ARCH}"
-	for URL in $URLS; do
-		log "Probing GitHub URL: $URL"
-		if command -v curl >/dev/null 2>&1; then
-			curl -fsSL --connect-timeout 8 --max-time 60 "$URL" -o "${TARGET}.tmp" 2>/dev/null || true
-		elif command -v wget >/dev/null 2>&1; then
-			wget -q -T 8 -t 2 -O "${TARGET}.tmp" "$URL" 2>/dev/null || true
-		fi
-
-		if [ -s "${TARGET}.tmp" ]; then
-			mv -f "${TARGET}.tmp" "${TARGET}"
-			chmod 700 "${TARGET}"
-			log "Acquired $NAME from GitHub: $URL"
-			return 0
-		fi
-		rm -f "${TARGET}.tmp"
-	done
 	return 1
 }
 
 # Fetch installer and required role artifacts
 for art in $ARTIFACTS; do
 	if ! fetch_bin "$art"; then
-		log "GitHub download unavailable for $art"
+		log "$art is not staged; the hub will upload it"
 		set_status "FALLBACK:master_upload_required"
 		exit 0
 	fi
 done
-
-# Cleanup temporary clone and deploy key to keep disk clean & secure
-rm -rf "${DIR}/payesh-repo" "${DIR}/id_github" 2>/dev/null || true
 
 # Authenticate all executable bytes before the transport probe or installer.
 %s
@@ -1415,7 +1347,7 @@ if ! "${DIR}/payesh-install" --check-schema; then
  exit 1
 fi
 
-log "All binaries successfully fetched from GitHub. Running preflight..."
+log "All artifacts verified. Running preflight..."
 set_status "RUNNING:preflight"
 chmod 700 "${DIR}/payesh-install" 2>/dev/null || true
 

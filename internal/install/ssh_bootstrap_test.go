@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -252,122 +251,6 @@ func TestSSHUncertainBootstrapNeverUploadsOrExecutesFallback(t *testing.T) {
 	}
 }
 
-// Run the generated producer against a paused local curl, without network access.
-type pausedBootstrapTransport struct {
-	githubCapableTransport
-	stage, script, bin, blocked, release, marker string
-	producer                                     *exec.Cmd
-}
-
-func (f *pausedBootstrapTransport) Run(ctx context.Context, ep SSHEndpoint, hosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
-	if strings.HasPrefix(command, "cat << 'EOF' > ") && strings.Contains(command, "github_bootstrap.sh") {
-		f.commands = append(f.commands, command)
-		start, end := strings.IndexByte(command, '\n')+1, strings.LastIndex(command, "\nEOF\n")
-		f.script = command[start:end]
-		for _, line := range strings.Split(f.script, "\n") {
-			if strings.HasPrefix(line, "DIR='") {
-				old := strings.TrimSuffix(strings.TrimPrefix(line, "DIR='"), "'")
-				f.script = strings.ReplaceAll(f.script, old, f.stage)
-				break
-			}
-		}
-		return nil, nil
-	}
-	if strings.Contains(command, "nohup sh") {
-		f.commands = append(f.commands, command)
-		f.producer = exec.Command("sh", "-c", f.script)
-		f.producer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		f.producer.Env = append(os.Environ(), "PATH="+f.bin+":"+os.Getenv("PATH"), "PAUSE_BLOCKED="+f.blocked, "PAUSE_RELEASE="+f.release, "EXEC_MARKER="+f.marker)
-		if err := f.producer.Start(); err != nil {
-			return nil, err
-		}
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(f.blocked); err == nil {
-				return nil, nil
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		return nil, errors.New("producer did not reach paused download")
-	}
-	if strings.HasPrefix(command, "cat ") && strings.Contains(command, "status.txt") {
-		f.commands = append(f.commands, command)
-		return nil, errors.New("status observation unavailable while download is live")
-	}
-	return f.githubCapableTransport.Run(ctx, ep, hosts, auth, command, stdin)
-}
-func TestSSHLivePausedBootstrapNeverUploadsFallback(t *testing.T) {
-	paths := downloadFixture(t)
-	root := t.TempDir()
-	stage, bin := filepath.Join(root, "stage"), filepath.Join(root, "bin")
-	if err := os.MkdirAll(filepath.Join(stage, "payesh-repo"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	key := testHostKey("node.example", 22, 23)
-	remote := &pausedBootstrapTransport{stage: stage, bin: bin, blocked: filepath.Join(root, "blocked"), release: filepath.Join(root, "release"), marker: filepath.Join(root, "executed"), githubCapableTransport: githubCapableTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}}}}
-	curl := `#!/bin/sh
-out=''
-while [ "$#" -gt 0 ]; do
- if [ "$1" = -o ]; then shift; out="$1"; fi
- shift
-done
-: > "$PAUSE_BLOCKED"
-i=0
-while [ ! -f "$PAUSE_RELEASE" ]; do
- i=$((i+1)); [ "$i" -lt 1000 ] || exit 1
- sleep 0.01
-done
-printf '#!/bin/sh\ntouch "$EXEC_MARKER"\n' > "$out"
-`
-	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(curl), 0700); err != nil {
-		t.Fatal(err)
-	}
-	var wait chan error
-	defer func() {
-		if remote.producer != nil && wait == nil {
-			_ = syscall.Kill(-remote.producer.Process.Pid, syscall.SIGKILL)
-			_ = remote.producer.Wait()
-		}
-	}()
-	_, err := InstallOverSSH(context.Background(), SSHInstallOptions{Endpoint: SSHEndpoint{Host: "node.example", Port: 22, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{PrivateKey: []byte("fixture")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "cli-only", Transport: remote, VerifyArtifact: acceptArtifact})
-	if len(remote.uploads) != 0 {
-		t.Fatalf("uploads while producer live: %v", remote.uploads)
-	}
-	if err == nil || SSHInstallFailureStage(err) != "bootstrap observation" {
-		t.Fatalf("uncertain producer accepted: %v", err)
-	}
-	if _, err := os.Stat(remote.marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("unverified code executed")
-	}
-	if _, err := os.Stat(remote.release); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("producer released before fallback decision")
-	}
-	if err := os.WriteFile(remote.release, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	wait = make(chan error, 1)
-	go func() { wait <- remote.producer.Wait() }()
-	select {
-	case err := <-wait:
-		if err == nil {
-			t.Fatal("tampered producer bytes accepted")
-		}
-	case <-time.After(3 * time.Second):
-		_ = syscall.Kill(-remote.producer.Process.Pid, syscall.SIGKILL)
-		<-wait
-		t.Fatal("producer did not terminate")
-	}
-	status, err := os.ReadFile(filepath.Join(stage, "status.txt"))
-	if err != nil || strings.TrimSpace(string(status)) != "FAILED:artifact_verification" {
-		t.Fatalf("status=%q err=%v", status, err)
-	}
-	if _, err := os.Stat(remote.marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("tampered installer executed")
-	}
-}
 func TestSSHBootstrapContextDeadlineNeverUploadsFallback(t *testing.T) {
 	paths := downloadFixture(t)
 	key := testHostKey("node.example", 22, 24)
