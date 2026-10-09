@@ -4,13 +4,13 @@
   import 'uplot/dist/uPlot.min.css';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
-  let { label = 'Resource chart', range = '15m', data }: { label?: string; range?: PreviewChartRange; data: PreviewChartData } = $props();
+  let { label = 'Resource chart', range = '15m', data, timezone = 'UTC' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
 
   function formatClock(value: number): string {
     const date = new Date(value * 1000);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: timezone });
   }
 
   $effect(() => {

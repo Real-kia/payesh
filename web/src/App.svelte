@@ -4,16 +4,18 @@
   import ChartPreview from './ChartPreview.svelte';
   import Sparkline from './Sparkline.svelte';
   import TrafficChart from './TrafficChart.svelte';
+  import CircleChart from './CircleChart.svelte';
   import { networkRates, networkRollupRate, formatNetworkRate } from './network';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import InstallProgress, { type InstallProgressData, type InstallStage } from './InstallProgress.svelte';
   import { ApiError, apiClient, mapWithConcurrency, type Account, type HTTPSStatus, type NodeTransportStatus, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type TrafficUsage, type StorageStatus, type StorageNotification, type Module, type ModuleInstallation, type PackageSource, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewLogEntry, PreviewServer } from './preview/fixtures';
+  import { getSavedTimezone, saveTimezone, getAvailableTimezones, formatTimeInTz, formatDateTimeInTz, formatHeartbeatInTz, formatLogTimeInTz } from './timezone';
 
   type Theme = 'light' | 'dark';
   type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
-  type DetailTab = 'metrics' | 'traffic' | 'logs' | 'processes';
+  type DetailTab = 'resources' | 'network' | 'logs' | 'processes' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
 
@@ -25,13 +27,24 @@
   const totalTrafficBytes = '1526000000000';
   const totalAllowanceBytes = '2500000000000';
 
+  let currentTimezone = getSavedTimezone();
+  function changeTimezone(tz: string) {
+    currentTimezone = tz;
+    saveTimezone(tz);
+  }
+
+  let alertsPage = 0;
+  let alertsPageSize = 25;
+  $: totalAlertPages = Math.max(1, Math.ceil(alerts.length / alertsPageSize));
+  $: pagedAlerts = alerts.slice(alertsPage * alertsPageSize, (alertsPage + 1) * alertsPageSize);
+
   let servers: PreviewServer[] = [];
   let displayServers: PreviewServer[] = [];
   let previewLogEntries: PreviewLogEntry[] = [];
   let activePage: Page = 'overview';
   let mobileNavOpen = false;
   let selectedServerId = '';
-  let detailTab: DetailTab = 'metrics';
+  let detailTab: DetailTab = 'resources';
   let chartRange: ChartRange = '15m';
   const trafficDefaultEnd = new Date(Math.floor(Date.now() / 3600000) * 3600000);
   let trafficFrom = new Date(trafficDefaultEnd.getTime() - 86400000).toISOString().slice(0, 16);
@@ -180,7 +193,7 @@
       notificationError = error instanceof ApiError ? error.message : 'Notifications could not be marked read.';
     }
   }
-  let settingsSection: 'users' | 'updates' | 'tls' | 'storage' | 'notifications' = 'tls';
+  let settingsSection: 'general' | 'users' | 'updates' | 'tls' | 'storage' | 'notifications' = 'general';
   let addingUser = false;
   let userSearch = '';
   let dashboardPort = '';
@@ -459,7 +472,7 @@
   $: overviewTrafficBytes = PREVIEW_MODE ? totalTrafficBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.countedBytes)).toString(); } catch { return total; } }, '0');
   $: overviewAllowanceBytes = PREVIEW_MODE ? totalAllowanceBytes : displayServers.reduce((total, server) => { try { return (BigInt(total) + BigInt(server.traffic.allowanceBytes)).toString(); } catch { return total; } }, '0');
   $: chartData = selectedServer?.metricHistory?.ranges[chartRange] ?? null;
-  $: availableTabs = selectedServer ? (['metrics', 'traffic', 'logs', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
+  $: availableTabs = selectedServer ? (['resources', 'network', 'logs', 'processes'] as DetailTab[]).filter((tab) => hasCapability(selectedServer, tab)) : [];
   $: if (selectedServer && availableTabs.length > 0 && !availableTabs.includes(detailTab)) detailTab = availableTabs[0];
   $: if (selectedServer && !labelDraft) labelDraft = selectedServer.name;
 
@@ -1382,12 +1395,16 @@
 
   function hasCapability(server: PreviewServer, capability: DetailTab): boolean {
     if (capability === 'processes') return server.role === 'standalone' || server.role === 'hub';
-    if (capability === 'metrics' || capability === 'traffic') return true;
+    if (capability === 'resources' || capability === 'network' || capability === 'metrics' || capability === 'traffic') return true;
     return server.capabilities?.includes(capability) ?? false;
   }
 
   function tabLabel(tab: DetailTab): string {
-    return tab.charAt(0).toUpperCase() + tab.slice(1);
+    if (tab === 'resources' || tab === 'metrics') return 'Resources';
+    if (tab === 'network' || tab === 'traffic') return 'Network';
+    if (tab === 'logs') return 'Logs';
+    if (tab === 'processes') return 'Processes';
+    return String(tab);
   }
 
   function metricHistoryValues(server: PreviewServer, metric: 'cpu' | 'memory' | 'disk'): Array<number | null> {
@@ -1682,7 +1699,7 @@
       const window = rangeWindow('24h');
       const result = await apiClient.queryLogs(serverId, { source: source.id, ...window, limit: 200, signal: controller.signal });
       if (controller.signal.aborted) return;
-      logEntries = result.entries.map((entry) => ({ time: entry.timestamp.slice(11, 19), level: (entry.severity ?? 'INFO').toUpperCase() as PreviewLogEntry['level'], text: entry.text, source: source.label, cursor: entry.cursor }));
+      logEntries = result.entries.map((entry) => ({ time: formatLogTimeInTz(entry.timestamp, currentTimezone), level: (entry.severity ?? 'INFO').toUpperCase() as PreviewLogEntry['level'], text: entry.text, source: source.label, cursor: entry.cursor }));
       logState = logEntries.length ? 'ready' : 'empty';
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -1697,7 +1714,7 @@
     if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
-    if (state.detailTab === 'metrics' || state.detailTab === 'traffic' || state.detailTab === 'logs' || state.detailTab === 'processes') detailTab = state.detailTab;
+    if (state.detailTab) detailTab = state.detailTab === 'metrics' ? 'resources' : state.detailTab === 'traffic' ? 'network' : state.detailTab;
   }
 
   onMount(() => {
@@ -1774,7 +1791,6 @@
       </div>
       <div class="brand-text">
         <strong>Payesh</strong>
-        <small>Fleet Monitoring</small>
       </div>
     </div>
 
@@ -1848,7 +1864,12 @@
           <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
         </button>
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}
-          <button class="button ghost small" type="button" on:click={() => { settingsSection = 'notifications'; navigate('settings'); void loadNotifications(); }}>Notifications{unreadNotifications ? ` (${unreadNotifications})` : ''}</button>
+          <button class="icon-button notification-bell-button" type="button" on:click={() => { settingsSection = 'notifications'; navigate('settings'); void loadNotifications(); }} aria-label={`Notifications${unreadNotifications ? ` (${unreadNotifications} unread)` : ''}`} title="Notifications">
+            <Icon name="bell" size={16} />
+            {#if unreadNotifications > 0}
+              <span class="notification-badge" aria-hidden="true">{unreadNotifications > 99 ? '99+' : unreadNotifications}</span>
+            {/if}
+          </button>
           <button class="button ghost small" type="button" on:click={() => promptSignOut()}>Sign out</button>
         {/if}
         {#if myAccount?.permission !== 'read'}<button class="button primary small" type="button" on:click={() => openAddServer()}>
@@ -1896,18 +1917,18 @@
     {:else if activePage === 'monitoring'}
       <section class="page" aria-labelledby="monitoring-title">
         <div class="page-heading">
-          <div><h1 id="monitoring-title" tabindex="-1">Server monitoring</h1><p class="lede">Resources and network activity across your fleet.</p></div>
+          <div><h1 id="monitoring-title" tabindex="-1">Server monitoring</h1></div>
           <span class="heading-status-badge"><span class="live-ping"></span>{displayServers.length} servers</span>
         </div>
         <div class="summary-grid">
           <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
           <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
-          <article class="summary-card"><div class="card-header"><span class="stat-label">Live download</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">{formatNetworkRate(fleetDownload)}</strong><span class="stat-badge">Upload {formatNetworkRate(fleetUpload)} · {connectedCount} connected</span></article>
+          <article class="summary-card"><div class="card-header"><span class="stat-label">Download & Upload</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">↓ {formatNetworkRate(fleetDownload)} · ↑ {formatNetworkRate(fleetUpload)}</strong></article>
         </div>
         {#if displayServers.length === 0}<div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>{/if}
         <div class="monitoring-grid">
           {#each displayServers as server}
-            <article class="panel monitoring-card">
+            <div class="panel monitoring-card clickable" role="button" tabindex="0" on:click={() => selectServer(server)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') selectServer(server); }}>
               <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
               {#if server.connectionState === 'connected'}<div class="monitoring-metrics">
                 {#each [['CPU', 'cpu', 'teal'], ['Memory', 'memory', 'purple'], ['Disk', 'disk', 'blue']] as metric}
@@ -1924,9 +1945,9 @@
                 <div class="monitoring-network"><span>↓ Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
                 <div class="monitoring-network"><span>↑ Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
               </div>{/if}
-              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected' && server.traffic.allowanceBytes !== '0'}<span>Billing period: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.freshnessReason || server.connectionState}</span></div>
-              <button class="button ghost small" type="button" on:click={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
-            </article>
+              <div class="monitoring-bottom"><span>Recent activity · {sampleAge(server)}</span>{#if server.connectionState === 'connected' && server.traffic.allowanceBytes !== '0'}<span>Billing period: {formatBytes(server.traffic.countedBytes)}</span>{/if}<span>{server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : server.freshnessReason || server.connectionState}</span></div>
+              <button class="button ghost small" type="button" on:click|stopPropagation={() => selectServer(server)}>View server details <Icon name="chevron-right" size={14} /></button>
+            </div>
           {/each}
         </div>
       </section>
@@ -1947,8 +1968,9 @@
           <div class="table-header">
             <span class="col-status">Status</span>
             <span class="col-name">Server & Address</span>
-            <span class="col-meta">Platform</span>
             <span class="col-metric">CPU</span>
+            <span class="col-metric">Memory</span>
+            <span class="col-rxtx">Rx / Tx</span>
             <span class="col-action"></span>
           </div>
           <div class="server-list">
@@ -1962,17 +1984,38 @@
                 </div>
                 <div class="col-name server-identity">
                   <strong>{server.name}</strong>
-                  <small>{displayAddress(server)}</small>
-                </div>
-                <div class="col-meta">
-                  <span>{server.role} · {server.platform} ({server.architecture})</span>
-                  <small class="faint">{server.freshnessReason || (server.lastHeartbeat ? `Heartbeat ${server.lastHeartbeat.slice(11, 16)} UTC` : server.connectionState)}</small>
+                  <small class="mono faint">{displayAddress(server)} · {server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : (server.freshnessReason || server.connectionState)}</small>
                 </div>
                 <div class="col-metric server-metric">
-                  {#if server.connectionState === 'connected'}<strong>{metricValue(server.metrics.cpu)}</strong>
-                  <div class="metric-microbar">
-                    <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                  </div>{/if}
+                  {#if server.connectionState === 'connected'}
+                    <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
+                    <div class="metric-microbar">
+                      <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
+                    </div>
+                  {:else}
+                    <span class="faint">—</span>
+                  {/if}
+                </div>
+                <div class="col-metric server-metric">
+                  {#if server.connectionState === 'connected'}
+                    <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
+                    <div class="metric-microbar">
+                      <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
+                    </div>
+                  {:else}
+                    <span class="faint">—</span>
+                  {/if}
+                </div>
+                <div class="col-rxtx">
+                  {#if server.connectionState === 'connected'}
+                    <span class="rxtx-rates tabular">
+                      <span class="rate-down">↓ {formatNetworkRate(currentNetworkRate(server, 'download'))}</span>
+                      <span class="rate-sep">·</span>
+                      <span class="rate-up">↑ {formatNetworkRate(currentNetworkRate(server, 'upload'))}</span>
+                    </span>
+                  {:else}
+                    <span class="faint">—</span>
+                  {/if}
                 </div>
                 <div class="col-action">
                   <span class="server-arrow"><Icon name="chevron-right" size={16} /></span>
@@ -2135,8 +2178,28 @@
             <p>No active incidents or firing alert rules across the fleet.</p>
           </div>
         {:else}
+          <div class="alerts-pagination-bar">
+            <div class="alerts-count-info">
+              <span>Showing {alerts.length === 0 ? 0 : alertsPage * alertsPageSize + 1}–{Math.min(alerts.length, (alertsPage + 1) * alertsPageSize)} of {alerts.length}</span>
+            </div>
+            <div class="alerts-pager">
+              <label class="page-size-selector">
+                <span>Per page:</span>
+                <select bind:value={alertsPageSize} on:change={() => alertsPage = 0}>
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </label>
+              <button class="button ghost small" type="button" disabled={alertsPage === 0} on:click={() => alertsPage--}>Previous</button>
+              <span class="pager-info">Page {alertsPage + 1} of {totalAlertPages}</span>
+              <button class="button ghost small" type="button" disabled={alertsPage >= totalAlertPages - 1} on:click={() => alertsPage++}>Next</button>
+            </div>
+          </div>
+
           <div class="server-list">
-            {#each alerts as alert}
+            {#each pagedAlerts as alert}
               <article class="server-row alert-row">
                 <span class={`status-pill ${alert.state === 'firing' ? 'failed' : alert.state === 'pending' ? 'stale' : 'healthy'}`}>
                   <i class="status-dot"></i>
@@ -2147,7 +2210,7 @@
                   <small>{servers.find((server) => server.id === alert.server_id)?.name || alert.server_id || 'Fleet-wide'}</small>
                 </span>
                 <span class="server-status">
-                  <small class="faint">{alert.last_observation ? new Date(alert.last_observation).toLocaleString() : 'Awaiting observation'}</small>
+                  <small class="faint">{alert.last_observation ? formatDateTimeInTz(alert.last_observation, currentTimezone) : 'Awaiting observation'}</small>
                 </span>
                 {#if alert.last_value !== undefined}
                   <span class="server-metric">
@@ -2158,6 +2221,14 @@
               </article>
             {/each}
           </div>
+
+          {#if totalAlertPages > 1}
+            <div class="alerts-pagination-bar bottom">
+              <button class="button ghost small" type="button" disabled={alertsPage === 0} on:click={() => alertsPage--}>Previous</button>
+              <span class="pager-info">Page {alertsPage + 1} of {totalAlertPages}</span>
+              <button class="button ghost small" type="button" disabled={alertsPage >= totalAlertPages - 1} on:click={() => alertsPage++}>Next</button>
+            </div>
+          {/if}
         {/if}
       </section>
 
@@ -2213,7 +2284,6 @@
         <div class="page-heading">
           <div>
             <h1 id="settings-title" tabindex="-1">Settings</h1>
-            <p class="settings-intro">Manage connections, updates, and how your fleet collects data.</p>
           </div>
         </div>
 
@@ -2221,6 +2291,7 @@
           <nav class="settings-nav" aria-label="Settings sections" on:focusin={(event) => {
             if (event.target instanceof HTMLButtonElement) event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
           }}>
+            <button type="button" aria-current={settingsSection === 'general' ? 'page' : undefined} class:chosen={settingsSection === 'general'} on:click={() => { settingsSection = 'general'; }}>General</button>
             <button type="button" aria-current={settingsSection === 'tls' ? 'page' : undefined} class:chosen={settingsSection === 'tls'} on:click={() => { settingsSection = 'tls'; if (!PREVIEW_MODE) void loadHTTPS(); }}>SSL / TLS</button>
             <button type="button" aria-current={settingsSection === 'updates' ? 'page' : undefined} class:chosen={settingsSection === 'updates'} on:click={() => { settingsSection = 'updates'; if (!PREVIEW_MODE) void checkLatestUpdate(); }}>Versions & updates</button>
             <button type="button" aria-current={settingsSection === 'storage' ? 'page' : undefined} class:chosen={settingsSection === 'storage'} on:click={() => { settingsSection = 'storage'; if (!PREVIEW_MODE) void loadStorageSettings(); }}>Storage & sampling</button>
@@ -2228,9 +2299,26 @@
             {#if myAccount?.role === 'owner'}<button type="button" aria-current={settingsSection === 'users' ? 'page' : undefined} class:chosen={settingsSection === 'users'} on:click={() => settingsSection = 'users'}>User management</button>{/if}
           </nav>
           <div class="settings-grid">
-          {#if settingsSection === 'storage'}
+          {#if settingsSection === 'general'}
+          <article class="panel account-management">
+            <div class="panel-heading"><div><h2>General</h2></div></div>
+            <div class="settings-meta-box">
+              <div class="meta-row"><span>Active timezone</span><strong>{currentTimezone}</strong></div>
+              <div class="meta-row"><span>Time preview</span><strong class="tabular">{formatTimeInTz(new Date(), currentTimezone, true)} · {formatDateTimeInTz(new Date(), currentTimezone)}</strong></div>
+            </div>
+            <form class="form-grid" on:submit|preventDefault={() => {}}>
+              <label>Timezone
+                <select value={currentTimezone} on:change={(e) => changeTimezone(e.currentTarget.value)}>
+                  {#each getAvailableTimezones() as tz}
+                    <option value={tz}>{tz}</option>
+                  {/each}
+                </select>
+              </label>
+            </form>
+          </article>
+          {:else if settingsSection === 'storage'}
           <article class="panel account-management storage-settings-panel">
-            <div class="panel-heading"><div><h2>Storage & sampling</h2><p class="muted">Keep monitoring lightweight and control how much history is stored.</p></div><button class="button ghost small" disabled={storageBusy || PREVIEW_MODE} on:click={() => void loadStorageSettings()}>Refresh</button></div>
+            <div class="panel-heading"><div><h2>Storage & sampling</h2></div><button class="button ghost small" disabled={storageBusy || PREVIEW_MODE} on:click={() => void loadStorageSettings()}>Refresh</button></div>
             {#if storageStatus}
               <div class="settings-meta-box">
                 <div class="meta-row"><span>Total storage usage</span><strong>{formatBytes(String(storageUsageBytes))} / {formatBytes(String(storageStatus.settings.max_database_bytes))}</strong></div>
@@ -2242,24 +2330,22 @@
                 <div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div>
               </div>
               <form class="form-grid" on:submit|preventDefault={() => void saveStorageSettings()}>
-                <label>Maximum storage size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 1 GB. Includes the database, its journal files, and retained recovery snapshots. Lowering the limit can remove old history.</small></label>
-                <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 15 seconds. Larger intervals produce fewer new samples.</small></label>
-                <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /><small>Default: 60 seconds. Applies automatically under storage pressure.</small></label>
+                <label>Maximum storage size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
+                <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
+                <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={storageBusy || myAccount?.role !== 'owner'} /></label>
                 <label>Automatic sampling reduction<select bind:value={adaptiveSampling} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
                 <label>Storage notifications<select bind:value={storageNotificationsEnabled} disabled={storageBusy || myAccount?.role !== 'owner'}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
                 {#if myAccount?.role === 'owner'}<button class="button primary" type="submit" disabled={storageBusy || PREVIEW_MODE}>{storageBusy ? 'Saving…' : 'Save settings'}</button>{/if}
               </form>
-              <p class="muted">Oldest history is removed near 90% of the limit to leave room for new data. Server identities, credentials, and billing totals are preserved. Minute and hourly summaries keep older history compact.</p>
-              <p class="muted">Sampling settings apply to this master and updated nodes. Older nodes keep their existing interval until updated. Heartbeats continue independently.</p>
             {:else if storageBusy}<p role="status">Loading storage settings…</p>{/if}
             {#if storageError}<p class="form-error" role="alert">{storageError}</p>{/if}
             {#if storageSaved}<p class="success-text" role="status">{storageSaved}</p>{/if}
           </article>
           {:else if settingsSection === 'notifications'}
           <article class="panel account-management">
-            <div class="panel-heading"><div><h2>Notifications</h2><p class="muted">Storage pressure, automatic sampling changes, and history cleanup. Latest 100 workspace notifications.</p></div><div class="settings-actions"><button class="button ghost small" type="button" disabled={notificationBusy} on:click={() => void loadNotifications()}>Refresh</button>{#if myAccount?.permission === 'edit'}<button class="button ghost small" type="button" disabled={!unreadNotifications || notificationBusy} on:click={() => void markNotificationsRead()}>Mark all read</button>{/if}</div></div>
+            <div class="panel-heading"><div><h2>Notifications</h2></div><div class="settings-actions"><button class="button ghost small" type="button" disabled={notificationBusy} on:click={() => void loadNotifications()}>Refresh</button>{#if myAccount?.permission === 'edit'}<button class="button ghost small" type="button" disabled={!unreadNotifications || notificationBusy} on:click={() => void markNotificationsRead()}>Mark all read</button>{/if}</div></div>
             {#if notificationError}<p class="form-error" role="alert">{notificationError}</p>{/if}
-            <div class="notification-list">{#each notificationItems as item (item.id)}<article class:unread={!item.read}><div><strong>{item.kind === 'storage_full' ? 'Database limit reached' : item.kind === 'storage_cleanup' ? 'Old history removed' : item.kind === 'storage_saving' ? 'Database storage pressure' : item.kind === 'storage_warning' ? 'Database nearly full' : 'Storage recovered'}</strong><time datetime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></div><p>{item.message}</p></article>{:else}<p class="muted">{notificationBusy ? 'Loading notifications…' : 'No storage notifications yet.'}</p>{/each}</div>
+            <div class="notification-list">{#each notificationItems as item (item.id)}<article class:unread={!item.read}><div><strong>{item.kind === 'storage_full' ? 'Database limit reached' : item.kind === 'storage_cleanup' ? 'Old history removed' : item.kind === 'storage_saving' ? 'Database storage pressure' : item.kind === 'storage_warning' ? 'Database nearly full' : 'Storage recovered'}</strong><time datetime={item.created_at}>{formatDateTimeInTz(item.created_at, currentTimezone)}</time></div><p>{item.message}</p></article>{:else}<p class="muted">{notificationBusy ? 'Loading notifications…' : 'No storage notifications yet.'}</p>{/each}</div>
           </article>
           {:else if settingsSection === 'users' && myAccount?.role === 'owner'}
           <article class="panel account-management">
@@ -2275,7 +2361,7 @@
                 {#if editingAccount === account.username}
                   <form class="form-grid account-edit-form" on:submit|preventDefault={() => void editAccount(account)}>
                     <label>Username<input bind:value={editUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-                    <label><span id="edit-password-label">New password</span><input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" aria-labelledby="edit-password-label" aria-describedby="edit-password-help" /><small id="edit-password-help" class="muted">Use at least 12 characters, or leave blank to keep the current password.</small></label>
+                    <label><span id="edit-password-label">New password</span><input type="password" bind:value={editPassword} minlength="12" placeholder="Leave blank to keep current" autocomplete="new-password" aria-labelledby="edit-password-label" /></label>
                     {#if account.role !== 'owner'}
                       <label>Role<select bind:value={editRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
                       <label>Permission<select bind:value={editPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
@@ -2288,7 +2374,7 @@
             {#if addingUser}<form class="form-grid account-edit-form" on:submit|preventDefault={() => void saveAccount()}>
               <h3 class="form-wide">New user</h3>
               <label>Username<input bind:value={accountUsername} minlength="3" maxlength="128" required autocomplete="off" /></label>
-              <label><span id="new-password-label">Password</span><input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" aria-labelledby="new-password-label" aria-describedby="new-password-help" /><small id="new-password-help" class="muted">Use at least 12 characters.</small></label>
+              <label><span id="new-password-label">Password</span><input type="password" bind:value={accountPassword} minlength="12" required autocomplete="new-password" aria-labelledby="new-password-label" /></label>
               <label>Role<select bind:value={accountRole}><option value="member">Member</option><option value="admin">Admin</option></select></label>
               <label>Permission<select bind:value={accountPermission}><option value="read">Read only</option><option value="edit">Can edit</option></select></label>
               <button class="button primary" type="submit" disabled={accountBusy}>Create user</button>
@@ -2301,7 +2387,7 @@
             <div class="settings-meta-box">
               <div class="meta-row"><span>Installed version</span><strong>{updateStatus?.current ? `v${updateStatus.current}` : servers.find(server => server.role !== 'node')?.version ?? 'Unavailable'}</strong></div>
             </div>
-            {#if updateCheckBusy}<div class="version-checking" role="status"><span class="version-spinner" aria-hidden="true"></span><div><strong>Checking for updates</strong><small>Comparing your installed version with the latest release…</small></div></div>{/if}
+            {#if updateCheckBusy}<div class="version-checking" role="status"><span class="version-spinner" aria-hidden="true"></span><div><strong>Checking for updates</strong></div></div>{/if}
             {#if updateStatus && !updateCheckBusy && !updateCheckError}
               <div class="settings-meta-box">
                 <div class="meta-row"><span>Latest release</span><a href={updateStatus.url} target="_blank" rel="noopener noreferrer">v{updateStatus.latest}</a></div>
@@ -2328,7 +2414,6 @@
             {:else}<p class="muted">{updateCheckBusy ? 'Loading releases…' : 'Release history unavailable.'}</p>{/if}
             <h3>Update command</h3>
             <code class="update-command">sudo payesh update</code>
-            <small class="muted">Private repository: pass a read-only GitHub token with <code>sudo --preserve-env=GITHUB_TOKEN payesh update</code>.</small>
           </article>{/if}
           {#if settingsSection === 'tls'}<article class="panel">
             <div class="panel-heading">
@@ -2383,11 +2468,9 @@
               <button class="button primary" type="submit" disabled={portBusy || PREVIEW_MODE || myAccount?.permission === 'read'}>{portBusy ? 'Checking port…' : 'Change port'}</button>
             </form>
             {#if portError}<p class="form-error" role="alert">{portError}</p>{/if}
-            <p class="muted">Dashboard access uses a separate port from node transport. Changing this port does not change the node transport port.</p>
           </article>{/if}
           {#if settingsSection === 'tls'}<article class="panel connection-settings-panel">
             <div class="panel-heading"><h2>Node transport port</h2></div>
-            <p class="muted">Nodes connect to this TLS port for metrics and commands. Open the new port in your firewall before migrating.</p>
             <form class="port-form" on:submit|preventDefault={() => void saveNodePort()}>
               <label>Node transport port<input type="number" min="1" max="65535" required bind:value={nodePort} disabled={nodePortBusy || PREVIEW_MODE || myAccount?.permission === 'read'} /></label>
               <button class="button primary" type="submit" disabled={nodePortBusy || PREVIEW_MODE || !nodeTransportStatus?.url || Number(nodePort) === Number(nodeTransportStatus.port) || myAccount?.permission === 'read'}>{nodePortBusy ? 'Saving…' : 'Change node port'}</button>
@@ -2400,7 +2483,7 @@
             {#if nodePortError}<p class="form-error" role="alert">{nodePortError}</p>{/if}
             {#if nodeTransportStatus}
               {#if nodeTransportStatus.url}<p class="mono">{nodeTransportStatus.url}</p>{:else}<p class="muted">Enable HTTPS to connect nodes.</p>{/if}
-              <p class="muted">{nodeTransportStatus.migrated} of {nodeTransportStatus.total} nodes on the current port. Nodes verify and save the new address automatically; unsuccessful migrations keep their working connection.</p>
+              <p class="muted">{nodeTransportStatus.migrated} of {nodeTransportStatus.total} nodes on current port.</p>
               {#each nodeTransportStatus.nodes as node (node.id)}
                 <div class="meta-row"><span>{node.name}</span><span>{node.state === 'migrated' ? 'Migrated' : node.state === 'update-required' ? 'Agent update required' : node.state === 'failed' ? 'Migration failed · retrying' : 'Pending connection'}</span></div>
                 {#if node.error}<p class="muted">{node.name}: {node.error}</p>{/if}
@@ -2413,7 +2496,6 @@
                 </div>
               {/if}
               {#if nodeTransportStatus.previous_ports.length || nodeTransportStatus.legacy_dashboard}
-                <p class="muted">Previous endpoints remain available for offline and older nodes.{nodeTransportStatus.previous_ports.length ? ` Previous node ports: ${nodeTransportStatus.previous_ports.join(', ')}.` : ''}{nodeTransportStatus.legacy_dashboard ? ' Legacy node access through dashboard ports is still enabled.' : ''}</p>
                 <button class="button ghost" type="button" disabled={nodePortBusy || nodeTransportStatus.pending > 0 || myAccount?.permission === 'read'} on:click={retireNodePorts}>Retire previous node endpoints</button>
               {/if}
             {/if}
@@ -2537,25 +2619,6 @@
           {/if}
         </div>
 
-        {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
-          <article class="panel server-actions">
-            <div class="panel-heading"><h2>Node service</h2></div>
-            <p class="muted">Connect over SSH to {displayAddress(selectedServer)} to restart, enable, or disable payesh-agent. Restart also makes the agent reconnect to the hub.</p>
-            <div class="form-grid">
-              <label>SSH port<input type="number" min="1" max="65535" bind:value={nodeControlPort} /></label>
-              <label>SSH user<input bind:value={nodeControlUser} /></label>
-              <label>Password<input type="password" bind:value={nodeControlPassword} autocomplete="off" /></label>
-              <label>Private key<textarea bind:value={nodeControlKey} rows="2" autocomplete="off"></textarea></label>
-              <label>Host-key fingerprint<input bind:value={nodeControlFingerprint} placeholder="SHA256:…" /></label>
-            </div>
-            <div class="server-heading-actions">
-              <button class="button primary small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('restart')}>{nodeControlBusy ? 'Working…' : 'Restart and reconnect'}</button>
-              <button class="button ghost small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('enable')}>Enable node service</button>
-              <button class="button ghost small" type="button" disabled={nodeControlBusy || (!nodeControlPassword && !nodeControlKey) || !nodeControlFingerprint.trim()} on:click={() => void controlSelectedNode('disable')}>Disable node service</button>
-            </div>
-            {#if nodeControlError}<p class="form-error" role="alert">{nodeControlError}</p>{/if}
-          </article>
-        {/if}
 
         {#if activeInstall && activeInstall.serverId === selectedServer.id}
           <InstallProgress
@@ -2613,27 +2676,57 @@
           <div class="unavailable-panel large"><strong>Node is not connected</strong><span>Metrics and telemetry will appear after the node reconnects.</span></div>
         {:else if detailTab === 'processes'}
           {#key selectedServer.id}<ProcessTable serverId={selectedServer.id} onPackages={() => { packageServerId = selectedServer.id; navigate('packages'); }} />{/key}
-        {:else if detailTab === 'metrics' && hasCapability(selectedServer, 'metrics')}
+        {:else if (detailTab === 'resources' || detailTab === 'metrics') && (hasCapability(selectedServer, 'resources') || hasCapability(selectedServer, 'metrics'))}
           <div class="metric-grid">
-            {#each [['CPU', 'cpu', selectedServer.metrics.cpu, 'teal'], ['Memory', 'memory', selectedServer.metrics.memory, 'purple'], ['Disk', 'disk', selectedServer.metrics.disk, 'blue']] as metric}
-              <article class="metric-card">
-                <div class="card-top">
-                  <span class="metric-title">{metric[0]}</span>
-                  <strong class="metric-big tabular">{metricValue(metric[2] as number | null)}</strong>
+            <article class="metric-card">
+              <div class="card-top">
+                <span class="metric-title">CPU</span>
+                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.cpu)}</strong>
+              </div>
+              {#if metricHistoryValues(selectedServer, 'cpu').length > 1}
+                <div class="sparkline">
+                  <Sparkline values={metricHistoryValues(selectedServer, 'cpu')} tone="teal" />
                 </div>
-                {#if metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').length > 1}
-                  <div class="sparkline">
-                    <Sparkline values={metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk')} tone={metric[3] as 'teal' | 'purple' | 'blue'} />
-                  </div>
-                {:else}
-                  <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, metric[1] as 'cpu' | 'memory' | 'disk').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
-                {/if}
-                <div class="metric-footer">
-                  <span>{sampleAge(selectedServer)}</span>
-                  <span class="faint">Window: {chartRange}</span>
+              {:else}
+                <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, 'cpu').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
+              {/if}
+              <div class="metric-footer">
+                <span>{sampleAge(selectedServer)}</span>
+                <span class="faint">Window: {chartRange}</span>
+              </div>
+            </article>
+
+            <article class="metric-card">
+              <div class="card-top">
+                <span class="metric-title">Memory</span>
+                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.memory)}</strong>
+              </div>
+              {#if metricHistoryValues(selectedServer, 'memory').length > 1}
+                <div class="sparkline">
+                  <Sparkline values={metricHistoryValues(selectedServer, 'memory')} tone="purple" />
                 </div>
-              </article>
-            {/each}
+              {:else}
+                <div class="sparkline-unavailable">{metricHistoryValues(selectedServer, 'memory').some((value) => value !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
+              {/if}
+              <div class="metric-footer">
+                <span>{sampleAge(selectedServer)}</span>
+                <span class="faint">Window: {chartRange}</span>
+              </div>
+            </article>
+
+            <article class="metric-card disk-metric-card">
+              <div class="card-top">
+                <span class="metric-title">Disk</span>
+                <strong class="metric-big tabular">{metricValue(selectedServer.metrics.disk)}</strong>
+              </div>
+              <div class="disk-card-circle">
+                <CircleChart value={selectedServer.metrics.disk} size={64} strokeWidth={8} label="Used" />
+              </div>
+              <div class="metric-footer">
+                <span>{sampleAge(selectedServer)}</span>
+                <span class="faint">{selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(0)}% free` : 'Window: ' + chartRange}</span>
+              </div>
+            </article>
           </div>
 
           <article class="panel chart-panel">
@@ -2654,10 +2747,10 @@
               <div class="legend">
                 <span><i class="legend-dot teal"></i> CPU Utilization</span>
                 <span><i class="legend-dot purple"></i> Memory</span>
-                <span class="faint">Scale: 0–100% · Time: UTC</span>
+                <span class="faint">Scale: 0–100% · Time: {currentTimezone}</span>
               </div>
-              {#key `${chartRange}-${theme}-${selectedServer.id}`}
-                <ChartPreview data={chartData} range={chartRange} label="CPU and memory history over the selected time range" />
+              {#key `${chartRange}-${theme}-${selectedServer.id}-${currentTimezone}`}
+                <ChartPreview data={chartData} range={chartRange} timezone={currentTimezone} label="CPU and memory history over the selected time range" />
               {/key}
               <div class="resource-highlights">
                 <span>Highest CPU: <strong class="tabular">{seriesRange(chartData.cpu)}</strong></span>
@@ -2671,45 +2764,30 @@
             {/if}
           </article>
 
-          <article class="panel chart-panel">
-            <div class="panel-heading"><h2>Network</h2></div>
-            <div class="network-rates">
-              <div><span class="muted">Download</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'download'))}</strong></div>
-              <div><span class="muted">Upload</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'upload'))}</strong></div>
+          <article class="panel chart-panel disk-detail-panel">
+            <div class="panel-heading">
+              <div><h2>Disk Storage</h2></div>
             </div>
-            {#if chartData && (chartData.networkRx?.some((value) => value !== null) || chartData.networkTx?.some((value) => value !== null))}
-              <div class="legend"><span><i class="legend-dot teal"></i> Download</span><span><i class="legend-dot blue"></i> Upload</span><span class="faint">Mbit/s · Time: UTC</span></div>
-              {#key `${chartRange}-${theme}-${selectedServer.id}-network`}
-                <TrafficChart data={chartData} />
-              {/key}
-            {:else}
-              <div class="unavailable-panel"><strong>Waiting for network samples</strong></div>
-            {/if}
-          </article>
-
-        {:else if detailTab === 'traffic' && hasCapability(selectedServer, 'traffic')}
-          <article class="panel traffic-panel">
-            <div class="panel-heading"><div><h2>Traffic used in a date range</h2><p class="muted">Choose a start and end time in UTC. Up to 90 days of retained hourly history.</p></div></div>
-            <form class="traffic-range-form" on:submit|preventDefault={() => void loadTrafficUsage()}>
-              <label>From (UTC)<input type="datetime-local" step="3600" required bind:value={trafficFrom} disabled={trafficUsageBusy} /></label>
-              <label>To (UTC, excluded)<input type="datetime-local" step="3600" required bind:value={trafficTo} disabled={trafficUsageBusy} /></label>
-              <button class="button primary" type="submit" disabled={trafficUsageBusy || PREVIEW_MODE}>{#if trafficUsageBusy}<span class="version-spinner" aria-hidden="true"></span>Calculating…{:else}Calculate usage{/if}</button>
-            </form>
-            {#if trafficUsageError}<p class="error-text" role="alert">{trafficUsageError}</p>{/if}
-            {#if trafficUsage}
-              <p class="muted">{trafficUsage.from.slice(0, 16).replace('T', ' ')} → {trafficUsage.to.slice(0, 16).replace('T', ' ')} UTC</p>
-              <div class="network-rates traffic-usage-results" aria-live="polite">
-                <div><span class="muted">Download</span><strong class="tabular usage-download">{trafficUsage.download_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.download_bytes)}</strong><small class="muted">{trafficUsage.download_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
-                <div><span class="muted">Upload</span><strong class="tabular usage-upload">{trafficUsage.upload_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.upload_bytes)}</strong><small class="muted">{trafficUsage.upload_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
-                <div><span class="muted">Total recorded</span><strong class="tabular">{trafficUsage.total_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.total_bytes)}</strong></div>
+            <div class="disk-detail-layout">
+              <CircleChart value={selectedServer.metrics.disk} size={130} strokeWidth={10} label="Used" sublabel={selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(1)}% free` : ''} />
+              <div class="disk-detail-stats">
+                <div class="disk-stat-box">
+                  <span class="stat-lbl">Used Space</span>
+                  <strong class="tabular">{selectedServer.metrics.disk !== null ? `${selectedServer.metrics.disk.toFixed(1)}%` : '—'}</strong>
+                </div>
+                <div class="disk-stat-box">
+                  <span class="stat-lbl">Available Space</span>
+                  <strong class="tabular">{selectedServer.metrics.disk !== null ? `${(100 - selectedServer.metrics.disk).toFixed(1)}%` : '—'}</strong>
+                </div>
+                <div class="disk-stat-box">
+                  <span class="stat-lbl">Health</span>
+                  <strong class="tabular">{selectedServer.metrics.disk === null ? '—' : selectedServer.metrics.disk >= 90 ? 'Critical' : selectedServer.metrics.disk >= 75 ? 'Warning' : 'Healthy'}</strong>
+                </div>
               </div>
-              {#if trafficUsage.download_hours < trafficUsage.requested_hours || trafficUsage.upload_hours < trafficUsage.requested_hours}
-                <p class="warning-text" role="status">History is incomplete. These are available totals; missing hours and uncertain counters are excluded.</p>
-              {/if}
-            {/if}
-            <p class="muted">Counts external-interface traffic from hourly measurements. Traffic crossing an hour boundary is counted with its next measurement; start and end hours may be partial. This report does not estimate missing traffic.</p>
+            </div>
           </article>
 
+        {:else if (detailTab === 'network' || detailTab === 'traffic') && (hasCapability(selectedServer, 'network') || hasCapability(selectedServer, 'traffic'))}
           <article class="panel chart-panel">
             <div class="panel-heading">
               <div>
@@ -2723,21 +2801,46 @@
                 </select>
               </div>
             </div>
+            <div class="network-rates">
+              <div><span class="muted">Download</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'download'))}</strong></div>
+              <div><span class="muted">Upload</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(selectedServer, 'upload'))}</strong></div>
+            </div>
 
-            {#if chartData?.networkRx?.some((v) => v !== null) || chartData?.networkTx?.some((v) => v !== null)}
+            {#if chartData && (chartData.networkRx?.some((v) => v !== null) || chartData.networkTx?.some((v) => v !== null))}
               <div class="legend">
                 <span><i class="legend-dot teal"></i> Download</span>
                 <span><i class="legend-dot blue"></i> Upload</span>
-                <span class="faint">Unit: Mbit/s</span>
+                <span class="faint">Unit: Mbit/s · Time: {currentTimezone}</span>
               </div>
-              {#key `${chartRange}-${theme}-${selectedServer.id}-traffic`}
-                <TrafficChart data={chartData} />
+              {#key `${chartRange}-${theme}-${selectedServer.id}-${currentTimezone}-traffic`}
+                <TrafficChart data={chartData} timezone={currentTimezone} />
               {/key}
             {:else}
               <div class="unavailable-panel">
-                <strong>Waiting for traffic samples</strong>
+                <strong>Waiting for network samples</strong>
                 <span>At least two consecutive network counter samples are needed to calculate bandwidth rate.</span>
               </div>
+            {/if}
+          </article>
+
+          <article class="panel traffic-panel">
+            <div class="panel-heading"><div><h2>Traffic used in a date range</h2></div></div>
+            <form class="traffic-range-form" on:submit|preventDefault={() => void loadTrafficUsage()}>
+              <label>From<input type="datetime-local" step="3600" required bind:value={trafficFrom} disabled={trafficUsageBusy} /></label>
+              <label>To<input type="datetime-local" step="3600" required bind:value={trafficTo} disabled={trafficUsageBusy} /></label>
+              <button class="button primary" type="submit" disabled={trafficUsageBusy || PREVIEW_MODE}>{#if trafficUsageBusy}<span class="version-spinner" aria-hidden="true"></span>Calculating…{:else}Calculate usage{/if}</button>
+            </form>
+            {#if trafficUsageError}<p class="error-text" role="alert">{trafficUsageError}</p>{/if}
+            {#if trafficUsage}
+              <p class="muted">{formatDateTimeInTz(trafficUsage.from, currentTimezone)} → {formatDateTimeInTz(trafficUsage.to, currentTimezone)}</p>
+              <div class="network-rates traffic-usage-results" aria-live="polite">
+                <div><span class="muted">Download</span><strong class="tabular usage-download">{trafficUsage.download_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.download_bytes)}</strong><small class="muted">{trafficUsage.download_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
+                <div><span class="muted">Upload</span><strong class="tabular usage-upload">{trafficUsage.upload_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.upload_bytes)}</strong><small class="muted">{trafficUsage.upload_hours}/{trafficUsage.requested_hours} hours with recorded totals</small></div>
+                <div><span class="muted">Total recorded</span><strong class="tabular">{trafficUsage.total_bytes === null ? 'Unavailable' : formatBytes(trafficUsage.total_bytes)}</strong></div>
+              </div>
+              {#if trafficUsage.download_hours < trafficUsage.requested_hours || trafficUsage.upload_hours < trafficUsage.requested_hours}
+                <p class="warning-text" role="status">History is incomplete. These are available totals; missing hours and uncertain counters are excluded.</p>
+              {/if}
             {/if}
           </article>
 
@@ -2824,8 +2927,7 @@
       <section class="page overview-page" aria-labelledby="overview-title">
         <div class="page-heading">
           <div>
-            <h1 id="overview-title" tabindex="-1">Fleet overview</h1><p class="lede">Health, collection status, and live network activity.</p>
-
+            <h1 id="overview-title" tabindex="-1">Fleet overview</h1>
           </div>
           <div class="heading-status-badge">
             <span class="live-ping"></span>
@@ -2888,20 +2990,19 @@
                 <span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span>
               </div>
               <strong class="stat-value tabular">{attentionCount}</strong>
-              <div class="stat-badge {attentionCount > 0 ? 'warning' : 'neutral'}">
-                <span>{attentionCount > 0 ? 'Stale or pending nodes' : 'Zero failing nodes'}</span>
-              </div>
+              {#if attentionCount > 0}
+                <div class="stat-badge warning">
+                  <span>Stale or pending nodes</span>
+                </div>
+              {/if}
             </article>
 
             <article class="summary-card">
               <div class="card-header">
-                <span class="stat-label">Live download</span>
+                <span class="stat-label">Download & Upload</span>
                 <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
               </div>
-              <strong class="stat-value tabular">{formatNetworkRate(fleetDownload)}</strong>
-              <div class="stat-badge neutral">
-                <span>Upload {formatNetworkRate(fleetUpload)} · {connectedCount} connected servers</span>
-              </div>
+              <strong class="stat-value tabular">↓ {formatNetworkRate(fleetDownload)} · ↑ {formatNetworkRate(fleetUpload)}</strong>
             </article>
           </div>
 
@@ -2917,8 +3018,9 @@
             <div class="table-header">
               <span class="col-status">Status</span>
               <span class="col-name">Hostname / Address</span>
-              <span class="col-meta">Platform</span>
-              <span class="col-metric">CPU %</span>
+              <span class="col-metric">CPU</span>
+              <span class="col-metric">Memory</span>
+              <span class="col-rxtx">Rx / Tx</span>
               <span class="col-action"></span>
             </div>
             <div class="server-list">
@@ -2932,17 +3034,38 @@
                   </div>
                   <div class="col-name server-identity">
                     <strong>{server.name}</strong>
-                    <small class="mono faint">{displayAddress(server)}</small>
-                  </div>
-                  <div class="col-meta">
-                    <span>{server.role} · {server.platform} ({server.architecture})</span>
-                    <small class="faint">{server.freshnessState === 'unknown' ? server.freshnessReason : `Heartbeat ${server.lastHeartbeat?.slice(11, 16)} UTC`}</small>
+                    <small class="mono faint">{displayAddress(server)} · {server.lastHeartbeat ? formatHeartbeatInTz(server.lastHeartbeat, currentTimezone) : (server.freshnessReason || server.connectionState)}</small>
                   </div>
                   <div class="col-metric server-metric">
-                    {#if server.connectionState === 'connected'}<strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
-                    <div class="metric-microbar">
-                      <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
-                    </div>{/if}
+                    {#if server.connectionState === 'connected'}
+                      <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
+                      <div class="metric-microbar">
+                        <span style={`width: ${Math.min(100, Math.max(0, server.metrics.cpu ?? 0))}%`}></span>
+                      </div>
+                    {:else}
+                      <span class="faint">—</span>
+                    {/if}
+                  </div>
+                  <div class="col-metric server-metric">
+                    {#if server.connectionState === 'connected'}
+                      <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
+                      <div class="metric-microbar">
+                        <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
+                      </div>
+                    {:else}
+                      <span class="faint">—</span>
+                    {/if}
+                  </div>
+                  <div class="col-rxtx">
+                    {#if server.connectionState === 'connected'}
+                      <span class="rxtx-rates tabular">
+                        <span class="rate-down">↓ {formatNetworkRate(currentNetworkRate(server, 'download'))}</span>
+                        <span class="rate-sep">·</span>
+                        <span class="rate-up">↑ {formatNetworkRate(currentNetworkRate(server, 'upload'))}</span>
+                      </span>
+                    {:else}
+                      <span class="faint">—</span>
+                    {/if}
                   </div>
                   <div class="col-action">
                     <span class="server-arrow" aria-hidden="true"><Icon name="chevron-right" size={16} /></span>
@@ -2977,7 +3100,7 @@
                 <div class="progress">
                   <span style={`width:${percentage(overviewTrafficBytes, overviewAllowanceBytes)}%`}></span>
                 </div>
-                <p class="muted info-hint tabular">{formatBytes(overviewAllowanceBytes)} fleet quota · UTC timezone</p>
+                <p class="muted info-hint tabular">{formatBytes(overviewAllowanceBytes)} fleet quota · {currentTimezone} timezone</p>
               {/if}
             </article>
 
@@ -3035,11 +3158,6 @@
         {/if}
       </section>
     {/if}
-
-    <footer>
-      <span>{PREVIEW_MODE ? 'Fixture preview · Sample data' : sessionState === 'authenticated' && !authExpired ? 'Your fleet dashboard' : 'Secure Linux monitoring'}</span>
-      <span>Payesh · Low-overhead Linux Fleet Monitor</span>
-    </footer>
   </main>
 </div>
 
@@ -3718,7 +3836,7 @@
   }
   .table-header {
     display: grid;
-    grid-template-columns: 140px minmax(200px, 2fr) minmax(180px, 1.5fr) 110px 40px;
+    grid-template-columns: 130px minmax(180px, 2fr) 95px 95px minmax(140px, 1.2fr) 36px;
     gap: 16px;
     align-items: center;
     padding: 12px 20px;
@@ -3733,7 +3851,7 @@
   .server-list { display: flex; flex-direction: column; }
   .server-row {
     display: grid;
-    grid-template-columns: 140px minmax(200px, 2fr) minmax(180px, 1.5fr) 110px 40px;
+    grid-template-columns: 130px minmax(180px, 2fr) 95px 95px minmax(140px, 1.2fr) 36px;
     gap: 16px;
     align-items: center;
     width: 100%;
@@ -3788,6 +3906,31 @@
     height: 100%;
     background: var(--teal);
     border-radius: 4px;
+  }
+  .metric-microbar .bar-memory {
+    background: var(--purple, #a855f7);
+  }
+
+  .col-rxtx {
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+  }
+  .rxtx-rates {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .rate-down {
+    color: var(--teal);
+  }
+  .rate-up {
+    color: var(--blue, #3b82f6);
+  }
+  .rate-sep {
+    color: var(--muted);
   }
 
   .col-action {
@@ -4548,16 +4691,122 @@
   }
 
   /* --------------------------------------------------------------------------
-     FOOTER
+     NOTIFICATION BELL & BADGE
      -------------------------------------------------------------------------- */
-  footer {
+  .notification-bell-button {
+    position: relative;
+  }
+  .notification-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--danger, #ef4444);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  /* --------------------------------------------------------------------------
+     ALERTS PAGINATION
+     -------------------------------------------------------------------------- */
+  .alerts-pagination-bar {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 0 32px 32px;
-    color: var(--muted);
+    gap: 16px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+  }
+  .alerts-pagination-bar.bottom {
+    margin-top: 16px;
+    margin-bottom: 0;
+    justify-content: flex-end;
+  }
+  .alerts-pager {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .page-size-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 12px;
+    color: var(--muted);
+  }
+  .page-size-selector select {
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: var(--radius-sm);
+  }
+  .pager-info {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* --------------------------------------------------------------------------
+     DISK CARD & CIRCLE LAYOUT
+     -------------------------------------------------------------------------- */
+  .disk-metric-card .disk-card-circle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .disk-detail-panel .disk-detail-layout {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    padding: 16px 8px;
+    flex-wrap: wrap;
+  }
+  .disk-detail-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+    gap: 16px;
+    flex: 1;
+  }
+  .disk-stat-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 16px;
+    background: var(--surface-muted);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .disk-stat-box .stat-lbl {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .disk-stat-box strong {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  /* --------------------------------------------------------------------------
+     MONITORING CARD CLICKABLE
+     -------------------------------------------------------------------------- */
+  .monitoring-card.clickable {
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+  .monitoring-card.clickable:hover {
+    border-color: var(--teal);
+    box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
+    transform: translateY(-1px);
   }
 
   /* --------------------------------------------------------------------------
@@ -4585,9 +4834,9 @@
     .sidebar-footer { display: none; }
     .summary-grid { grid-template-columns: 1fr 1fr; }
     .table-header, .server-row {
-      grid-template-columns: 120px 1.5fr 1fr 40px;
+      grid-template-columns: 120px 1.5fr 80px 80px 36px;
     }
-    .col-metric { display: none; }
+    .col-rxtx { display: none; }
   }
 
   @media (max-width: 640px) {
@@ -4624,7 +4873,6 @@
     .server-row:not(.alert-row) .col-status { grid-area: status; }
     .server-row:not(.alert-row) .col-action { grid-area: action; }
     .col-meta { display: none; }
-    footer { flex-direction: column; gap: 8px; padding: 0 16px 24px; }
   }
   @media (prefers-reduced-motion: reduce) { :global(*), :global(*::before), :global(*::after) { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 </style>

@@ -5,7 +5,7 @@
   import 'uplot/dist/uPlot.min.css';
   import type { PreviewChartData } from './preview/fixtures';
 
-  let { data }: { data: PreviewChartData } = $props();
+  let { data, timezone = 'UTC' }: { data: PreviewChartData; timezone?: string } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
   const rate = formatNetworkRate;
@@ -34,7 +34,7 @@
           grid: { stroke: line, width: 1 },
           ticks: { stroke: line, width: 1 },
           font: '12px Segoe UI, Arial, sans-serif',
-          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }))
+          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: timezone }))
         },
         {
           stroke: muted,

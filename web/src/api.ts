@@ -373,8 +373,8 @@ export class ApiClient {
     return this.request<ModuleInstallation>(`/servers/${encodeURIComponent(serverId)}/modules/${encodeURIComponent(moduleId)}/${action}`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ expected_revision: expectedRevision, idempotency_key: idempotencyKey }), signal: options.signal });
   }
 
-  listAlerts(options: QueryOptions = {}): Promise<AlertStatePage> {
-    return this.request<AlertStatePage>(`/alerts${queryString({ limit: 200 })}`, { signal: options.signal });
+  listAlerts(params: { limit?: number; cursor?: string; server_id?: string } & QueryOptions = {}): Promise<AlertStatePage> {
+    return this.request<AlertStatePage>(`/alerts${queryString({ limit: params.limit ?? 200, cursor: params.cursor, server_id: params.server_id })}`, { signal: params.signal });
   }
 
   getServer(serverId: string, options: QueryOptions = {}): Promise<Server> {
