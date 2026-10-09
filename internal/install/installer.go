@@ -868,7 +868,10 @@ func serviceDefinition(init, service, listen string) (string, bool) {
 name="payesh-agent"
 description="Payesh local monitoring agent"
 command="/bin/sh"
-command_args="-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -n \"\$PAYESH_TRANSPORT_URL\" ]; then exec /usr/bin/payesh-agent -interval=15s; else exec /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null; fi'"
+# supervise-daemon signals only the shell it started. The local pipeline runs
+# in the background so the shell can trap the stop signal and end the whole
+# pipeline (its process group); otherwise every restart leaks an agent/ingest pair.
+command_args="-c 'set -o pipefail; if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -n \"\$PAYESH_TRANSPORT_URL\" ]; then exec /usr/bin/payesh-agent -interval=15s; fi; trap \"trap - TERM INT HUP; kill 0\" TERM INT HUP; /usr/bin/payesh-agent -interval=15s -identity-file=/var/lib/payesh/server-id | /usr/bin/payesh ingest -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id -follow >/dev/null & wait \$!'"
 command_user="payesh:payesh"
 supervisor="supervise-daemon"
 supervise_daemon_args="--respawn-delay 5"
@@ -876,6 +879,9 @@ output_log="/dev/null"
 error_log="/var/log/payesh/agent.err"
 
 start_pre() {
+	# Agents orphaned by older service definitions keep sampling and writing
+	# forever; their ingest processes exit once the agent's output closes.
+	pkill -P 1 -u payesh -x payesh-agent 2>/dev/null || true
 	/bin/su -s /bin/sh -c 'if [ -f /etc/payesh/payesh.env ]; then set -a; . /etc/payesh/payesh.env; set +a; fi; if [ -z "$PAYESH_TRANSPORT_URL" ]; then exec /usr/bin/payesh register-server -ensure -db=/var/lib/payesh/payesh.db -identity-file=/var/lib/payesh/server-id >/dev/null; fi' payesh || return 1
 }
 

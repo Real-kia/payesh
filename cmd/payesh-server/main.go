@@ -196,7 +196,7 @@ func main() {
 		}
 	}
 	if nodeHub != nil {
-		nodeServer = &http.Server{Handler: nodeTransportHandler(nodeHub), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+		nodeServer = &http.Server{Handler: nodeTransportHandler(nodeHub), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: serverErrorLog(os.Stderr)}
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequestClientCert, NextProtos: []string{"http/1.1"}, GetCertificate: httpsManager.GetCertificate}
 		if nodeConfig.CertFile != "" {
 			certificate, certErr := tls.LoadX509KeyPair(nodeConfig.CertFile, nodeConfig.KeyFile)
@@ -442,6 +442,7 @@ func main() {
 		WriteTimeout:   monitoring.MaxLiveTailDuration + time.Minute,
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 16 << 10,
+		ErrorLog:       serverErrorLog(os.Stderr),
 	}
 	go func() {
 		<-ctx.Done()

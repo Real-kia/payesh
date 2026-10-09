@@ -171,6 +171,7 @@ func main() {
 			Hello:          contracts.Hello{Version: version.Value, ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
 			ActionHandler:  actionHandler,
 			SamplingPolicy: func(seconds int) { hubSampleSeconds.Store(int64(seconds)) },
+			Logf:           func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
 		}
 		transportBatches = make(chan contracts.SampleBatch, 1)
 		done := make(chan error, 1)

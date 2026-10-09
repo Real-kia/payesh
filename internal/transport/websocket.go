@@ -514,9 +514,12 @@ type AgentClient struct {
 	// does not interpret action arguments as shell commands.
 	ActionHandler  func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 	SamplingPolicy func(int)
-	actionMu       sync.Mutex
-	actionResult   map[string]contracts.ActionResponse
-	actionRunning  map[string]bool
+	// Logf, when set, receives rate-limited reports of failed connections and
+	// the following recovery. Without it reconnects stay silent.
+	Logf          func(format string, args ...any)
+	actionMu      sync.Mutex
+	actionResult  map[string]contracts.ActionResponse
+	actionRunning map[string]bool
 }
 
 // Only advertise an extension to peers that explicitly support it. Older
@@ -558,6 +561,7 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 	if backoff.Max <= 0 {
 		backoff.Max = 60 * time.Second
 	}
+	reporter := connectionReporter{logf: a.Logf}
 	for {
 		dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
 		ws, err := a.dial(dialCtx)
@@ -565,7 +569,13 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 
 		if err == nil {
 			backoff.Reset()
+			// A hub can accept the TLS dial and still end the session at once
+			// (rejected hello, revoked identity); only a session that stays up
+			// counts as a recovery worth reporting.
+			endpoint := a.URL
+			stable := time.AfterFunc(connectionStableAfter, func() { reporter.connected(endpoint) })
 			err = a.session(ctx, ws, batches)
+			stable.Stop()
 			_ = ws.Close()
 			if err == nil {
 				return nil
@@ -577,6 +587,7 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 		if ctx.Err() != nil {
 			return nil
 		}
+		reporter.failed(a.URL, err)
 		if err != nil && a.previousURL != "" {
 			// Try both retained endpoints until one accepts our hello. Keep
 			// the verified candidate on disk until authentication succeeds;
