@@ -229,8 +229,7 @@ func (s *Store) retryStartupSQLite(ctx context.Context, run func(context.Context
 			_, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout=5000;`)
 			return err
 		}
-		var sqliteErr *sqlite.Error
-		if !errors.As(err, &sqliteErr) || (sqliteErr.Code()&255 != sqlite3.SQLITE_BUSY && sqliteErr.Code()&255 != sqlite3.SQLITE_LOCKED) {
+		if !IsBusyError(err) {
 			return err
 		}
 		// SQLite lock upgrades can return BUSY without using busy_timeout.
@@ -242,6 +241,22 @@ func (s *Store) retryStartupSQLite(ctx context.Context, run func(context.Context
 		case <-timer.C:
 		}
 	}
+}
+
+// IsBusyError reports whether an error represents an SQLite lock contention
+// error (SQLITE_BUSY or SQLITE_LOCKED), which can occur transiently when
+// concurrent processes or lock upgrades contend for the database.
+func IsBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code() & 255
+		return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "SQLITE_LOCKED") || strings.Contains(msg, "database is locked")
 }
 
 func storeDiskPath(path string) (string, error) {

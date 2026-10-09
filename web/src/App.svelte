@@ -853,7 +853,10 @@
   function openPackageDialog(module: Module) {
     packageDialog = module; packageStep = 'target'; packageError = '';
     packageSource = 'github'; packageLocation = ''; packageVersion = ''; packageManifest = ''; packageSignature = '';
-    packageServerId = ''; moduleInstallations = [];
+    const master = servers.find((s) => s.role === 'standalone' || s.role === 'hub') ?? servers[0];
+    packageServerId = master ? master.id : '';
+    moduleInstallations = [];
+    if (packageServerId) void loadServerModules();
   }
 
   function moduleState(moduleId: string): ModuleInstallation | undefined {

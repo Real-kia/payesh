@@ -356,7 +356,7 @@ func ingest(ctx context.Context, args []string) error {
 		postProcessCtx, cancel := context.WithCancel(ctx)
 		postProcessCancel = cancel
 		postProcessDone = processor.StartPostProcessRetry(postProcessCtx, traffic.DefaultPostProcessRetryInterval, func(err error) {
-			if postProcessCtx.Err() == nil {
+			if postProcessCtx.Err() == nil && !errors.Is(err, monitoring.ErrAlertStateConflict) && !monitoring.IsBusyError(err) {
 				fmt.Fprintln(os.Stderr, "retry pending sample processing:", err)
 			}
 		})
@@ -429,8 +429,20 @@ func ingest(ctx context.Context, args []string) error {
 			// been decoded and the durable store is ready.
 			receipt = time.Now().UTC()
 		}
-		result, err := store.IngestNodeBatch(ctx, resolvedServerID, []contracts.NodeMetricSample{sample}, nil, receipt)
-		if err != nil {
+		var result monitoring.IngestResult
+		for attempt := 0; ; attempt++ {
+			result, err = store.IngestNodeBatch(ctx, resolvedServerID, []contracts.NodeMetricSample{sample}, nil, receipt)
+			if err == nil {
+				break
+			}
+			if monitoring.IsBusyError(err) && attempt < 10 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(50*(1<<min(attempt, 4))) * time.Millisecond):
+					continue
+				}
+			}
 			return err
 		}
 		// A successful local ingest is also the agent heartbeat. This update is

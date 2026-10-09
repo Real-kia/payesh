@@ -119,7 +119,7 @@ func main() {
 	// ready streams wait forever, nor should it make the server exit with raw
 	// samples already safely committed.
 	postProcessDone := processor.StartPostProcessRetry(ctx, traffic.DefaultPostProcessRetryInterval, func(err error) {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && !errors.Is(err, monitoring.ErrAlertStateConflict) && !monitoring.IsBusyError(err) {
 			fmt.Fprintln(os.Stderr, "retry pending sample processing:", err)
 		}
 	})

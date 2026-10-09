@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/porttraffic"
 )
@@ -311,5 +312,59 @@ func TestTrustedProxyThrottleSeparatesForwardedClients(t *testing.T) {
 	api.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("distinct forwarded client shared throttle: %d", response.Code)
+	}
+}
+
+func TestModuleInstallDoesNotCollideWithServerInstallRoute(t *testing.T) {
+	store, err := monitoring.OpenStore(context.Background(), ":memory:", monitoring.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	installSvc, err := NewInstallService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &modules.Manager{Store: store, LocalServerID: "server-bc1939de224e96b953d7c1ac968c17a4"}
+	moduleSvc := modules.NewService(manager)
+	api, err := NewAPIWithOptions(store, "0123456789abcdef-bootstrap", Options{
+		InstallService: installSvc,
+		ModuleService:  moduleSvc,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"secret":"0123456789abcdef-bootstrap","password":"long-enough-password"}`))
+	setupRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(setupRec, setup)
+	if setupRec.Code != http.StatusCreated {
+		t.Fatalf("setup status=%d", setupRec.Code)
+	}
+
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/session", bytes.NewBufferString(`{"password":"long-enough-password"}`))
+	loginRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(loginRec, login)
+	if loginRec.Code != http.StatusNoContent {
+		t.Fatalf("login status=%d", loginRec.Code)
+	}
+	cookie := loginRec.Result().Cookies()[0]
+	csrf := loginRec.Header().Get("X-CSRF-Token")
+
+	// Target a module installation endpoint
+	path := "/api/v1/servers/server-bc1939de224e96b953d7c1ac968c17a4/modules/port-traffic/install"
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", csrf)
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+
+	// If intercepted by install service, it would return 404 "resource not found".
+	// The module service receives it and returns 400 invalid_idempotency_key because body is empty.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("module install was intercepted by install route: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 from module service, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

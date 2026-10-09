@@ -1056,3 +1056,18 @@ func TestRetentionHandlesMaxUintSequenceWithoutCrossingMissingPrefix(t *testing.
 		t.Fatalf("max retention frontier=%d found=%v err=%v", through, found, err)
 	}
 }
+
+func TestIsBusyErrorDetection(t *testing.T) {
+	if IsBusyError(nil) {
+		t.Fatal("nil error must not be busy error")
+	}
+	if IsBusyError(errors.New("something else")) {
+		t.Fatal("generic error must not be busy error")
+	}
+	if !IsBusyError(errors.New("payesh: database is locked (5) (SQLITE_BUSY)")) {
+		t.Fatal("SQLITE_BUSY string must be detected as busy error")
+	}
+	if !IsBusyError(errors.New("database table is locked: SQLITE_LOCKED")) {
+		t.Fatal("SQLITE_LOCKED string must be detected as busy error")
+	}
+}

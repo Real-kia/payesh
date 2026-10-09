@@ -298,6 +298,10 @@ func (p *Processor) ObserveIngestion(ctx context.Context, samples []contracts.Me
 					p.blockedStreams[postProcessStreamIdentity(sample)] = struct{}{}
 					continue
 				}
+				if errors.Is(err, monitoring.ErrAlertStateConflict) {
+					deferred = true
+					continue
+				}
 				return err
 			}
 			if err := p.Store.AcknowledgePostProcessSample(ctx, sample); err != nil {
@@ -397,7 +401,7 @@ func (p *Processor) StartPostProcessRetry(ctx context.Context, interval time.Dur
 			} else {
 				err = p.ObserveIngestion(ctx, nil)
 			}
-			if err == nil || errors.Is(err, ErrUsageDeferred) || errors.Is(err, ErrPostProcessPending) || ctx.Err() != nil {
+			if err == nil || errors.Is(err, ErrUsageDeferred) || errors.Is(err, ErrPostProcessPending) || errors.Is(err, monitoring.ErrAlertStateConflict) || monitoring.IsBusyError(err) || ctx.Err() != nil {
 				return
 			}
 			if report != nil {

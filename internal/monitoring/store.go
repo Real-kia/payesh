@@ -1389,108 +1389,23 @@ func (s *Store) IngestSamples(ctx context.Context, serverID contracts.ServerID, 
 			return IngestResult{}, err
 		}
 	}
-	if err := s.ensureWritable(ctx); err != nil {
-		return IngestResult{}, err
+	var result IngestResult
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		result, err = s.commitSampleBatchTx(ctx, serverID, samples, gaps)
+		if err == nil {
+			break
+		}
+		if !IsBusyError(err) {
+			return IngestResult{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return IngestResult{}, ctx.Err()
+		case <-time.After(time.Duration(25*(1<<min(attempt, 4))) * time.Millisecond):
+		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return IngestResult{}, err
-	}
-	// The write transaction is already open, so this check serializes with a
-	// freeze: a batch acknowledged here is part of the final tail, and a batch
-	// that starts after a committed freeze fails without any durable effect.
-	if err := requireServerIngestAuthorityTx(ctx, tx, serverID); err != nil {
-		_ = tx.Rollback()
-		return IngestResult{}, err
-	}
-	result := IngestResult{}
-	// Track the latest durable observation for each epoch touched by this
-	// batch. Retention uses this metadata to retire inactive epochs, while raw
-	// queue rows remain the stronger protection for delayed processing.
-	epochLastSeen := make(map[contracts.CollectorEpoch]time.Time, len(samples)+len(gaps))
-	for _, sample := range samples {
-		if seen, ok := epochLastSeen[sample.CollectorEpoch]; !ok || sample.ReceivedAt.After(seen) {
-			epochLastSeen[sample.CollectorEpoch] = sample.ReceivedAt
-		}
-	}
-	gapSeenAt := time.Now().UTC()
-	for _, gap := range gaps {
-		if seen, ok := epochLastSeen[gap.CollectorEpoch]; !ok || gapSeenAt.After(seen) {
-			epochLastSeen[gap.CollectorEpoch] = gapSeenAt
-		}
-	}
-	for epoch, seenAt := range epochLastSeen {
-		retired, unseenBlocked, retiredErr := collectorEpochAuthorityStatusTx(ctx, tx, serverID, epoch)
-		if retiredErr != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, retiredErr
-		}
-		if unseenBlocked {
-			_ = tx.Rollback()
-			return IngestResult{}, ErrCollectorEpochAuthorityFull
-		}
-		if retired {
-			_ = tx.Rollback()
-			return IngestResult{}, errors.New("collector epoch is retired")
-		}
-		if err := touchCollectorEpochTx(ctx, tx, serverID, epoch, seenAt); err != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, err
-		}
-	}
-	frontierStreams := make(map[string]contracts.CollectorEpoch)
-	for _, sample := range samples {
-		frontierStreams[string(sample.CollectorEpoch)+"\x00"+string(serverID)] = sample.CollectorEpoch
-		inserted, err := insertSample(ctx, tx, sample)
-		if err != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, err
-		}
-		if inserted {
-			var queued int
-			if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM post_process_queue`).Scan(&queued); countErr != nil {
-				_ = tx.Rollback()
-				return IngestResult{}, countErr
-			}
-			if queued >= MaxPostProcessQueue {
-				_ = tx.Rollback()
-				return IngestResult{}, errors.New("post-process queue is full")
-			}
-			sampleJSON, marshalErr := json.Marshal(sample)
-			if marshalErr != nil {
-				_ = tx.Rollback()
-				return IngestResult{}, marshalErr
-			}
-			if _, queueErr := tx.ExecContext(ctx, `INSERT INTO post_process_queue(server_id,collector_epoch,sequence,sample_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, string(serverID), string(sample.CollectorEpoch), strconv.FormatUint(sample.Sequence, 10), string(sampleJSON), FormatPersistedTime(time.Now())); queueErr != nil {
-				_ = tx.Rollback()
-				return IngestResult{}, queueErr
-			}
-			result.Inserted++
-			result.InsertedSamples = append(result.InsertedSamples, sample)
-		} else {
-			result.Duplicate++
-		}
-	}
-	for _, gap := range gaps {
-		frontierStreams[string(gap.CollectorEpoch)+"\x00"+string(serverID)] = gap.CollectorEpoch
-		fromObserved, toObserved, err := gapObservedBoundsTx(ctx, tx, serverID, gap)
-		if err != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, err
-		}
-		err = insertCoverageGapTx(ctx, tx, serverID, gap.CollectorEpoch, gap.FromSequence, gap.ToSequence, gap.Reason, fromObserved, toObserved)
-		if err != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, err
-		}
-	}
-	for _, epoch := range frontierStreams {
-		if err := advanceSequenceFrontierTx(ctx, tx, serverID, epoch); err != nil {
-			_ = tx.Rollback()
-			return IngestResult{}, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
 		return IngestResult{}, err
 	}
 	s.observerMu.RLock()
@@ -1543,6 +1458,101 @@ func (s *Store) IngestSamples(ctx context.Context, serverID contracts.ServerID, 
 			return result, nil
 		}
 	}
+	return result, nil
+}
+
+func (s *Store) commitSampleBatchTx(ctx context.Context, serverID contracts.ServerID, samples []contracts.MetricSample, gaps []contracts.CoverageGap) (IngestResult, error) {
+	if err := s.ensureWritable(ctx); err != nil {
+		return IngestResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := requireServerIngestAuthorityTx(ctx, tx, serverID); err != nil {
+		return IngestResult{}, err
+	}
+	result := IngestResult{}
+	epochLastSeen := make(map[contracts.CollectorEpoch]time.Time, len(samples)+len(gaps))
+	for _, sample := range samples {
+		if seen, ok := epochLastSeen[sample.CollectorEpoch]; !ok || sample.ReceivedAt.After(seen) {
+			epochLastSeen[sample.CollectorEpoch] = sample.ReceivedAt
+		}
+	}
+	gapSeenAt := time.Now().UTC()
+	for _, gap := range gaps {
+		if seen, ok := epochLastSeen[gap.CollectorEpoch]; !ok || gapSeenAt.After(seen) {
+			epochLastSeen[gap.CollectorEpoch] = gapSeenAt
+		}
+	}
+	for epoch, seenAt := range epochLastSeen {
+		retired, unseenBlocked, retiredErr := collectorEpochAuthorityStatusTx(ctx, tx, serverID, epoch)
+		if retiredErr != nil {
+			return IngestResult{}, retiredErr
+		}
+		if unseenBlocked {
+			return IngestResult{}, ErrCollectorEpochAuthorityFull
+		}
+		if retired {
+			return IngestResult{}, errors.New("collector epoch is retired")
+		}
+		if err := touchCollectorEpochTx(ctx, tx, serverID, epoch, seenAt); err != nil {
+			return IngestResult{}, err
+		}
+	}
+	frontierStreams := make(map[string]contracts.CollectorEpoch)
+	for _, sample := range samples {
+		frontierStreams[string(sample.CollectorEpoch)+"\x00"+string(serverID)] = sample.CollectorEpoch
+		inserted, err := insertSample(ctx, tx, sample)
+		if err != nil {
+			return IngestResult{}, err
+		}
+		if inserted {
+			var queued int
+			if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM post_process_queue`).Scan(&queued); countErr != nil {
+				return IngestResult{}, countErr
+			}
+			if queued >= MaxPostProcessQueue {
+				return IngestResult{}, errors.New("post-process queue is full")
+			}
+			sampleJSON, marshalErr := json.Marshal(sample)
+			if marshalErr != nil {
+				return IngestResult{}, marshalErr
+			}
+			if _, queueErr := tx.ExecContext(ctx, `INSERT INTO post_process_queue(server_id,collector_epoch,sequence,sample_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, string(serverID), string(sample.CollectorEpoch), strconv.FormatUint(sample.Sequence, 10), string(sampleJSON), FormatPersistedTime(time.Now())); queueErr != nil {
+				return IngestResult{}, queueErr
+			}
+			result.Inserted++
+			result.InsertedSamples = append(result.InsertedSamples, sample)
+		} else {
+			result.Duplicate++
+		}
+	}
+	for _, gap := range gaps {
+		frontierStreams[string(gap.CollectorEpoch)+"\x00"+string(serverID)] = gap.CollectorEpoch
+		fromObserved, toObserved, err := gapObservedBoundsTx(ctx, tx, serverID, gap)
+		if err != nil {
+			return IngestResult{}, err
+		}
+		err = insertCoverageGapTx(ctx, tx, serverID, gap.CollectorEpoch, gap.FromSequence, gap.ToSequence, gap.Reason, fromObserved, toObserved)
+		if err != nil {
+			return IngestResult{}, err
+		}
+	}
+	for _, epoch := range frontierStreams {
+		if err := advanceSequenceFrontierTx(ctx, tx, serverID, epoch); err != nil {
+			return IngestResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return IngestResult{}, err
+	}
+	tx = nil
 	return result, nil
 }
 

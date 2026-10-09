@@ -269,9 +269,15 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.updates.ServeHTTP(w, r)
 		return
 	}
-	if a.install != nil && (trimmedPath == "/api/v1/installations" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/install"))) {
-		a.install.ServeHTTP(w, r)
+	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
+		a.modules.ServeHTTP(w, r)
 		return
+	}
+	if a.install != nil {
+		if _, isServerInstall := installPathServerID(trimmedPath); trimmedPath == "/api/v1/installations" || isServerInstall {
+			a.install.ServeHTTP(w, r)
+			return
+		}
 	}
 	if strings.HasPrefix(trimmedPath, "/api/v1/jobs/") {
 		a.jobs.ServeHTTP(w, r)
@@ -291,10 +297,6 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.processMonitoring != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/processes") {
 		a.processMonitoring.ServeHTTP(w, r)
-		return
-	}
-	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
-		a.modules.ServeHTTP(w, r)
 		return
 	}
 	if a.cpuControl != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/cpu-policies") {
