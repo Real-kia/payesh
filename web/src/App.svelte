@@ -1927,9 +1927,7 @@
           <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
           <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
           <article class="summary-card stat-network-card">
-            <div class="card-header">
-              <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
-            </div>
+            <span class="stat-icon-wrap cyan card-corner-icon"><Icon name="activity" size={15} /></span>
             <div class="network-split">
               <div class="network-split-col">
                 <div class="network-split-head">
@@ -3022,9 +3020,7 @@
             </article>
 
             <article class="summary-card stat-network-card">
-              <div class="card-header">
-                <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
-              </div>
+              <span class="stat-icon-wrap cyan card-corner-icon"><Icon name="activity" size={15} /></span>
               <div class="network-split">
                 <div class="network-split-col">
                   <div class="network-split-head">
@@ -3858,26 +3854,26 @@
 
   /* Network summary card */
   .stat-network-card {
+    position: relative;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
   }
-  .stat-network-card .card-header {
-    justify-content: flex-end;
-    margin-bottom: 6px;
+  .stat-network-card .card-corner-icon {
+    position: absolute;
+    top: 18px;
+    right: 20px;
   }
   .network-split {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 12px;
-    margin-top: 2px;
-    margin-bottom: 2px;
+    padding-right: 28px;
   }
   .network-split-col {
     display: flex;
     flex-direction: column;
-    gap: 4px;
     flex: 1;
     min-width: 0;
   }
@@ -3885,6 +3881,8 @@
     display: flex;
     align-items: center;
     gap: 5px;
+    height: 28px;
+    margin-bottom: 12px;
   }
   .rate-badge {
     display: inline-flex;
@@ -3896,6 +3894,7 @@
     font-size: 11px;
     font-weight: 700;
     line-height: 1;
+    flex-shrink: 0;
   }
   .rate-badge.down {
     background: rgba(20, 184, 166, 0.15);
@@ -3911,6 +3910,7 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--muted);
+    white-space: nowrap;
   }
   .network-split-value {
     display: block;
@@ -3924,9 +3924,10 @@
   }
   .network-split-sep {
     width: 1px;
-    height: 32px;
+    height: 42px;
     background: var(--line);
     flex-shrink: 0;
+    align-self: center;
   }
 
   /* --------------------------------------------------------------------------
@@ -4972,6 +4973,9 @@
     .summary-card .stat-label { font-size: 12px; }
     .summary-card .stat-icon-wrap { width: 20px; height: 20px; }
     .summary-card .stat-badge { font-size: 11px; }
+    .stat-network-card .card-corner-icon { top: 16px; right: 16px; }
+    .network-split-head { height: 20px; margin-bottom: 6px; }
+    .network-split-sep { height: 32px; }
 
     .package-source-fields details { grid-column: auto; }
     .table-header { display: none; }
