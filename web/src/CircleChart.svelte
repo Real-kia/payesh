@@ -4,13 +4,17 @@
     size = 110,
     strokeWidth = 9,
     label = 'Used',
-    sublabel = ''
+    sublabel = '',
+    color = '',
+    showValue = true
   }: {
     value?: number | null;
     size?: number;
     strokeWidth?: number;
     label?: string;
     sublabel?: string;
+    color?: string;
+    showValue?: boolean;
   } = $props();
 
   const radius = $derived((100 - strokeWidth) / 2);
@@ -23,7 +27,7 @@
   );
 </script>
 
-<div class="circle-chart-container" style:--chart-size="{size}px">
+<div class="circle-chart-container" style:--chart-size="{size}px" style:--chart-color={color || undefined}>
   <div class="circle-svg-wrap">
     <svg
       viewBox="0 0 100 100"
@@ -31,7 +35,7 @@
       width={size}
       height={size}
       role="img"
-      aria-label="{label}: {value !== null && Number.isFinite(value) ? `${Math.round(pct)}%` : 'Unavailable'}"
+      aria-label="{label ? `${label}: ` : ''}{value !== null && Number.isFinite(value) ? `${Math.round(pct)}%` : 'Unavailable'}"
     >
       <circle
         class="circle-bg"
@@ -54,13 +58,17 @@
         />
       {/if}
     </svg>
-    <div class="circle-content">
-      <strong class="circle-val tabular">{value !== null && Number.isFinite(value) ? `${Math.round(value)}%` : '—'}</strong>
-      <span class="circle-lbl">{label}</span>
-      {#if sublabel}
-        <small class="circle-sub">{sublabel}</small>
-      {/if}
-    </div>
+    {#if showValue}
+      <div class="circle-content">
+        <strong class="circle-val tabular">{value !== null && Number.isFinite(value) ? `${Math.round(value)}%` : '—'}</strong>
+        {#if label && size >= 55}
+          <span class="circle-lbl">{label}</span>
+        {/if}
+        {#if sublabel && size >= 80}
+          <small class="circle-sub">{sublabel}</small>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -90,13 +98,13 @@
     transition: stroke-dashoffset 0.4s ease;
   }
   .circle-svg.normal .circle-fill {
-    stroke: var(--teal);
+    stroke: var(--chart-color, var(--teal));
   }
   .circle-svg.warning .circle-fill {
-    stroke: var(--warning);
+    stroke: var(--warning, #d97706);
   }
   .circle-svg.danger .circle-fill {
-    stroke: var(--danger);
+    stroke: var(--danger, #ef4444);
   }
   .circle-content {
     position: absolute;
@@ -108,14 +116,14 @@
     pointer-events: none;
   }
   .circle-val {
-    font-size: 1.25rem;
+    font-size: clamp(0.65rem, calc(var(--chart-size, 110px) * 0.22), 1.25rem);
     font-weight: 700;
     letter-spacing: -0.02em;
     color: var(--ink);
     line-height: 1.1;
   }
   .circle-lbl {
-    font-size: 0.7rem;
+    font-size: clamp(0.5rem, calc(var(--chart-size, 110px) * 0.09), 0.7rem);
     font-weight: 600;
     color: var(--muted);
     text-transform: uppercase;

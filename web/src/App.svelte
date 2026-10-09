@@ -2164,17 +2164,25 @@
             <div class="panel monitoring-card clickable" role="button" tabindex="0" on:click={() => selectServer(server)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') selectServer(server); }}>
               <div class="monitoring-top"><div><h2>{server.name}</h2><small class="mono faint">{displayAddress(server)}</small></div><span class={`status-pill ${server.displayState}`}><i class="status-dot"></i>{stateLabel(server.displayState)}</span></div>
               {#if server.connectionState === 'connected'}<div class="monitoring-metrics">
-                {#each [['CPU', 'cpu', 'teal'], ['Memory', 'memory', 'purple'], ['Disk', 'disk', 'blue']] as metric}
-                  {@const value = server.metrics[metric[1] as 'cpu' | 'memory' | 'disk']}
-                  {@const history = server.metricHistory?.ranges['15m']?.[metric[1] as 'cpu' | 'memory' | 'disk'] ?? []}
+                {#each [['CPU', 'cpu', 'teal'], ['Memory', 'memory', 'purple']] as metric}
+                  {@const value = server.metrics[metric[1] as 'cpu' | 'memory']}
+                  {@const history = server.metricHistory?.ranges['15m']?.[metric[1] as 'cpu' | 'memory'] ?? []}
                   <div class={`monitoring-gauge ${metric[2]}`} class:resource-warning={value !== null && value >= 75} class:resource-critical={value !== null && value >= 90}>
                     <span>{metric[0]}</span><strong>{metricValue(value)}</strong>
                     <div class="monitoring-spark" aria-label={`${metric[0]} recent history`}>
-                      {#if history.filter(point => point !== null).length > 1}<Sparkline values={history} tone={metric[2] as 'teal' | 'purple' | 'blue'} />{:else}<small class="faint">Awaiting history</small>{/if}
+                      {#if history.filter(point => point !== null).length > 1}<Sparkline values={history} tone={metric[2] as 'teal' | 'purple'} />{:else}<small class="faint">Awaiting history</small>{/if}
                     </div>
                     <div class="resource-track" role="meter" aria-label={`${metric[0]} usage`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={value ?? undefined} aria-valuetext={value === null ? 'Unavailable' : metricValue(value)}><i style:width={`${Math.max(0, Math.min(100, value ?? 0))}%`}></i></div>
                   </div>
                 {/each}
+                <div class="monitoring-gauge blue monitoring-gauge-disk" class:resource-warning={server.metrics.disk !== null && server.metrics.disk >= 75} class:resource-critical={server.metrics.disk !== null && server.metrics.disk >= 90}>
+                  <div class="monitoring-gauge-head">
+                    <span>Disk</span>
+                  </div>
+                  <div class="monitoring-disk-circle">
+                    <CircleChart value={server.metrics.disk} size={64} strokeWidth={8} label="Used" color="var(--blue, #3b82f6)" />
+                  </div>
+                </div>
                 <div class="monitoring-network"><span>↓ Download</span><strong>{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
                 <div class="monitoring-network"><span>↑ Upload</span><strong>{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
               </div>{/if}
@@ -2203,6 +2211,7 @@
             <span class="col-name">Server & Address</span>
             <span class="col-metric">CPU</span>
             <span class="col-metric">Memory</span>
+            <span class="col-metric col-metric-disk">Disk</span>
             <span class="col-rxtx">Rx / Tx</span>
             <span class="col-action"></span>
           </div>
@@ -2234,6 +2243,16 @@
                     <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
                     <div class="metric-microbar">
                       <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
+                    </div>
+                  {:else}
+                    <span class="faint">—</span>
+                  {/if}
+                </div>
+                <div class="col-metric server-metric col-metric-disk">
+                  {#if server.connectionState === 'connected'}
+                    <div class="disk-table-cell">
+                      <CircleChart value={server.metrics.disk} size={28} strokeWidth={9} showValue={false} color="var(--blue, #3b82f6)" />
+                      <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
                     </div>
                   {:else}
                     <span class="faint">—</span>
@@ -3334,6 +3353,7 @@
               <span class="col-name">Hostname / Address</span>
               <span class="col-metric">CPU</span>
               <span class="col-metric">Memory</span>
+              <span class="col-metric col-metric-disk">Disk</span>
               <span class="col-rxtx">Rx / Tx</span>
               <span class="col-action"></span>
             </div>
@@ -3365,6 +3385,16 @@
                       <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
                       <div class="metric-microbar">
                         <span class="bar-memory" style={`width: ${Math.min(100, Math.max(0, server.metrics.memory ?? 0))}%`}></span>
+                      </div>
+                    {:else}
+                      <span class="faint">—</span>
+                    {/if}
+                  </div>
+                  <div class="col-metric server-metric col-metric-disk">
+                    {#if server.connectionState === 'connected'}
+                      <div class="disk-table-cell">
+                        <CircleChart value={server.metrics.disk} size={28} strokeWidth={9} showValue={false} color="var(--blue, #3b82f6)" />
+                        <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
                       </div>
                     {:else}
                       <span class="faint">—</span>
@@ -3703,6 +3733,22 @@
   .monitoring-gauge.resource-warning { --metric-color: var(--warning, #d97706); }
   .monitoring-gauge.resource-critical { --metric-color: var(--danger); }
   .monitoring-gauge strong { color: var(--metric-color); }
+  .monitoring-gauge-disk {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .monitoring-gauge-disk .monitoring-gauge-head {
+    width: 100%;
+    text-align: left;
+  }
+  .monitoring-disk-circle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    padding: 4px 0 2px;
+  }
   .monitoring-spark { height: 40px; margin: 12px 0 8px; }
   .resource-track { height: 4px; background: var(--line); border-radius: 9px; overflow: hidden; }
   .resource-track i { display: block; height: 100%; background: var(--metric-color); transition: width .4s ease; }
@@ -4228,7 +4274,7 @@
   }
   .table-header {
     display: grid;
-    grid-template-columns: 130px minmax(180px, 2fr) 95px 95px minmax(140px, 1.2fr) 36px;
+    grid-template-columns: 130px minmax(180px, 2fr) 85px 85px 105px minmax(130px, 1.2fr) 36px;
     gap: 16px;
     align-items: center;
     padding: 12px 20px;
@@ -4243,7 +4289,7 @@
   .server-list { display: flex; flex-direction: column; }
   .server-row {
     display: grid;
-    grid-template-columns: 130px minmax(180px, 2fr) 95px 95px minmax(140px, 1.2fr) 36px;
+    grid-template-columns: 130px minmax(180px, 2fr) 85px 85px 105px minmax(130px, 1.2fr) 36px;
     gap: 16px;
     align-items: center;
     width: 100%;
@@ -4301,6 +4347,15 @@
   }
   .metric-microbar .bar-memory {
     background: var(--purple, #a855f7);
+  }
+  .disk-table-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .disk-table-cell strong {
+    font-size: 14px;
+    font-weight: 600;
   }
 
   .col-rxtx {
@@ -5436,7 +5491,7 @@
     .sidebar-footer { display: none; }
     .summary-grid { grid-template-columns: 1fr 1fr; }
     .table-header, .server-row {
-      grid-template-columns: 120px 1.5fr 80px 80px 36px;
+      grid-template-columns: 120px 1.5fr 75px 75px 95px 36px;
     }
     .col-rxtx { display: none; }
   }
