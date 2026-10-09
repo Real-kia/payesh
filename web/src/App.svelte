@@ -1923,7 +1923,29 @@
         <div class="summary-grid">
           <article class="summary-card"><div class="card-header"><span class="stat-label">Healthy</span><span class="stat-icon-wrap emerald"><Icon name="check" size={15} /></span></div><strong class="stat-value tabular">{healthyCount}<small class="stat-total"> / {displayServers.length}</small></strong></article>
           <article class="summary-card"><div class="card-header"><span class="stat-label">Needs attention</span><span class="stat-icon-wrap amber"><Icon name="alert-triangle" size={15} /></span></div><strong class="stat-value tabular">{attentionCount}</strong></article>
-          <article class="summary-card"><div class="card-header"><span class="stat-label">Download & Upload</span><span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span></div><strong class="stat-value tabular">↓ {formatNetworkRate(fleetDownload)} · ↑ {formatNetworkRate(fleetUpload)}</strong></article>
+          <article class="summary-card stat-network-card">
+            <div class="card-header">
+              <span class="stat-label">Download & Upload</span>
+              <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
+            </div>
+            <div class="network-split">
+              <div class="network-split-col">
+                <div class="network-split-head">
+                  <span class="rate-badge down">↓</span>
+                  <span class="rate-title">Download</span>
+                </div>
+                <strong class="network-split-value tabular">{formatNetworkRate(fleetDownload)}</strong>
+              </div>
+              <div class="network-split-sep" aria-hidden="true"></div>
+              <div class="network-split-col">
+                <div class="network-split-head">
+                  <span class="rate-badge up">↑</span>
+                  <span class="rate-title">Upload</span>
+                </div>
+                <strong class="network-split-value tabular">{formatNetworkRate(fleetUpload)}</strong>
+              </div>
+            </div>
+          </article>
         </div>
         {#if displayServers.length === 0}<div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>{/if}
         <div class="monitoring-grid">
@@ -2997,12 +3019,28 @@
               {/if}
             </article>
 
-            <article class="summary-card">
+            <article class="summary-card stat-network-card">
               <div class="card-header">
                 <span class="stat-label">Download & Upload</span>
                 <span class="stat-icon-wrap cyan"><Icon name="activity" size={15} /></span>
               </div>
-              <strong class="stat-value tabular">↓ {formatNetworkRate(fleetDownload)} · ↑ {formatNetworkRate(fleetUpload)}</strong>
+              <div class="network-split">
+                <div class="network-split-col">
+                  <div class="network-split-head">
+                    <span class="rate-badge down">↓</span>
+                    <span class="rate-title">Download</span>
+                  </div>
+                  <strong class="network-split-value tabular">{formatNetworkRate(fleetDownload)}</strong>
+                </div>
+                <div class="network-split-sep" aria-hidden="true"></div>
+                <div class="network-split-col">
+                  <div class="network-split-head">
+                    <span class="rate-badge up">↑</span>
+                    <span class="rate-title">Upload</span>
+                  </div>
+                  <strong class="network-split-value tabular">{formatNetworkRate(fleetUpload)}</strong>
+                </div>
+              </div>
             </article>
           </div>
 
@@ -3816,6 +3854,75 @@
   }
   .stat-badge.positive { color: var(--teal); }
   .stat-badge.warning { color: var(--warning); }
+
+  /* Network summary card */
+  .stat-network-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .network-split {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 2px;
+    margin-bottom: 2px;
+  }
+  .network-split-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .network-split-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .rate-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .rate-badge.down {
+    background: rgba(20, 184, 166, 0.15);
+    color: var(--teal);
+  }
+  .rate-badge.up {
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--blue, #3b82f6);
+  }
+  .rate-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .network-split-value {
+    display: block;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .network-split-sep {
+    width: 1px;
+    height: 32px;
+    background: var(--line);
+    flex-shrink: 0;
+  }
 
   /* --------------------------------------------------------------------------
      TABLE CONTAINER & SERVER LIST
