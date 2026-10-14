@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serverLabel } from './lib/flags';
   import { onMount, tick } from 'svelte';
   import ProcessTable from './ProcessTable.svelte';
   import { networkRates, networkRollupRate } from './network';
@@ -1093,7 +1094,7 @@
   function emptyApiServer(server: ApiServer): PreviewServer {
     const caps = (server.capabilities && server.capabilities.length > 0) ? server.capabilities : ['metrics', 'traffic'];
     return {
-      id: server.id, name: server.name, address: server.address, role: server.role, architecture: server.architecture,
+      id: server.id, name: server.name, countryCode: server.country_code, address: server.address, role: server.role, architecture: server.architecture,
       platform: server.platform, capabilities: [...caps], version: server.version ?? '—',
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
@@ -1757,7 +1758,7 @@
                     <button class="button ghost small" type="button" disabled={labelBusy} on:click={() => (renaming = false)}>Cancel</button>
                   </form>
                 {:else}
-                  <h1 id="server-title" tabindex="-1">{selectedServer.name}</h1>
+                  <h1 id="server-title" tabindex="-1">{serverLabel(selectedServer)}</h1>
                   {#if myAccount?.permission !== 'read'}<button class="icon-button rename-button" type="button" aria-label="Rename server" title="Rename" on:click={startRename}><Icon name="pencil" size={14} /></button>{/if}
                 {/if}
                 <StatusPill state={selectedServer.displayState} label={stateLabel(selectedServer.displayState)} />

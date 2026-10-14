@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import LoadingSkeleton from '../components/LoadingSkeleton.svelte';
   import { formatDateTimeInTz } from '../timezone';
-  import { alertCategories, categoryForAlert, categoryForRule, type AlertCategory } from '../lib/alertCategories.ts';
+  import { alertCategories, categoryForAlert, categoryForRule, type AlertCategory } from '../lib/alertCategories';
   import type { AlertRule, AlertState } from '../api';
   import type { PreviewServer } from '../preview/fixtures';
 
@@ -73,7 +74,8 @@
   $effect(() => { if (page > pageCount - 1) page = pageCount - 1; });
 
   function serverName(id?: string): string {
-    return servers.find((server) => server.id === id)?.name || id || 'Fleet-wide';
+    const server = servers.find((item) => item.id === id);
+    return server ? serverLabel(server) : id || 'Fleet-wide';
   }
   function ruleLabel(rule: string): string {
     return rule.replace(/[-_]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase());

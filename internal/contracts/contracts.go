@@ -44,6 +44,9 @@ type Server struct {
 	FreshnessState        string     `json:"freshness_state"`
 	FreshnessReason       string     `json:"freshness_reason,omitempty"`
 	ConfigurationRevision uint64     `json:"configuration_revision,string"`
+	// CountryCode is the hub's best-effort ISO 3166-1 alpha-2 guess for the
+	// server's public address. It is empty until a lookup succeeds.
+	CountryCode string `json:"country_code,omitempty"`
 }
 
 type Envelope struct {

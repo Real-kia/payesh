@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import Sparkline from '../Sparkline.svelte';
   import CircleChart from '../CircleChart.svelte';
@@ -25,10 +26,10 @@
   }
 </script>
 
-<div class="monitoring-card" role="button" tabindex="0" aria-label={`${server.name}, ${stateLabel(server.displayState)}. Open details`} onclick={() => onSelect(server)} onkeydown={open}>
+<div class="monitoring-card" role="button" tabindex="0" aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`} onclick={() => onSelect(server)} onkeydown={open}>
   <div class="top">
     <div class="identity">
-      <h2>{server.name}</h2>
+      <h2>{serverLabel(server)}</h2>
       <small class="mono">{displayAddress(server)} · {roleLabel(server.role)}</small>
     </div>
     <StatusPill state={server.displayState} label={stateLabel(server.displayState)} />

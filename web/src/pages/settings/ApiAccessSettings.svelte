@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from '../../Icon.svelte';
+  import AgentSetup from '../../components/AgentSetup.svelte';
   import {
     ApiError,
     apiClient,
@@ -56,7 +57,7 @@
   let editPermissions = $state<TokenPermissions>(emptyPermissions());
 
   let created = $state<CreatedApiToken | null>(null);
-  let copied = $state('');
+  let copied = $state(false);
   let search = $state('');
   let ownerFilter = $state('');
   let activityToken = $state('');
@@ -163,7 +164,7 @@
     if (!name.trim() || busy) return;
     busy = true;
     error = '';
-    copied = '';
+    copied = false;
     try {
       created = PREVIEW_MODE
         ? { ...previewApiTokens[0], id: `tok-${Date.now()}`, name: name.trim(), permission: effectivePermission(permissions), permissions, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + lifetime * 86400000).toISOString(), last_used_at: undefined, token: 'pyt_preview-token-not-real' }
@@ -188,7 +189,7 @@
       action: async () => {
         busy = true;
         error = '';
-        copied = '';
+        copied = false;
         try {
           created = PREVIEW_MODE ? { ...token, token: 'pyt_preview-rotated-token-not-real' } : await apiClient.rotateApiToken(token.id);
           if (!PREVIEW_MODE) await load();
@@ -260,15 +261,6 @@
     });
   }
 
-  const endpoint = typeof window === 'undefined' ? '/api/v1/mcp' : `${window.location.origin}/api/v1/mcp`;
-  const secret = $derived(created?.token ?? '');
-  const snippets = $derived([
-    { id: 'token', label: 'Secret', text: secret },
-    { id: 'claude', label: 'Claude Code', text: `claude mcp add --transport http payesh ${endpoint} --header "Authorization: Bearer ${secret}"` },
-    { id: 'json', label: 'MCP client config (JSON)', text: JSON.stringify({ mcpServers: { payesh: { type: 'http', url: endpoint, headers: { Authorization: `Bearer ${secret}` } } } }, null, 2) },
-    { id: 'curl', label: 'REST API', text: `curl -H "Authorization: Bearer ${secret}" ${endpoint.replace(/\/mcp$/, '/servers')}` }
-  ]);
-
   function formatDay(value: string | undefined): string {
     return value ? new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'Never';
   }
@@ -285,11 +277,11 @@
     }
   }
 
-  async function copy(id: string, text: string): Promise<void> {
+  async function copySecret(text: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
-      copied = id;
-      setTimeout(() => { if (copied === id) copied = ''; }, 1600);
+      copied = true;
+      setTimeout(() => (copied = false), 1600);
     } catch {
       error = 'Copy failed. Select the text and copy it manually.';
     }
@@ -342,11 +334,12 @@
     {/if}
 
     {#if created}
-      <section class="created" role="status"><div class="flow-heading"><div><span class="eyebrow">One-time secret</span><h3>API key ready</h3><p class="muted">Copy this secret now. It will not be shown again.</p></div><button class="button ghost small" type="button" onclick={() => (created = null)}>Done</button></div>{#each snippets as snippet (snippet.id)}<div class="snippet"><span class="snippet-label">{snippet.label}</span><div class="terminal-block"><code>{snippet.text}</code><button class="icon-button" type="button" aria-label={`Copy ${snippet.label}`} title={copied === snippet.id ? 'Copied' : 'Copy'} onclick={() => void copy(snippet.id, snippet.text)}><Icon name={copied === snippet.id ? 'check' : 'copy'} size={14} /></button></div></div>{/each}</section>
+      <section class="created" role="status"><div class="flow-heading"><div><span class="eyebrow">One-time secret</span><h3>API key ready</h3><p class="muted">Copy this secret now. It will not be shown again.</p></div><button class="button ghost small" type="button" onclick={() => (created = null)}>Done</button></div><div class="snippet"><span class="snippet-label">Secret</span><div class="terminal-block"><code>{created.token}</code><button class="icon-button" type="button" aria-label="Copy secret" title={copied ? 'Copied' : 'Copy'} onclick={() => void copySecret(created?.token ?? '')}><Icon name={copied ? 'check' : 'copy'} size={14} /></button></div></div><div class="snippet"><span class="snippet-label">Connect an AI agent</span><AgentSetup token={created.token} onCopyError={(message) => (error = message)} /></div></section>
     {/if}
 
     {#if !createOpen && !editTarget}
       {#if expiring.length}<p class="warning" role="status">{expiring.length} {expiring.length === 1 ? 'API key expires' : 'API keys expire'} within 7 days.</p>{/if}
+      {#if !created}<section class="connect" aria-labelledby="connect-agent-title"><div><h3 id="connect-agent-title">Connect an AI agent</h3><p class="muted">Pick your agent and run the command. It points at this hub's address; paste a key to fill in the token.</p></div><AgentSetup onCopyError={(message) => (error = message)} /></section>{/if}
       <div class="list-heading"><div><h3>API keys</h3><p class="muted">{tokens.length ? `${tokens.length} key${tokens.length === 1 ? '' : 's'} configured` : 'No keys configured yet.'}</p></div>{#if tokens.length}<button class="button ghost small" type="button" disabled={busy || (isOwner && !ownerFilter)} onclick={revokeAll}>{isOwner && !ownerFilter ? 'Select a user to revoke all' : `Revoke all${ownerFilter ? ` for ${ownerFilter}` : ' my keys'}`}</button>{/if}</div>
       <div class="filters"><label>Search keys<input type="search" bind:value={search} placeholder="Name, user or key hint" /></label>{#if isOwner}<label>User<select bind:value={ownerFilter}><option value="">All users</option>{#each owners as owner}<option value={owner}>{owner}</option>{/each}</select></label>{/if}</div>
       <div class="table"><div class="head"><span>Key / created</span><span>Access</span><span>Last used</span><span>Expires</span><span>Manage</span></div>{#each visible as token (token.id)}<div class="row"><span class="who"><strong>{token.name}</strong><span class="muted mono">{token.hint}…{#if isOwner} · {token.username}{/if}</span><span class="muted">Created {formatDay(token.created_at)}</span></span><span class="who muted">{token.permission === 'read' ? 'Read only account' : 'Read and write account'}<small>{grantedSummary(token)}</small></span><span class="who muted"><span><span class="cell-label">Last used </span>{token.last_used_at ? new Date(token.last_used_at).toLocaleString() : 'Never'}</span>{#if token.last_used_ip}<small class="mono">{token.last_used_ip}</small>{/if}</span><span class="who muted"><span><span class="cell-label">Expires </span>{formatDay(token.expires_at)}</span><strong class:expiry-warning={tokenStatus(token, now) !== 'active'}>{tokenStatus(token, now) === 'expired' ? 'Expired' : tokenStatus(token, now) === 'expiring' ? 'Expires soon' : 'Active'}</strong></span><span class="actions">{#if token.username === currentUser}<button class="button ghost small" type="button" disabled={busy} onclick={() => openEdit(token)}>Edit</button><button class="button ghost small" type="button" disabled={busy || tokenStatus(token, now) === 'expired'} onclick={() => rotate(token)}>Rotate</button>{/if}<button class="button ghost small" type="button" onclick={() => void showActivity(token)}>Activity</button><button class="button ghost small" type="button" disabled={busy} onclick={() => revoke(token)}>Revoke</button></span></div>{#if activityToken === token.id}<div class="activity"><h3>Activity for {token.name}</h3><p class="muted">Latest 100 requests, including failed requests.</p>{#each activity as item}<div class="activity-row"><time datetime={item.at}>{new Date(item.at).toLocaleString()}</time><code>{item.method} {item.path}</code><span>Status {item.status}</span><span class="mono">{item.ip}</span></div>{:else}<p class="muted">{activityLoading ? 'Loading activity…' : 'No recorded activity.'}</p>{/each}</div>{/if}{:else}<div class="empty-state"><p class="muted">{loading ? 'Loading API keys…' : tokens.length ? 'No API keys match these filters.' : 'Create an API key to connect scripts or AI agents.'}</p>{#if !tokens.length}<button class="button primary" type="button" onclick={openCreate}><Icon name="plus" size={15} /> Create API key</button>{/if}</div>{/each}</div>
@@ -370,6 +363,9 @@
   .api-modal .setup-actions { position: sticky; bottom: -1px; margin: 0 -2px -2px; padding: 18px 2px 2px; background: linear-gradient(var(--surface-elevated, var(--surface)), var(--surface-elevated, var(--surface))); }
   .modal-close { flex: 0 0 auto; }
   @keyframes api-modal-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+  .connect { display: grid; gap: 12px; margin: 4px 0 22px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }
+  .connect h3 { margin: 0 0 4px; }
+  .connect p { margin: 0; }
   .created { display: grid; gap: 12px; margin-bottom: 22px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }
   .warning { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: var(--radius-md); background: var(--warning-bg); color: var(--warning); font-size: 13px; }
   .warning p { margin: 4px 0 0; color: var(--ink-secondary); line-height: 1.5; }

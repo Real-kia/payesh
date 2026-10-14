@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import { onDestroy, untrack } from 'svelte';
   import Icon from '../Icon.svelte';
   import LoadingSkeleton from '../components/LoadingSkeleton.svelte';
@@ -103,7 +104,7 @@
             results.push({
               id: `${server.id}-${source.id}-${entry.cursor || Math.random().toString(36).slice(2)}`,
               serverId: server.id,
-              serverName: server.name,
+              serverName: serverLabel(server),
               timestamp: entry.timestamp,
               level: resolveLogLevel(entry.severity, entry.text),
               text: entry.text,
@@ -173,7 +174,7 @@
       <label class="control"><span>Node</span>
         <select bind:value={serverFilter} onchange={() => void load()}>
           <option value="all">All nodes ({servers.length})</option>
-          {#each servers as server (server.id)}<option value={server.id}>{server.name} ({server.role === 'node' ? 'Node' : 'Master'})</option>{/each}
+          {#each servers as server (server.id)}<option value={server.id}>{serverLabel(server)} ({server.role === 'node' ? 'Node' : 'Master'})</option>{/each}
         </select>
       </label>
       <label class="control"><span>Window</span>

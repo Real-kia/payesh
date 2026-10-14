@@ -20,6 +20,18 @@ opt-in and must run on disposable Linux hosts; skipped tests are not acceptance
 evidence. Follow the [release checklist](RELEASE_CHECKLIST.md) for operational
 gates and required results.
 
+### Database changes
+
+Existing installations must always be able to update. Add new tables, nullable
+or defaulted columns, and indexes to the lists in
+`internal/monitoring/schema_additive.go`: they are applied automatically every
+time the store opens, at any schema version, and they do not bump the schema
+version, so an older release can still open the database after a rollback.
+`TestAdditiveSchemaUpgradesOldDatabases` checks every entry against a database
+that lacks it. Only changes that rewrite, rename, drop, or reinterpret existing
+data need a new versioned `SchemaStep`; those take a verified backup first and
+cannot be opened by older releases afterwards.
+
 For release packaging, install the locked web dependencies and set an explicit
 timestamp so another contributor can reproduce the same bytes:
 

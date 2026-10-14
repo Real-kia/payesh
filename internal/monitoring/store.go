@@ -1158,7 +1158,7 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if len(serverID) < 16 || len(serverID) > 128 || !isSafeServerID(string(serverID)) {
 		return contracts.Server{}, false, errors.New("server id must be a bounded URL-safe identifier")
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers WHERE id=?`, string(serverID))
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
 	server, err := scanServer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Server{}, false, nil
@@ -1216,7 +1216,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 	if err != nil {
 		return ServerPage{}, err
 	}
-	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision FROM servers`
+	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
 	args := make([]any, 0, len(ids)+4)
 	conditions := []string{}
 	if len(ids) > 0 {
@@ -1287,7 +1287,7 @@ func scanServer(row scanner) (contracts.Server, error) {
 	var server contracts.Server
 	var id, capabilitiesJSON, revision string
 	var heartbeat sql.NullString
-	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision); err != nil {
+	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision, &server.CountryCode); err != nil {
 		return contracts.Server{}, err
 	}
 	server.ID = contracts.ServerID(id)

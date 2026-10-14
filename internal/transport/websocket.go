@@ -203,6 +203,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				return
 			}
 			connection = opened
+			hub.recordPeer(ctx, connection.ServerID, ws)
 			if hub.Ports != nil {
 				if err := hub.Ports.Observe(connection.ServerID, localPort(ws)); err != nil {
 					return

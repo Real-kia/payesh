@@ -1148,6 +1148,10 @@ components:
         freshness_state: { type: string, enum: [fresh, stale, unknown] }
         freshness_reason: { type: string, maxLength: 256 }
         configuration_revision: { $ref: '#/components/schemas/DecimalUint64' }
+        country_code:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: Best-effort ISO 3166-1 alpha-2 country of the server's public address, used to show a flag. Omitted until a lookup succeeds or when lookups are disabled.
     CreateServerRequest:
       type: object
       required: [name, address]

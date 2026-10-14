@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import CircleChart from '../CircleChart.svelte';
   import StatusPill from './StatusPill.svelte';
@@ -60,10 +61,10 @@
   <div class="server-list stagger">
     {#each sorted as server, index (server.id)}
       {@const online = server.connectionState === 'connected'}
-      <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${server.name}, ${stateLabel(server.displayState)}. Open details`}>
+      <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
         <div class="col-status"><StatusPill state={server.displayState} label={stateLabel(server.displayState)} /></div>
         <div class="col-name">
-          <strong>{server.name}<span class="role-chip">{roleLabel(server.role)}</span></strong>
+          <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span></strong>
           <small class="mono">{displayAddress(server)} · {detail(server)}</small>
         </div>
         <div class="col-metric">

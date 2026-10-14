@@ -26,6 +26,7 @@ import (
 	"github.com/Real-kia/payesh/internal/collector"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/fleet"
+	"github.com/Real-kia/payesh/internal/geo"
 	installpkg "github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
@@ -52,9 +53,15 @@ func main() {
 	}
 	secureBrowserCookies := flag.Bool("secure-browser-cookies", secureCookiesDefault, "mark browser session cookies Secure; use when this HTTP listener is behind HTTPS (or PAYESH_SECURE_BROWSER_COOKIES)")
 	insecureHTTPDefault, insecureHTTPErr := environmentBool("PAYESH_ALLOW_INSECURE_HTTP", false)
+	countryLookup, countryLookupErr := environmentBool("PAYESH_COUNTRY_LOOKUP", true)
 	if insecureHTTPErr != nil {
 		fmt.Fprintln(os.Stderr, "configure public HTTP:", insecureHTTPErr)
 		os.Exit(2)
+	}
+	if countryLookupErr != nil {
+		// Flags are cosmetic; a bad value must not keep the hub from starting.
+		fmt.Fprintln(os.Stderr, "configure country lookup:", countryLookupErr, "(country flags disabled)")
+		countryLookup = false
 	}
 	allowInsecureHTTP := flag.Bool("allow-insecure-http", insecureHTTPDefault, "allow browser logins over plain HTTP on a public listener until a domain certificate is active (or PAYESH_ALLOW_INSECURE_HTTP)")
 	webDir := flag.String("web-dir", envOr("PAYESH_WEB_DIR", defaultWebDir), "built dashboard directory served on non-API paths (or PAYESH_WEB_DIR)")
@@ -123,6 +130,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "retry pending sample processing:", err)
 		}
 	})
+	// Server flags come from public lookup services, so the owner can turn
+	// them off with PAYESH_COUNTRY_LOOKUP=false. Failures only hide the flag.
+	if countryLookup {
+		go geo.NewResolver(store, "payesh/"+version.Value).Run(ctx)
+	}
 	retentionDone := make(chan struct{})
 	go func() {
 		defer close(retentionDone)

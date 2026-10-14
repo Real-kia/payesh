@@ -149,6 +149,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.finalizeInitialization(ctx); err != nil {
 		return err
 	}
+	if err := s.applyAdditiveSchema(ctx); err != nil {
+		return fmt.Errorf("apply additive schema: %w", err)
+	}
 	// Connection configuration follows compatibility checks and successful
 	// migration. An unsupported database never reaches a mutating pragma.
 	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=ON;`); err != nil {
@@ -309,3 +312,4 @@ func (s *Store) verifyMigrationBackup(ctx context.Context, version int) (string,
 	snapshot, err := dbschema.CreateMigrationBackup(ctx, s.db, directory, version, limit)
 	return snapshot, cleanup, err
 }
+

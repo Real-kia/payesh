@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import { untrack } from 'svelte';
   import Icon from '../Icon.svelte';
   import Modal from '../Modal.svelte';
@@ -165,7 +166,7 @@
 <Modal
   open={true}
   title={step === 'progress' ? `${installed ? 'Updating' : 'Installing'} ${module.name}` : installed ? `Update ${module.name}` : `Install ${module.name}`}
-  description={step === 'target' ? 'Choose where to install or manage this package.' : step === 'source' ? (serverId === ALL ? `Install or update on all ${connected.length} connected servers.` : `Deploy to ${target?.name ?? 'the selected server'}.`) : running ? 'Each server downloads, verifies and activates the signed package.' : failed ? 'Finished with errors.' : 'Finished.'}
+  description={step === 'target' ? 'Choose where to install or manage this package.' : step === 'source' ? (serverId === ALL ? `Install or update on all ${connected.length} connected servers.` : `Deploy to ${target ? serverLabel(target) : 'the selected server'}.`) : running ? 'Each server downloads, verifies and activates the signed package.' : failed ? 'Finished with errors.' : 'Finished.'}
   icon="packages"
   confirmText={step === 'target' ? 'Continue' : step === 'source' ? (serverId === ALL ? `Install on ${connected.length} servers` : installed ? 'Update package' : 'Install package') : running ? 'Working…' : 'Done'}
   busy={running}
@@ -180,7 +181,7 @@
         <option value="" disabled>Choose a server</option>
         {#if connected.length > 1}<option value={ALL}>All connected servers ({connected.length})</option>{/if}
         {#each servers as server (server.id)}
-          <option value={server.id} disabled={server.connectionState !== 'connected'}>{server.name} · {roleLabel(server.role)} ({server.architecture}){server.connectionState !== 'connected' ? ' · offline' : ''}</option>
+          <option value={server.id} disabled={server.connectionState !== 'connected'}>{serverLabel(server)} · {roleLabel(server.role)} ({server.architecture}){server.connectionState !== 'connected' ? ' · offline' : ''}</option>
         {/each}
       </select>
     </label>
@@ -198,7 +199,7 @@
       {/if}
     {/if}
   {:else if step === 'source'}
-    <button class="button ghost small back" type="button" onclick={() => (step = 'target')}><Icon name="arrow-left" size={13} />{serverId === ALL ? 'All connected servers' : target?.name ?? 'Change server'}</button>
+    <button class="button ghost small back" type="button" onclick={() => (step = 'target')}><Icon name="arrow-left" size={13} />{serverId === ALL ? 'All connected servers' : target ? serverLabel(target) : 'Change server'}</button>
     {#if installed}
       <p class="note"><Icon name="refresh" size={14} /><span>Installed on this server{current?.version ? ` (v${current.version})` : ''}. Continuing updates it; an enabled package stays enabled.</span></p>
     {:else if serverId === ALL}
@@ -238,7 +239,7 @@
           <span class="mark" aria-hidden="true">
             {#if row.status === 'done'}<Icon name="check" size={13} />{:else if row.status === 'failed'}<Icon name="x" size={13} />{:else if row.status === 'running'}<span class="version-spinner"></span>{:else}<span class="dot"></span>{/if}
           </span>
-          <div><strong>{row.server.name}</strong><small>{row.message}</small></div>
+          <div><strong>{serverLabel(row.server)}</strong><small>{row.message}</small></div>
         </li>
       {/each}
     </ol>

@@ -48,6 +48,7 @@ export type Server = {
   freshness_state: 'fresh' | 'stale' | 'unknown';
   freshness_reason?: string;
   configuration_revision: string;
+  country_code?: string;
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };

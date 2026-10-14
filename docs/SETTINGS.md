@@ -77,3 +77,22 @@ The owner can configure the database limit (default 1 GB), normal sampling
 (default 15 seconds), automatic storage-saving sampling (default 60 seconds),
 and in-app notifications. See [storage and notifications](STORAGE_AND_NOTIFICATIONS.md)
 for cleanup thresholds, node compatibility, and retention behavior.
+
+## Server country flags
+
+The hub shows a country flag before each server name. It finds the country by
+asking a public lookup service (country.is, with ipinfo.io as a fallback) about
+the server's public address: the configured address, or for nodes added without
+one, the public address the node connects from. The hub looks up its own
+location by asking the service about the caller. Private and local addresses are
+never sent.
+
+Each server is looked up once and the result is cached for 30 days, so the
+services' rate limits are not reached. Lookups are spaced out, a rate-limited
+service is skipped for an hour, and a failed lookup is retried with back-off
+(15 minutes, doubling up to once a day). Until a lookup succeeds, the server
+simply has no flag. A changed address triggers a new lookup.
+
+Set `PAYESH_COUNTRY_LOOKUP=false` in `/etc/payesh/payesh.env` and restart
+`payesh-server` to turn lookups off. Flag emoji are drawn by the browser's
+system font; Windows shows the two-letter code instead.

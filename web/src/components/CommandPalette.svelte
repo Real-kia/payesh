@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import { serverLabel } from '../lib/flags';
   import { tick } from 'svelte';
   import Icon from '../Icon.svelte';
   import { stateLabel } from '../lib/format';
@@ -22,7 +23,7 @@
 
   const all = $derived<Command[]>([
     ...commands,
-    ...servers.map((server) => ({ id: `server:${server.id}`, label: server.name, hint: stateLabel(server.displayState), icon: 'server', group: 'Servers', keywords: `${server.address ?? ''} ${server.platform} ${server.role}`, run: () => onServer(server) }))
+    ...servers.map((server) => ({ id: `server:${server.id}`, label: serverLabel(server), hint: stateLabel(server.displayState), icon: 'server', group: 'Servers', keywords: `${server.address ?? ''} ${server.platform} ${server.role}`, run: () => onServer(server) }))
   ]);
 
   // Every word of the query must appear in the label, group or keywords.
