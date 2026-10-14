@@ -489,6 +489,25 @@ func TestScopedTokensFilterServersAndConstrainMCP(t *testing.T) {
 	}
 }
 
+func TestPermissionMatrixTokenUsesActionCategories(t *testing.T) {
+	c, closeStore := newTokenTestAPI(t, ":memory:")
+	defer closeStore()
+	if w := c.call("POST", "/api/v1/setup", `{"setup_secret":"0123456789abcdef-bootstrap","username":"owner","password":"owner-password-long"}`, nil, "", ""); w.Code != 201 {
+		t.Fatalf("setup: %d", w.Code)
+	}
+	oc, csrf := c.login("owner", "owner-password-long")
+	token := c.createToken(oc, csrf, `{"name":"metrics","permission":"edit","permissions":{"monitoring":"read","logs":"read","traffic":"write","operations":"none"}}`)
+	if w := c.call("GET", "/api/v1/servers", "", nil, "", token); w.Code != 200 {
+		t.Fatalf("monitoring read: %d %s", w.Code, w.Body.String())
+	}
+	if w := c.call("POST", "/api/v1/servers", `{"name":"denied","address":"192.0.2.1"}`, nil, "", token); w.Code != 403 {
+		t.Fatalf("operations denied: %d %s", w.Code, w.Body.String())
+	}
+	if w := c.call("GET", "/api/v1/settings/storage", "", nil, "", token); w.Code != 403 {
+		t.Fatalf("settings denied: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestOwnerCannotTakeOverAnotherAccountsToken(t *testing.T) {
 	c, closeStore := newTokenTestAPI(t, ":memory:")
 	defer closeStore()

@@ -52,8 +52,6 @@
             <span class="release-tag mono">v{module.latest_version}</span>
           </div>
           <h2>{module.name}</h2>
-          <p class="module-desc">{module.description || 'Optional Payesh extension capability.'}</p>
-          <div class="module-meta"><span class="mono">{module.id}</span><span>Master or node</span></div>
           {#if !readOnly}
             <button class="button primary small full-width" type="button" disabled={module.install_supported === false || busy || !hasServers} onclick={() => onInstall(module)}>
               {module.install_supported === false ? 'Requires Payesh update' : 'Install or manage'}
@@ -85,7 +83,5 @@
   .module-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--radius-md); background: var(--accent-bg); color: var(--accent); transition: transform var(--dur) var(--ease-spring); }
   .module-card:hover .module-icon { transform: rotate(-6deg) scale(1.06); }
   .release-tag { padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--muted); font-size: 11px; }
-  .module-card h2 { margin: 0; font-size: 15.5px; }
-  .module-desc { flex: 1; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
-  .module-meta { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line-light); color: var(--muted); font-size: 11.5px; }
+  .module-card h2 { flex: 1; margin: 0; font-size: 15.5px; }
 </style>

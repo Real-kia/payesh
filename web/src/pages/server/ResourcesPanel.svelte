@@ -16,10 +16,11 @@
 
   const cards = [
     { key: 'cpu', label: 'CPU', icon: 'cpu', tone: 'teal' },
-    { key: 'memory', label: 'Memory', icon: 'memory', tone: 'purple' }
+    { key: 'memory', label: 'Memory', icon: 'memory', tone: 'purple' },
+    { key: 'swap', label: 'Swap', icon: 'database', tone: 'blue' }
   ] as const;
 
-  function history(metric: 'cpu' | 'memory' | 'disk'): Array<number | null> {
+  function history(metric: 'cpu' | 'memory' | 'swap' | 'disk'): Array<number | null> {
     return server.metricHistory?.ranges[range]?.[metric] ?? [];
   }
 
@@ -34,6 +35,10 @@
     return numeric.length ? `${(numeric.reduce((sum, value) => sum + value, 0) / numeric.length).toFixed(1)}%` : '—';
   }
 
+  function hasSamples(values: Array<number | null>): boolean {
+    return values.some((value) => value !== null && Number.isFinite(value));
+  }
+
   const disk = $derived(server.metrics.disk);
 </script>
 
@@ -41,7 +46,7 @@
   {#each cards as card, index (card.key)}
     {@const values = history(card.key)}
     {@const value = server.metrics[card.key]}
-    <article class={`metric-card ${resourceLevel(value)}`} class:purple={card.tone === 'purple'} style:--i={index}>
+    <article class={`metric-card ${resourceLevel(value)}`} class:purple={card.tone === 'purple'} class:blue={card.tone === 'blue'} style:--i={index}>
       <div class="card-top">
         <span class="metric-title"><Icon name={card.icon} size={14} />{card.label}</span>
         <strong class="metric-big tabular">{metricValue(value)}</strong>
@@ -66,7 +71,7 @@
 
 <article class="panel chart-panel">
   <div class="panel-heading">
-    <div><h2>CPU and memory utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div>
+      <div><h2>CPU utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div>
     <div class="segmented" role="group" aria-label="Chart time range">
       {#each [['15m', '15 min'], ['1h', '1 hour'], ['24h', '24 hours']] as [id, label] (id)}
         <button type="button" aria-pressed={range === id} onclick={() => (range = id as PreviewChartRange)}>{label}</button>
@@ -76,19 +81,33 @@
   {#if chartData && chartData.coverage !== 'unavailable'}
     <div class="legend">
       <span><i class="legend-dot accent"></i> CPU</span>
-      <span><i class="legend-dot purple"></i> Memory</span>
       {#if chartData.coverage === 'gap'}<span class="gap-note"><Icon name="alert-circle" size={12} /> Some samples are missing in this range</span>{/if}
     </div>
     {#key `${range}-${theme}-${server.id}-${timezone}`}
-      <ChartPreview data={chartData} {range} {timezone} label="CPU and memory history over the selected time range" />
+      <ChartPreview data={chartData} {range} {timezone} metric="cpu" label="CPU history over the selected time range" />
     {/key}
     <div class="highlights">
       <span>CPU range <strong class="tabular">{seriesRange(chartData.cpu)}</strong></span>
-      <span>Memory range <strong class="tabular">{seriesRange(chartData.memory)}</strong></span>
     </div>
   {:else}
     <div class="unavailable-panel"><strong>Resource history unavailable</strong><span>No telemetry samples have been recorded yet for this range.</span></div>
   {/if}
+</article>
+
+<article class="panel chart-panel">
+  <div class="panel-heading"><div><h2>Memory utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div></div>
+  {#if chartData && chartData.coverage !== 'unavailable'}
+    <ChartPreview data={chartData} {range} {timezone} metric="memory" label="Memory history over the selected time range" />
+    <div class="highlights"><span>Memory range <strong class="tabular">{seriesRange(chartData.memory)}</strong></span></div>
+  {:else}<div class="unavailable-panel"><strong>Memory history unavailable</strong><span>No telemetry samples have been recorded yet for this range.</span></div>{/if}
+</article>
+
+<article class="panel chart-panel">
+  <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div></div>
+  {#if chartData && chartData.coverage !== 'unavailable' && hasSamples(chartData.swap)}
+    <ChartPreview data={chartData} {range} {timezone} metric="swap" label="Swap history over the selected time range" />
+    <div class="highlights"><span>Swap range <strong class="tabular">{seriesRange(chartData.swap)}</strong></span></div>
+  {:else}<div class="unavailable-panel"><strong>Swap history unavailable</strong><span>This node may not expose swap telemetry.</span></div>{/if}
 </article>
 
 <article class="panel disk-panel">
@@ -117,6 +136,7 @@
     box-shadow: var(--shadow);
   }
   .metric-card.purple { --metric: var(--purple); }
+  .metric-card.blue { --metric: var(--blue); }
   .metric-card.disk { --metric: var(--blue); }
   .metric-card.warning { --metric: var(--warning); }
   .metric-card.critical { --metric: var(--danger); }

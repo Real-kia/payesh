@@ -234,6 +234,40 @@ func TestTokenScopesAreEnforcedAndDenialsAudited(t *testing.T) {
 	}
 }
 
+func TestPermissionMatrixScopesActionsByCategory(t *testing.T) {
+	m := newTokenManager(t)
+	secret, _, err := m.CreateScopedToken("owner", "matrix", "edit", 24*time.Hour, TokenOptions{Permissions: map[string]string{
+		"monitoring": "read",
+		"logs":       "read",
+		"traffic":    "write",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodGet, "/api/v1/servers", http.StatusNoContent},
+		{http.MethodGet, "/api/v1/servers/demo-server-123456/metrics", http.StatusNoContent},
+		{http.MethodGet, "/api/v1/servers/demo-server-123456/logs", http.StatusNoContent},
+		{http.MethodGet, "/api/v1/servers/demo-server-123456/traffic", http.StatusNoContent},
+		{http.MethodPost, "/api/v1/servers/demo-server-123456/traffic", http.StatusNoContent},
+		{http.MethodPost, "/api/v1/servers", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/accounts", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/settings/storage", http.StatusForbidden},
+	} {
+		r := bearerRequest(tc.method, secret)
+		r.URL.Path = tc.path
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Errorf("%s %s: got %d, want %d", tc.method, tc.path, w.Code, tc.status)
+		}
+	}
+}
+
 func TestTokenActivityIsBatchedAndHistoryIsBounded(t *testing.T) {
 	m, repository := persistentTokenManager(t)
 	secret, token, err := m.CreateToken("owner", "agent", "edit", 24*time.Hour)

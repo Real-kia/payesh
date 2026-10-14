@@ -293,6 +293,8 @@ h3 { margin: 22px 0 10px; font-size: 13px; font-weight: 650; letter-spacing: 0.0
 /* Segmented control --------------------------------------------------------- */
 .segmented {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: 2px;
   padding: 3px;
   border: 1px solid var(--line);

@@ -31,6 +31,8 @@
       {#if canEdit}<button class="button ghost small" type="button" disabled={!unread || busy} onclick={onMarkRead}><Icon name="check" size={13} />Mark all read</button>{/if}
     </div>
   </div>
+  <div class="notification-explainer"><strong>What are notifications?</strong><span>This inbox contains storage pressure messages such as warnings, cleanup notices, and recovery updates. Alert rule states and incidents are managed on the Alerts page.</span></div>
+  <div class="delivery"><div><strong>In-app notifications</strong><small>Storage warnings and recovery updates appear in this inbox.</small></div><span class="enabled">Enabled</span></div>
   {#if error}<p class="form-error" role="alert">{error}</p>{/if}
   <div class="list stagger">
     {#each items as item, index (item.id)}
@@ -67,4 +69,9 @@
   time { color: var(--muted); font-size: 12px; }
   p { margin: 6px 0 0; color: var(--ink-secondary); font-size: 13px; overflow-wrap: anywhere; }
   .empty { display: grid; justify-items: center; gap: 8px; padding: 28px 0; }
+  .notification-explainer { display: grid; gap: 4px; margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); }
+  .notification-explainer span, .delivery small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .delivery { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 10px 14px; border-bottom: 1px solid var(--line-light); }
+  .delivery div { display: grid; gap: 2px; }
+  .enabled { color: var(--success); font-size: 12px; font-weight: 650; }
 </style>

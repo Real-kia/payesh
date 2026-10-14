@@ -5,7 +5,7 @@
   import { chartColors, gradientFill } from './lib/chart';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
-  let { label = 'Resource chart', range = '15m', data, timezone = 'UTC' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string } = $props();
+  let { label = 'Resource chart', range = '15m', data, timezone = 'UTC', metric = 'both' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string; metric?: 'cpu' | 'memory' | 'swap' | 'both' } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
 
@@ -15,7 +15,7 @@
   }
 
   $effect(() => {
-    const updated: uPlot.AlignedData = [data.timestamps, data.cpu, data.memory];
+    const updated: uPlot.AlignedData = [data.timestamps, metric === 'memory' ? data.memory : metric === 'swap' ? data.swap : data.cpu, ...(metric === 'both' ? [data.memory] : [])];
     plot?.setData(updated);
   });
 
@@ -24,8 +24,10 @@
     const { muted, line, surface, read } = chartColors(host);
     const teal = read('--accent', '#2f6bd8');
     const purple = read('--purple', '#7a55c7');
-    const chartData: uPlot.AlignedData = [data.timestamps, data.cpu, data.memory];
+    const chartData: uPlot.AlignedData = [data.timestamps, metric === 'memory' ? data.memory : metric === 'swap' ? data.swap : data.cpu, ...(metric === 'both' ? [data.memory] : [])];
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : `${raw.toFixed(2)}%`;
+    const labelForMetric = metric === 'memory' ? 'Memory' : metric === 'swap' ? 'Swap' : 'CPU';
+    const colorForMetric = metric === 'memory' || metric === 'swap' ? purple : teal;
     plot = new uPlot({
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
@@ -58,21 +60,21 @@
       series: [
         {},
         {
-          label: 'CPU',
-          stroke: teal,
+          label: labelForMetric,
+          stroke: colorForMetric,
           width: 2,
-          fill: gradientFill(teal),
+          fill: gradientFill(colorForMetric),
           points: { show: false },
           value
         },
-        {
+        ...(metric === 'both' ? [{
           label: 'Memory',
           stroke: purple,
           width: 2,
           fill: gradientFill(purple),
           points: { show: false },
           value
-        }
+        }] : [])
       ]
     }, chartData, host);
     const resize = new ResizeObserver(([entry]) => plot?.setSize({ width: Math.max(240, entry.contentRect.width), height: 220 }));

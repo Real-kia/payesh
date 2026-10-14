@@ -11,6 +11,21 @@
   } = $props();
 
   const zones = getAvailableTimezones();
+  let zoneQuery = $state('');
+  let zoneOpen = $state(false);
+  let zoneIndex = $state(0);
+  let zonePicker: HTMLDivElement;
+  const filteredZones = $derived(zones.filter((zone) => !zoneQuery.trim() || zone.toLowerCase().includes(zoneQuery.trim().toLowerCase())));
+  function selectZone(tz: string) { onTimezone(tz); zoneOpen = false; zoneQuery = ''; }
+  function zoneKey(event: KeyboardEvent) {
+    if (event.key === 'Escape') zoneOpen = false;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); zoneOpen = true;
+      zoneIndex = Math.max(0, Math.min(filteredZones.length - 1, zoneIndex + (event.key === 'ArrowDown' ? 1 : -1)));
+      document.getElementById(`timezone-option-${zoneIndex}`)?.scrollIntoView({ block: 'nearest' });
+    }
+    if (event.key === 'Enter' && filteredZones[zoneIndex]) { event.preventDefault(); selectZone(filteredZones[zoneIndex]); }
+  }
   let now = $state(new Date());
   $effect(() => {
     const timer = window.setInterval(() => (now = new Date()), 30000);
@@ -25,6 +40,8 @@
 
   const set = (patch: Partial<Appearance>) => onAppearance({ ...appearance, ...patch });
 </script>
+
+<svelte:window onpointerdown={(event) => { if (zonePicker && !zonePicker.contains(event.target as Node)) zoneOpen = false; }} />
 
 <article class="panel">
   <div class="panel-heading">
@@ -82,11 +99,19 @@
     <div class="meta-row"><span>Active time zone</span><strong>{timezone}</strong></div>
     <div class="meta-row"><span>Local time</span><strong class="tabular">{formatTimeInTz(now, timezone, true)} · {formatDateTimeInTz(now, timezone)}</strong></div>
   </div>
-  <label class="tz">Time zone
-    <select value={timezone} onchange={(event) => onTimezone(event.currentTarget.value)}>
-      {#each zones as tz (tz)}<option value={tz}>{tz}</option>{/each}
-    </select>
-  </label>
+  <div class="tz">
+    <label for="timezone-search">Time zone</label>
+    <div class="tz-picker" bind:this={zonePicker} onfocusout={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) zoneOpen = false; }}>
+      <input id="timezone-search" type="search" role="combobox" placeholder="Search time zones" value={zoneOpen ? zoneQuery : timezone} aria-expanded={zoneOpen} aria-controls="timezone-options" onfocus={() => { zoneOpen = true; zoneQuery = ''; }} oninput={(event) => { zoneOpen = true; zoneQuery = event.currentTarget.value; zoneIndex = 0; }} onkeydown={zoneKey} />
+      {#if zoneOpen}
+        <div id="timezone-options" class="tz-options" role="listbox" aria-label="Time zones">
+          {#each filteredZones as tz, index (tz)}
+            <button type="button" id={`timezone-option-${index}`} role="option" aria-selected={tz === timezone} onclick={() => { onTimezone(tz); zoneOpen = false; zoneQuery = ''; }}>{tz}</button>
+          {:else}<span class="muted tz-empty">No matching time zones</span>{/each}
+        </div>
+      {/if}
+    </div>
+  </div>
 </article>
 
 <style>
@@ -120,6 +145,11 @@
   .chip { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--swatch); color: #fff; }
 
   .tz { display: grid; gap: 7px; max-width: 360px; font-size: 13px; font-weight: 550; }
+  .tz-picker { position: relative; }
+  .tz-options { position: absolute; z-index: 4; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-md); }
+  .tz-options button { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--ink-secondary); text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .tz-options button:hover, .tz-options button[aria-selected='true'] { background: var(--accent-bg); color: var(--accent); }
+  .tz-empty { display: block; padding: 10px; font-size: 12px; }
   @media (max-width: 760px) {
     .option { grid-template-columns: 1fr; gap: 10px; }
   }

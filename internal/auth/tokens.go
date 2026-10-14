@@ -25,6 +25,31 @@ const (
 	MaxTokenLifetime = 365 * 24 * time.Hour
 )
 
+// Token permission categories are deliberately coarse enough to be useful to
+// operators and stable enough to remain compatible as individual endpoints
+// evolve. A write grant also permits reads in that category.
+const (
+	TokenCategoryMonitoring = "monitoring"
+	TokenCategoryLogs       = "logs"
+	TokenCategoryTraffic    = "traffic"
+	TokenCategoryAlerts     = "alerts"
+	TokenCategoryPackages   = "packages"
+	TokenCategoryOperations = "operations"
+	TokenCategorySettings   = "settings"
+	TokenCategoryUpdates    = "updates"
+)
+
+var tokenPermissionCategories = []string{
+	TokenCategoryMonitoring,
+	TokenCategoryLogs,
+	TokenCategoryTraffic,
+	TokenCategoryAlerts,
+	TokenCategoryPackages,
+	TokenCategoryOperations,
+	TokenCategorySettings,
+	TokenCategoryUpdates,
+}
+
 // APIToken describes a bearer credential without its secret. Tokens act as the
 // account that created them, capped at the token's own permission.
 type APIToken struct {
@@ -38,8 +63,11 @@ type APIToken struct {
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	LastUsedIP string     `json:"last_used_ip,omitempty"`
 	Status     string     `json:"status"`
-	ServerIDs  []string   `json:"server_ids"`
-	Actions    []string   `json:"actions"`
+	// ServerIDs and Actions are retained in the response only for tokens
+	// created by the previous server-scoped API. New tokens use Permissions.
+	ServerIDs   []string          `json:"server_ids,omitempty"`
+	Actions     []string          `json:"actions,omitempty"`
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 type tokenRecord struct {
@@ -52,9 +80,10 @@ type tokenRecord struct {
 // when the request authenticated with an API token instead of a session.
 type Principal struct {
 	Account
-	TokenID   string
-	ServerIDs []string
-	Actions   []string
+	TokenID     string
+	ServerIDs   []string
+	Actions     []string
+	Permissions map[string]string
 }
 
 // CreateToken issues a bearer token for an existing account. The secret is
@@ -101,7 +130,7 @@ func (m *Manager) CreateScopedToken(username, name, permission string, lifetime 
 	secret := TokenPrefix + randomToken(32)
 	d := sha256.Sum256([]byte(secret))
 	key := base64.RawURLEncoding.EncodeToString(d[:])
-	record := tokenRecord{APIToken: APIToken{ID: randomToken(9), Name: name, Username: username, Permission: permission, Hint: secret[:len(TokenPrefix)+4], CreatedAt: now, ExpiresAt: now.Add(lifetime), ServerIDs: slices.Clone(options.ServerIDs), Actions: slices.Clone(options.Actions)}, digest: d[:]}
+	record := tokenRecord{APIToken: APIToken{ID: randomToken(9), Name: name, Username: username, Permission: permission, Hint: secret[:len(TokenPrefix)+4], CreatedAt: now, ExpiresAt: now.Add(lifetime), ServerIDs: slices.Clone(options.ServerIDs), Actions: slices.Clone(options.Actions), Permissions: clonePermissions(options.Permissions)}, digest: d[:]}
 	m.tokens[key] = record
 	if err := m.persistLocked(); err != nil {
 		delete(m.tokens, key)
@@ -182,7 +211,7 @@ func (m *Manager) tokenPrincipal(secret string) (Principal, bool) {
 	if record.Permission == "read" {
 		account.Permission = "read"
 	}
-	return Principal{Account: account, TokenID: record.ID, ServerIDs: slices.Clone(record.ServerIDs), Actions: slices.Clone(record.Actions)}, true
+	return Principal{Account: account, TokenID: record.ID, ServerIDs: slices.Clone(record.ServerIDs), Actions: slices.Clone(record.Actions), Permissions: clonePermissions(record.Permissions)}, true
 }
 
 // HasBearerToken reports whether the request presents an API token.
@@ -279,15 +308,17 @@ const maxTokenActivity = 100
 const maxActivityPathBytes = 256
 
 type TokenOptions struct {
-	ServerIDs []string `json:"server_ids"`
-	Actions   []string `json:"actions"`
+	ServerIDs   []string          `json:"server_ids"`
+	Actions     []string          `json:"actions"`
+	Permissions map[string]string `json:"permissions"`
 }
 type TokenUpdate struct {
-	Name          *string   `json:"name"`
-	Permission    *string   `json:"permission"`
-	ExpiresInDays *int      `json:"expires_in_days"`
-	ServerIDs     *[]string `json:"server_ids"`
-	Actions       *[]string `json:"actions"`
+	Name          *string            `json:"name"`
+	Permission    *string            `json:"permission"`
+	ExpiresInDays *int               `json:"expires_in_days"`
+	ServerIDs     *[]string          `json:"server_ids"`
+	Actions       *[]string          `json:"actions"`
+	Permissions   *map[string]string `json:"permissions"`
 }
 type TokenActivity struct {
 	ID     string    `json:"id"`
@@ -299,7 +330,10 @@ type TokenActivity struct {
 }
 
 func validateTokenOptions(o TokenOptions) error {
-	if len(o.ServerIDs) > 200 || len(o.Actions) > 3 {
+	if o.Permissions != nil && (len(o.ServerIDs) > 0 || len(o.Actions) > 0) {
+		return errors.New("permissions cannot be combined with legacy server or action scopes")
+	}
+	if len(o.ServerIDs) > 200 || len(o.Actions) > 3 || len(o.Permissions) > len(tokenPermissionCategories) {
 		return errors.New("too many token scopes")
 	}
 	for _, id := range o.ServerIDs {
@@ -317,11 +351,20 @@ func validateTokenOptions(o TokenOptions) error {
 			return errors.New("actions must be monitoring, read, or write")
 		}
 	}
+	for category, mode := range o.Permissions {
+		if !slices.Contains(tokenPermissionCategories, category) {
+			return fmt.Errorf("unknown token permission category %q", category)
+		}
+		if mode != "none" && mode != "read" && mode != "write" {
+			return fmt.Errorf("permission for %s must be none, read, or write", category)
+		}
+	}
 	return nil
 }
 func tokenMetadata(t APIToken, now time.Time) APIToken {
 	t.ServerIDs = append([]string{}, t.ServerIDs...)
 	t.Actions = append([]string{}, t.Actions...)
+	t.Permissions = clonePermissions(t.Permissions)
 	if t.LastUsedAt != nil {
 		v := *t.LastUsedAt
 		t.LastUsedAt = &v
@@ -367,7 +410,15 @@ func (m *Manager) UpdateToken(username, id string, u TokenUpdate) (APIToken, err
 		if u.Actions != nil {
 			record.Actions = slices.Clone(*u.Actions)
 		}
-		if err := validateTokenOptions(TokenOptions{record.ServerIDs, record.Actions}); err != nil {
+		if u.Permissions != nil {
+			record.Permissions = clonePermissions(*u.Permissions)
+			// Editing a legacy token upgrades it to the category model. The
+			// old server and action scopes are no longer needed once the new
+			// permission map is explicit.
+			record.ServerIDs = nil
+			record.Actions = nil
+		}
+		if err := validateTokenOptions(TokenOptions{ServerIDs: record.ServerIDs, Actions: record.Actions, Permissions: record.Permissions}); err != nil {
 			return APIToken{}, err
 		}
 		m.tokens[key] = record
@@ -488,6 +539,19 @@ func tokenAllows(p Principal, r *http.Request) bool {
 	if path == "/api/v1/account/me" && safeMethod(r.Method) {
 		return true
 	}
+	if p.Permissions != nil {
+		// MCP is a transport envelope. Its nested api_request call is replayed
+		// through this middleware and receives the actual category decision.
+		if path == "/api/v1/mcp" && r.Method == http.MethodPost {
+			return true
+		}
+		category := tokenPermissionCategory(r)
+		mode := p.Permissions[category]
+		if safeMethod(r.Method) {
+			return mode == "read" || mode == "write"
+		}
+		return mode == "write"
+	}
 	if len(p.ServerIDs) > 0 {
 		if path == "/api/v1/servers" && safeMethod(r.Method) {
 		} else if strings.HasPrefix(path, "/api/v1/servers/") {
@@ -525,6 +589,77 @@ func tokenAllows(p Principal, r *http.Request) bool {
 		return false
 	}
 	return slices.Contains(p.Actions, "write")
+}
+
+// TokenPermissionCategories returns the stable categories accepted by the
+// token API. The returned slice is independent of package state.
+func TokenPermissionCategories() []string { return slices.Clone(tokenPermissionCategories) }
+
+func clonePermissions(value map[string]string) map[string]string {
+	if value == nil {
+		return nil
+	}
+	return mapsClone(value)
+}
+
+func mapsClone(value map[string]string) map[string]string {
+	result := make(map[string]string, len(value))
+	for key, mode := range value {
+		result[key] = mode
+	}
+	return result
+}
+
+func tokenPermissionCategory(r *http.Request) string {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path == "/api/v1/servers" {
+		if safeMethod(r.Method) {
+			return TokenCategoryMonitoring
+		}
+		return TokenCategoryOperations
+	}
+	if strings.HasPrefix(path, "/api/v1/servers/") {
+		parts := strings.Split(strings.TrimPrefix(path, "/api/v1/servers/"), "/")
+		if len(parts) == 1 || parts[1] == "" {
+			if safeMethod(r.Method) {
+				return TokenCategoryMonitoring
+			}
+			return TokenCategoryOperations
+		}
+		switch parts[1] {
+		case "metrics", "processes":
+			return TokenCategoryMonitoring
+		case "logs":
+			return TokenCategoryLogs
+		case "traffic":
+			return TokenCategoryTraffic
+		case "modules":
+			return TokenCategoryPackages
+		case "enrollment", "enrollment-token", "install", "control":
+			return TokenCategoryOperations
+		}
+	}
+	for _, prefix := range []string{"/api/v1/alerts", "/api/v1/maintenance-windows", "/api/v1/incidents"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return TokenCategoryAlerts
+		}
+	}
+	if strings.HasPrefix(path, "/api/v1/modules") {
+		return TokenCategoryPackages
+	}
+	if strings.HasPrefix(path, "/api/v1/jobs") || strings.HasPrefix(path, "/api/v1/installations") {
+		return TokenCategoryOperations
+	}
+	if strings.HasPrefix(path, "/api/v1/settings") {
+		return TokenCategorySettings
+	}
+	if strings.HasPrefix(path, "/api/v1/update") || strings.HasPrefix(path, "/api/v1/releases") {
+		return TokenCategoryUpdates
+	}
+	if strings.HasPrefix(path, "/api/v1/traffic") {
+		return TokenCategoryTraffic
+	}
+	return ""
 }
 
 // activityFlushDelay batches token activity: requests update memory, and the

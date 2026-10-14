@@ -12,7 +12,8 @@
 
   const gauges = [
     { label: 'CPU', key: 'cpu', tone: 'teal' },
-    { label: 'Memory', key: 'memory', tone: 'purple' }
+    { label: 'Memory', key: 'memory', tone: 'purple' },
+    { label: 'Swap', key: 'swap', tone: 'blue' }
   ] as const;
 
   function open(event: KeyboardEvent) {
@@ -93,6 +94,7 @@
   .gauge, .net { min-width: 0; padding: 12px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); }
   .gauge { grid-column: span 2; --metric: var(--accent); }
   .gauge.purple { --metric: var(--purple); }
+  .gauge.blue { --metric: var(--blue); }
   .gauge.warning { --metric: var(--warning); }
   .gauge.critical { --metric: var(--danger); }
   .gauge-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }

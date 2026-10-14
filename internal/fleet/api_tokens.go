@@ -12,11 +12,12 @@ import (
 const defaultTokenLifetimeDays = 90
 
 type apiTokenRequest struct {
-	Name          string   `json:"name"`
-	Permission    string   `json:"permission"`
-	ExpiresInDays int      `json:"expires_in_days"`
-	ServerIDs     []string `json:"server_ids"`
-	Actions       []string `json:"actions"`
+	Name          string            `json:"name"`
+	Permission    string            `json:"permission"`
+	ExpiresInDays int               `json:"expires_in_days"`
+	ServerIDs     []string          `json:"server_ids"`
+	Actions       []string          `json:"actions"`
+	Permissions   map[string]string `json:"permissions"`
 }
 
 type createdAPIToken struct {
@@ -100,7 +101,7 @@ func (a *API) apiTokenHTTP(w http.ResponseWriter, r *http.Request) {
 			if request.ExpiresInDays == 0 {
 				request.ExpiresInDays = defaultTokenLifetimeDays
 			}
-			secret, token, err := a.sessions.CreateScopedToken(principal.Username, request.Name, request.Permission, time.Duration(request.ExpiresInDays)*24*time.Hour, auth.TokenOptions{ServerIDs: request.ServerIDs, Actions: request.Actions})
+			secret, token, err := a.sessions.CreateScopedToken(principal.Username, request.Name, request.Permission, time.Duration(request.ExpiresInDays)*24*time.Hour, auth.TokenOptions{ServerIDs: request.ServerIDs, Actions: request.Actions, Permissions: request.Permissions})
 			if err != nil {
 				tokenError(w, err)
 				return

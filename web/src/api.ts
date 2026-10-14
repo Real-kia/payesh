@@ -58,9 +58,11 @@ export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'fail
 export type UpdateStatus = { current: string; latest: string; update_available: boolean; installed_ahead?: boolean; url: string; releases?: { version: string; url: string; published_at: string }[]; web_update_supported?: boolean; web_update?: WebUpdateState | null };
 export type UpdateProgress = { current: string; web_update_supported: boolean; web_update: WebUpdateState | null };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit'; token_count?: number };
-export type ApiToken = { id: string; name: string; username: string; permission: 'read' | 'edit'; hint: string; created_at: string; expires_at: string; last_used_at?: string; last_used_ip?: string; status?: 'active' | 'expiring' | 'expired'; server_ids?: string[]; actions?: string[] };
+export type TokenPermissionMode = 'none' | 'read' | 'write';
+export type TokenPermissions = Partial<Record<'monitoring' | 'logs' | 'traffic' | 'alerts' | 'packages' | 'operations' | 'settings' | 'updates', TokenPermissionMode>>;
+export type ApiToken = { id: string; name: string; username: string; permission: 'read' | 'edit'; hint: string; created_at: string; expires_at: string; last_used_at?: string; last_used_ip?: string; status?: 'active' | 'expiring' | 'expired'; permissions?: TokenPermissions; server_ids?: string[]; actions?: string[] };
 export type CreatedApiToken = ApiToken & { token: string };
-export type ApiTokenUpdate = { name?: string; permission?: 'read' | 'edit'; expires_in_days?: number; server_ids?: string[]; actions?: string[] };
+export type ApiTokenUpdate = { name?: string; permission?: 'read' | 'edit'; expires_in_days?: number; permissions?: TokenPermissions; server_ids?: string[]; actions?: string[] };
 export type ApiTokenActivity = { at: string; method: string; path: string; status: number; ip: string };
 export type Module = { repository?: string; release?: string; install_supported?: boolean; id: string; name: string; description?: string; latest_version: string; dependencies?: string[]; required_privileges?: string[]; resource_estimate_source: string };
 export type ModulePage = { items: Module[]; next_cursor?: string; source?: string; stale?: boolean; warning?: string };
@@ -70,6 +72,8 @@ export type ModuleManifest = Record<string, unknown>;
 export type PackageSource = { kind: 'github' | 'local' | 'url'; location: string; version?: string; manifest_location?: string; signature_location?: string };
 export type AlertState = { id: string; rule_id: string; server_id?: string; state: 'pending' | 'firing' | 'recovered'; last_observation?: string; last_value?: number; incident_id?: string; precision_warning?: string };
 export type AlertStatePage = { items: AlertState[]; next_cursor?: string };
+export type AlertRule = { id: string; name: string; expression: string; server_id?: string; enabled: boolean; duration_seconds: number; recovery_threshold?: number; reminder_seconds: number; group_key?: string; idempotency_key: string; created_at: string };
+export type AlertRulePage = { items: AlertRule[]; next_cursor?: string };
 
 export type MetricSample = {
   server_id: string;
@@ -247,7 +251,7 @@ export class ApiClient {
   updateAccount(username: string, body: { username?: string; role?: string; permission?: string; password?: string }): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   deleteAccount(username: string): Promise<void> { return this.request<void>(`/accounts/${encodeURIComponent(username)}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
   listApiTokens(params: { username?: string; search?: string } = {}): Promise<{ items: ApiToken[] }> { return this.request<{ items: ApiToken[] }>(`/api-tokens${queryString(params)}`); }
-  createApiToken(body: { name: string; permission: 'read' | 'edit'; expires_in_days: number; server_ids?: string[]; actions?: string[] }): Promise<CreatedApiToken> { return this.request<CreatedApiToken>('/api-tokens', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
+  createApiToken(body: { name: string; permission: 'read' | 'edit'; expires_in_days: number; permissions: TokenPermissions }): Promise<CreatedApiToken> { return this.request<CreatedApiToken>('/api-tokens', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   updateApiToken(id: string, body: ApiTokenUpdate): Promise<ApiToken> { return this.request<ApiToken>(`/api-tokens/${encodeURIComponent(id)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   rotateApiToken(id: string, body: { expires_in_days?: number } = {}): Promise<CreatedApiToken> { return this.request<CreatedApiToken>(`/api-tokens/${encodeURIComponent(id)}/rotate`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) }); }
   getApiTokenActivity(id: string): Promise<{ items: ApiTokenActivity[] }> { return this.request<{ items: ApiTokenActivity[] }>(`/api-tokens/${encodeURIComponent(id)}/activity`); }
@@ -386,6 +390,18 @@ export class ApiClient {
 
   listAlerts(params: { limit?: number; cursor?: string; server_id?: string } & QueryOptions = {}): Promise<AlertStatePage> {
     return this.request<AlertStatePage>(`/alerts${queryString({ limit: params.limit ?? 200, cursor: params.cursor, server_id: params.server_id })}`, { signal: params.signal });
+  }
+
+  listAlertRules(params: { limit?: number; cursor?: string } & QueryOptions = {}): Promise<AlertRulePage> {
+    return this.request<AlertRulePage>(`/alerts/rules${queryString({ limit: params.limit ?? 200, cursor: params.cursor })}`, { signal: params.signal });
+  }
+
+  createAlertRule(body: { name: string; expression: string; idempotency_key: string; enabled?: boolean; duration_seconds?: number }, options: QueryOptions = {}): Promise<AlertRule> {
+    return this.request<AlertRule>('/alerts/rules', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  updateAlertRule(id: string, body: { enabled?: boolean }, options: QueryOptions = {}): Promise<AlertRule> {
+    return this.request<AlertRule>(`/alerts/rules/${encodeURIComponent(id)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
   }
 
   getServer(serverId: string, options: QueryOptions = {}): Promise<Server> {

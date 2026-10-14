@@ -368,11 +368,18 @@ func collectMemory(data []byte, counters map[string]string, values map[string]fl
 			counters["memory.swap_used_bytes"] = strconv.FormatUint(swapTotal-free, 10)
 			units["memory.swap_total_bytes"], units["memory.swap_used_bytes"] = "bytes", "bytes"
 			validity["memory.swap_total_bytes"], validity["memory.swap_used_bytes"] = "valid", "valid"
+			if swapTotal > 0 {
+				values["memory.swap_used_percent"] = 100 * float64(swapTotal-free) / float64(swapTotal)
+				units["memory.swap_used_percent"] = "percent"
+				validity["memory.swap_used_percent"] = "valid"
+			} else {
+				validity["memory.swap_used_percent"] = "unavailable"
+			}
 		} else {
-			validity["memory.swap_total_bytes"], validity["memory.swap_used_bytes"] = "unavailable", "unavailable"
+			validity["memory.swap_total_bytes"], validity["memory.swap_used_bytes"], validity["memory.swap_used_percent"] = "unavailable", "unavailable", "unavailable"
 		}
 	} else {
-		validity["memory.swap_total_bytes"], validity["memory.swap_used_bytes"] = "unavailable", "unavailable"
+		validity["memory.swap_total_bytes"], validity["memory.swap_used_bytes"], validity["memory.swap_used_percent"] = "unavailable", "unavailable", "unavailable"
 	}
 }
 

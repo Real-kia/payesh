@@ -1006,6 +1006,22 @@ components:
         role: { type: string, enum: [owner, admin, member] }
         permission: { type: string, enum: [read, edit] }
         token_count: { type: integer, minimum: 0, description: Active token count, returned by the owner account list. }
+    TokenPermissionMode:
+      type: string
+      enum: [none, read, write]
+      description: None denies the category, read permits safe requests, and write permits safe and mutating requests.
+    TokenPermissions:
+      type: object
+      additionalProperties: false
+      properties:
+        monitoring: { $ref: '#/components/schemas/TokenPermissionMode' }
+        logs: { $ref: '#/components/schemas/TokenPermissionMode' }
+        traffic: { $ref: '#/components/schemas/TokenPermissionMode' }
+        alerts: { $ref: '#/components/schemas/TokenPermissionMode' }
+        packages: { $ref: '#/components/schemas/TokenPermissionMode' }
+        operations: { $ref: '#/components/schemas/TokenPermissionMode' }
+        settings: { $ref: '#/components/schemas/TokenPermissionMode' }
+        updates: { $ref: '#/components/schemas/TokenPermissionMode' }
     APIToken:
       type: object
       required: [id, name, username, permission, hint, created_at, expires_at]
@@ -1015,8 +1031,9 @@ components:
         username: { type: string }
         permission: { type: string, enum: [read, edit] }
         status: { type: string, enum: [active, expiring, expired] }
-        server_ids: { type: array, maxItems: 200, items: { type: string }, description: Empty means all servers. }
-        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] }, description: Empty means all actions allowed by permission. }
+        permissions: { $ref: '#/components/schemas/TokenPermissions', description: Per-category access. New tokens always return this field. }
+        server_ids: { type: array, maxItems: 200, items: { type: string }, deprecated: true, description: Legacy scope retained while old tokens are rotated. }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] }, deprecated: true, description: Legacy scope retained while old tokens are rotated. }
         last_used_ip: { type: string }
         hint: { type: string, description: First characters of the secret, for recognition. }
         created_at: { type: string, format: date-time }
@@ -1035,8 +1052,9 @@ components:
         name: { type: string, minLength: 1, maxLength: 64 }
         permission: { type: string, enum: [read, edit], default: read }
         expires_in_days: { type: integer, minimum: 1, maximum: 365, default: 90 }
-        server_ids: { type: array, maxItems: 200, items: { type: string } }
-        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] } }
+        permissions: { $ref: '#/components/schemas/TokenPermissions', description: Per-category access. Omitted legacy requests retain their previous behavior. }
+        server_ids: { type: array, maxItems: 200, items: { type: string }, deprecated: true }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] }, deprecated: true }
     APITokenUpdateRequest:
       type: object
       additionalProperties: false
@@ -1044,8 +1062,9 @@ components:
         name: { type: string, minLength: 1, maxLength: 64 }
         permission: { type: string, enum: [read, edit] }
         expires_in_days: { type: integer, minimum: 1, maximum: 365, description: New lifetime from now, including renewal of an expired token. }
-        server_ids: { type: array, maxItems: 200, items: { type: string } }
-        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] } }
+        permissions: { $ref: '#/components/schemas/TokenPermissions', description: Per-category access. }
+        server_ids: { type: array, maxItems: 200, items: { type: string }, deprecated: true }
+        actions: { type: array, maxItems: 3, items: { type: string, enum: [monitoring, read, write] }, deprecated: true }
     APITokenActivity:
       type: object
       properties:

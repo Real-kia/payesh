@@ -15,7 +15,7 @@
   import JoinCommandPanel from './components/JoinCommandPanel.svelte';
   import SshCredentialFields from './components/SshCredentialFields.svelte';
   import CommandPalette, { type Command } from './components/CommandPalette.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type Job, type MetricQuery, type StorageNotification, type Module, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewServer } from './preview/fixtures';
   import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
   import { PREVIEW_MODE } from './lib/env';
@@ -151,6 +151,8 @@
   let updateCheckError = '';
   let updateApplyBusy = false;
   let updateApplyError = '';
+  let nodeUpdateBusy = false;
+  let nodeUpdateError = '';
   let updateProgress: UpdateProgress | null = null;
   let updatePollTimer: number | undefined;
   let dismissedUpdate = '';
@@ -193,6 +195,7 @@
   let catalogRequested = false;
   $: if (!PREVIEW_MODE && activePage === 'server' && detailTab === 'packages' && !catalogRequested) { catalogRequested = true; void loadModules(); }
   let alerts: AlertState[] = [];
+  let alertRules: AlertRule[] = [];
   let alertsState: PreviewState = 'loading';
   let alertsError = '';
 
@@ -605,13 +608,34 @@
   async function loadAlerts(): Promise<void> {
     alertsState = 'loading'; alertsError = '';
     try {
-      alerts = (await apiClient.listAlerts()).items;
+      const [statePage, rulePage] = await Promise.all([apiClient.listAlerts(), apiClient.listAlertRules()]);
+      alerts = statePage.items;
+      alertRules = rulePage.items;
       alertsState = alerts.length ? 'ready' : 'empty';
     } catch (error) {
       alertsError = error instanceof Error ? error.message : 'Unable to load alerts.';
       alertsState = 'error';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     }
+  }
+
+  async function createAlertRule(input: { name: string; expression: string; duration_seconds?: number }): Promise<AlertRule> {
+    if (PREVIEW_MODE) {
+      const now = new Date().toISOString();
+      const key = operationKey('preview-rule');
+      const rule: AlertRule = { id: key, ...input, idempotency_key: key, enabled: true, duration_seconds: input.duration_seconds ?? 60, reminder_seconds: 300, created_at: now };
+      alertRules = [...alertRules, rule];
+      return rule;
+    }
+    const rule = await apiClient.createAlertRule({ ...input, idempotency_key: operationKey('alert-rule') });
+    alertRules = [...alertRules, rule];
+    return rule;
+  }
+
+  async function setAlertRuleEnabled(rule: AlertRule, enabled: boolean): Promise<void> {
+    if (PREVIEW_MODE) { alertRules = alertRules.map((item) => item.id === rule.id ? { ...item, enabled } : item); return; }
+    const updated = await apiClient.updateAlertRule(rule.id, { enabled });
+    alertRules = alertRules.map((item) => item.id === updated.id ? updated : item);
   }
 
   function updateInstallProgress(job: Job) {
@@ -845,6 +869,27 @@
     }
   }
 
+  async function updateSelectedNode(): Promise<void> {
+    if (!selectedServer || selectedServer.role !== 'node' || nodeUpdateBusy) return;
+    nodeUpdateBusy = true; nodeUpdateError = '';
+    try {
+      if (PREVIEW_MODE) {
+        showNotice(`Update queued for ${selectedServer.name}.`);
+      } else {
+        const latest = await apiClient.checkLatestUpdate();
+        updateStatus = latest;
+        const release = latest.latest;
+        if (!release || release === '—') throw new Error('No release is available for this node. Check for updates first.');
+        const job = await apiClient.createUpdate({ release, selected_server_ids: [selectedServer.id], idempotency_key: operationKey('node-update') });
+        recordJob(job);
+        showNotice(`Update queued for ${selectedServer.name}.`);
+      }
+    } catch (error) {
+      nodeUpdateError = error instanceof Error ? error.message : 'Unable to queue the node update.';
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { nodeUpdateBusy = false; }
+  }
+
   async function submitInstall(): Promise<void> {
     if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || installBusy) return;
     installBusy = true; jobError = '';
@@ -1053,7 +1098,7 @@
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
       configurationRevision: server.configuration_revision, displayState: displayState(server),
-      metrics: { cpu: null, memory: null, disk: null }, traffic: { scope: 'monthly', from: '', to: '', timezone: 'UTC', allowanceBytes: '0', direction: 'combined', countedBytes: '0', continuity: 'uncertain' }
+      metrics: { cpu: null, memory: null, swap: null, disk: null }, traffic: { scope: 'monthly', from: '', to: '', timezone: 'UTC', allowanceBytes: '0', direction: 'combined', countedBytes: '0', continuity: 'uncertain' }
     };
   }
 
@@ -1071,11 +1116,11 @@
         const point = names.map((name) => bucket(timestamp, name)).find((entry) => typeof entry?.weighted_mean === 'number');
         return typeof point?.weighted_mean === 'number' && Number.isFinite(point.weighted_mean) ? point.weighted_mean : null;
       };
-      return { timestamps, cpu: timestamps.map((t) => gauge(t, ['cpu.utilization', 'cpu'])), memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
+      return { timestamps, cpu: timestamps.map((t) => gauge(t, ['cpu.utilization', 'cpu'])), memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), swap: timestamps.map((t) => gauge(t, ['memory.swap_used_percent', 'swap.used_percent', 'swap'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
     }
     const samples = [...query.samples].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
     const value = (sample: MetricQuery['samples'][number], name: string) => {
-      const candidates = name === 'cpu' ? ['cpu', 'cpu.utilization'] : name === 'memory' ? ['memory', 'memory.used_percent', 'memory.utilization'] : ['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent'];
+      const candidates = name === 'cpu' ? ['cpu', 'cpu.utilization'] : name === 'memory' ? ['memory', 'memory.used_percent', 'memory.utilization'] : name === 'swap' ? ['memory.swap_used_percent', 'swap.used_percent', 'swap'] : ['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent'];
       const found = candidates.map((candidate) => sample.values[candidate] ?? sample.values[candidate.toUpperCase()]).find((entry) => typeof entry === 'number');
       return typeof found === 'number' && Number.isFinite(found) ? found : null;
     };
@@ -1083,6 +1128,7 @@
       timestamps: samples.map((sample) => Date.parse(sample.observed_at) / 1000),
       cpu: samples.map((sample) => value(sample, 'cpu')),
       memory: samples.map((sample) => value(sample, 'memory')),
+      swap: samples.map((sample) => value(sample, 'swap')),
       disk: samples.map((sample) => value(sample, 'disk')),
       networkRx: networkRates(samples, 'net.billing.rx_bytes'),
       networkTx: networkRates(samples, 'net.billing.tx_bytes'),
@@ -1095,7 +1141,21 @@
     if (!latest) return;
     server.latestMetricAt = latest.observed_at;
     const read = (names: string[]) => names.map((name) => latest.values[name]).find((value) => typeof value === 'number' && Number.isFinite(value)) ?? null;
-    server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), disk: read(['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent']) };
+    server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), swap: read(['memory.swap_used_percent', 'swap.used_percent', 'swap']), disk: read(['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent']) };
+  }
+
+  function mergeMetricCharts(previous: PreviewChartData, next: PreviewChartData, seconds: number): PreviewChartData {
+    const cutoff = Math.max(previous.timestamps.at(-1) ?? 0, next.timestamps.at(-1) ?? 0) - seconds;
+    const points = new Map<number, { cpu: number | null; memory: number | null; swap: number | null; disk: number | null; networkRx: number | null; networkTx: number | null }>();
+    const add = (source: PreviewChartData, index: number) => {
+      const timestamp = source.timestamps[index];
+      if (timestamp < cutoff) return;
+      points.set(timestamp, { cpu: source.cpu?.[index] ?? null, memory: source.memory?.[index] ?? null, swap: source.swap?.[index] ?? null, disk: source.disk?.[index] ?? null, networkRx: source.networkRx?.[index] ?? null, networkTx: source.networkTx?.[index] ?? null });
+    };
+    previous.timestamps.forEach((_, index) => add(previous, index));
+    next.timestamps.forEach((_, index) => add(next, index));
+    const ordered = [...points.entries()].sort(([a], [b]) => a - b);
+    return { timestamps: ordered.map(([timestamp]) => timestamp), cpu: ordered.map(([, point]) => point.cpu), memory: ordered.map(([, point]) => point.memory), swap: ordered.map(([, point]) => point.swap), disk: ordered.map(([, point]) => point.disk), networkRx: ordered.map(([, point]) => point.networkRx), networkTx: ordered.map(([, point]) => point.networkTx), coverage: previous.coverage === 'gap' || next.coverage === 'gap' ? 'gap' : next.coverage };
   }
 
   let liveRefreshBusy = false;
@@ -1109,17 +1169,18 @@
       const page = await apiClient.listServers({ signal: controller.signal });
       const refreshed = await mapWithConcurrency(page.items, 4, controller.signal, async (item, signal) => {
         const existing = servers.find((server) => server.id === item.id);
-        const server = { ...emptyApiServer(item), traffic: existing?.traffic ?? emptyApiServer(item).traffic, metricHistory: existing?.metricHistory };
+        const server = { ...emptyApiServer(item), metrics: existing?.metrics ?? emptyApiServer(item).metrics, latestMetricAt: existing?.latestMetricAt, traffic: existing?.traffic ?? emptyApiServer(item).traffic, metricHistory: existing?.metricHistory };
         const to = new Date();
         try {
           const query = await apiClient.queryMetrics(item.id, { from: new Date(to.getTime() - 120000).toISOString(), to: to.toISOString(), resolution: 'raw', signal });
           applyMetric(query, server);
           const chart = metricChart(query);
-          const empty = { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' as const };
-          server.metricHistory = { ranges: { '15m': chart, '1h': existing?.metricHistory?.ranges['1h'] ?? empty, '24h': existing?.metricHistory?.ranges['24h'] ?? empty } };
+          const empty = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' as const };
+          const previous = existing?.metricHistory?.ranges['15m'];
+          server.metricHistory = { ranges: { '15m': previous ? mergeMetricCharts(previous, chart, 15 * 60) : chart, '1h': existing?.metricHistory?.ranges['1h'] ?? empty, '24h': existing?.metricHistory?.ranges['24h'] ?? empty } };
         } catch (error) {
           if (error instanceof ApiError && error.authExpired) authExpired = true;
-          server.metricHistory = undefined;
+          server.metricHistory = existing?.metricHistory;
         }
         return server;
       });
@@ -1149,9 +1210,10 @@
         if (previous.id !== id) return previous;
         const updated = { ...previous, ...emptyApiServer(item), metrics: previous.metrics, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory };
         applyMetric(latestQuery ?? query, updated);
-        const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' };
+        const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
         const ranges = updated.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
-        updated.metricHistory = { ranges: { ...ranges, [range]: metricChart(query), ...(latestQuery ? { '15m': metricChart(latestQuery) } : {}) } };
+        const nextChart = metricChart(query);
+        updated.metricHistory = { ranges: { ...ranges, [range]: range === '15m' && ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], nextChart, 15 * 60) : nextChart, ...(latestQuery ? { '15m': ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], metricChart(latestQuery), 15 * 60) : metricChart(latestQuery) } : {}) } };
         const period = trafficQuery?.periods[0];
         if (period) updated.traffic = { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity };
         return updated;
@@ -1172,7 +1234,7 @@
     ]);
     const enriched = detailResult ? emptyApiServer(detailResult) : { ...server, capabilities: [...server.capabilities] };
     let partial = !detailResult;
-    const ranges: Record<ChartRange, PreviewChartData> = { '15m': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' }, '1h': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' }, '24h': { timestamps: [], cpu: [], memory: [], disk: [], coverage: 'unavailable' } };
+    const ranges: Record<ChartRange, PreviewChartData> = { '15m': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' }, '1h': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' }, '24h': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' } };
     (['15m', '1h', '24h'] as ChartRange[]).forEach((range, index) => {
       const result = metricResults[index];
       if (result.status === 'fulfilled') {
@@ -1214,7 +1276,15 @@
       alertsState = 'ready';
       alerts = [
         { id: 'alert-1', rule_id: 'high-cpu-utilization', server_id: 'server-us-00000002', state: 'pending', last_value: 74.0, last_observation: '2026-09-09T14:34:18Z' },
-        { id: 'alert-2', rule_id: 'host-heartbeat-stale', server_id: 'server-us-00000002', state: 'firing', last_observation: '2026-09-09T14:34:18Z' }
+        { id: 'alert-2', rule_id: 'host-heartbeat-stale', server_id: 'server-us-00000002', state: 'firing', last_observation: '2026-09-09T14:34:18Z' },
+        { id: 'alert-3', rule_id: 'preview-rule-disk', server_id: 'server-eu-00000001', state: 'firing', last_value: 93.4, last_observation: '2026-09-09T14:32:05Z' },
+        { id: 'alert-4', rule_id: 'preview-rule-memory', server_id: 'server-eu-00000001', state: 'recovered', last_value: 71.2, last_observation: '2026-09-09T13:58:40Z' }
+      ];
+      alertRules = [
+        { id: 'preview-rule-cpu', name: 'High CPU', expression: 'cpu.utilization>85', enabled: true, duration_seconds: 60, reminder_seconds: 300, idempotency_key: 'preview-rule-cpu', created_at: '2026-09-01T00:00:00Z' },
+        { id: 'preview-rule-heartbeat', name: 'Stale heartbeat', expression: 'heartbeat.age_seconds>120', enabled: false, duration_seconds: 60, reminder_seconds: 300, idempotency_key: 'preview-rule-heartbeat', created_at: '2026-09-01T00:00:00Z' },
+        { id: 'preview-rule-disk', name: 'Disk above 90%', expression: 'disk.root.used_percent>90', enabled: true, duration_seconds: 60, reminder_seconds: 300, group_key: 'disk', idempotency_key: 'preview-rule-disk', created_at: '2026-09-01T00:00:00Z' },
+        { id: 'preview-rule-memory', name: 'Memory above 90%', expression: 'memory.used_percent>90', enabled: true, duration_seconds: 60, reminder_seconds: 300, group_key: 'memory', idempotency_key: 'preview-rule-memory', created_at: '2026-09-01T00:00:00Z' }
       ];
       updateStatus = preview.previewUpdateStatus;
       notificationItems = preview.previewNotifications;
@@ -1551,7 +1621,7 @@
       </section>
 
     {:else if activePage === 'alerts'}
-      <AlertsPage {alerts} loadState={alertsState} error={alertsError} {servers} timezone={currentTimezone} onReload={() => void loadAlerts()} />
+          <AlertsPage {alerts} rules={alertRules} loadState={alertsState} error={alertsError} {servers} timezone={currentTimezone} canEdit={myAccount?.permission === 'edit'} onCreateRule={createAlertRule} onSetRuleEnabled={setAlertRuleEnabled} onReload={() => void loadAlerts()} />
     {:else if activePage === 'logs'}
       {#await lazy.LogsPage() then { default: LogsPage }}<LogsPage {servers} timezone={currentTimezone} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
     {:else if activePage === 'packages'}
@@ -1697,6 +1767,9 @@
             </div>
           </div>
           <div class="server-heading-actions">
+            {#if selectedServer.role === 'node' && myAccount?.role === 'owner'}
+              <button class="button primary small" type="button" disabled={nodeUpdateBusy} on:click={() => void updateSelectedNode()}><Icon name="download" size={14} /><span>{nodeUpdateBusy ? 'Updating…' : 'Update node'}</span></button>
+            {/if}
             {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
               <button class="button danger small" type="button" disabled={deleteServerBusy} on:click={() => promptDeleteServer()}>
                 <Icon name="trash" size={14} />
@@ -1704,6 +1777,7 @@
               </button>
             {/if}
           </div>
+          {#if nodeUpdateError}<p class="form-error" role="alert">{nodeUpdateError}</p>{/if}
         </div>
 
         <dl class="server-meta-bar">

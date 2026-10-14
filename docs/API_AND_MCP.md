@@ -17,8 +17,9 @@ unchanged.
 ## Create an API token
 
 1. Sign in to the dashboard and open **Settings → API & AI access**.
-2. Name the token, choose **Read only** or **Can edit**, and pick a lifetime
-   (up to 1 year). Optionally restrict it to selected servers or actions.
+2. Name the token, choose the account-wide **Read only** or **Read and write**
+   ceiling, pick a lifetime (up to 1 year), and set each permission category to
+   **None**, **Read only**, or **Read and write**.
 3. Copy the token (`pyt_…`). It is shown once; Payesh stores only its hash.
 
 The page also shows a ready-to-paste Claude Code command and MCP client
@@ -45,10 +46,13 @@ Tokens can also be created from a signed-in session with
   revoke any account's tokens, and see each account's active token count.
   Only a token's own account can edit or rotate it, so the owner never
   receives a secret that acts as another user.
-- Empty `server_ids` and `actions` allow all servers and actions permitted by
-  the token and account. `monitoring` allows monitoring reads, `read` allows
-  all reads, and `write` allows mutations subject to edit permission. Selected
-  servers restrict both direct REST calls and MCP tools.
+- New tokens default to **None** for every category. A `read` category permits
+  safe requests, while `write` permits safe and mutating requests. Categories
+  are monitoring, logs, traffic, alerts, packages, operations, settings, and
+  updates. Account and token management remain unavailable to bearer tokens.
+- Existing tokens created with the older server and action fields keep those
+  fields internally until they are edited or rotated. New requests should use
+  the `permissions` object.
 
 ### Manage existing tokens
 
@@ -60,8 +64,8 @@ also require `X-CSRF-Token`. Responses use `Cache-Control: no-store`.
   own tokens. The list includes creation time, expiry status, last use time,
   and the last client IP.
 - `PATCH /api/v1/api-tokens/{id}` (own tokens only) accepts `name`, `permission`,
-  `expires_in_days` (1–365, measured from now), `server_ids`, and `actions`.
-  Omitted fields stay unchanged; empty scope arrays clear those restrictions.
+  `expires_in_days` (1–365, measured from now), and `permissions`. Omitted
+  fields stay unchanged. Each permission value is `none`, `read`, or `write`.
   Extending expiry can renew an expired token.
 - `POST /api/v1/api-tokens/{id}/rotate` (own tokens only) returns a new secret once and
   invalidates the old secret immediately. It preserves the token's settings

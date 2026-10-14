@@ -161,9 +161,10 @@
   .actions { display: flex; justify-content: flex-end; gap: 6px; }
   .edit { margin: 4px 0 12px; }
   .none { padding: 16px 0; }
-  @media (max-width: 1000px) {
+  .table { container-type: inline-size; }
+  @container (max-width: 720px) {
     .head { display: none; }
-    .row { grid-template-columns: 1fr auto; }
+    .row { grid-template-columns: minmax(0, 1fr) auto; }
     .actions { grid-column: 1 / -1; justify-content: flex-start; }
   }
 </style>

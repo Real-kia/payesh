@@ -778,7 +778,7 @@ func (m *Manager) restore(data []byte) error {
 		}
 		// A damaged token is dropped rather than failing startup, which would
 		// lock every account out of the dashboard.
-		if err := validateTokenOptions(TokenOptions{record.ServerIDs, record.Actions}); err != nil {
+		if err := validateTokenOptions(TokenOptions{ServerIDs: record.ServerIDs, Actions: record.Actions, Permissions: record.Permissions}); err != nil {
 			continue
 		}
 		activity := make([]TokenActivity, 0, min(len(record.Activity), maxTokenActivity))
