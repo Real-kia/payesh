@@ -23,7 +23,7 @@
   import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
   import { PREVIEW_MODE } from './lib/env';
   import { operationKey } from './lib/ops';
-  import { allAddresses, displayAddress, stateLabel, sumNetworkRate } from './lib/format';
+  import { allAddresses, displayAddress, nodeVersionOf, stateLabel, sumNetworkRate } from './lib/format';
   import TagEditor from './components/TagEditor.svelte';
   import ServerToolbar from './components/ServerToolbar.svelte';
   import { filterServers, loadFilter, saveFilter } from './lib/serverFilter';
@@ -932,7 +932,13 @@
 
   // Connected nodes not on the latest release; the API takes 20 per update.
   $: latestRelease = (updateStatus?.latest ?? '').replace(/^v/, '');
-  $: outdatedNodes = servers.filter((server) => server.role === 'node' && server.connectionState === 'connected' && !!latestRelease && server.version.replace(/^v/, '') !== latestRelease);
+  // Nodes have their own version, which moves only when the agent changes, so
+  // a hub-only release does not make every node outdated.
+  $: latestNodeVersion = (updateStatus?.latest_node ?? '').replace(/^v/, '') || latestRelease;
+  function nodeOutdated(server: PreviewServer): boolean {
+    return server.role === 'node' && !!latestNodeVersion && isNewerVersion(latestNodeVersion, nodeVersionOf(server));
+  }
+  $: outdatedNodes = servers.filter((server) => server.connectionState === 'connected' && nodeOutdated(server));
   $: totalNodes = servers.filter((server) => server.role === 'node' && server.connectionState === 'connected').length;
   let nodesUpdateBusy = false;
   async function updateAllNodes(): Promise<void> {
@@ -1694,7 +1700,7 @@
                 <button class="button danger small" type="button" disabled={bulkBusy} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
               </div>
             {/if}
-            <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} selectedIds={selectedServerIds} onSelectionChange={myAccount?.permission === 'read' ? undefined : (ids) => (selectedServerIds = ids)} />
+            <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} selectedIds={selectedServerIds} latestNode={latestNodeVersion} onSelectionChange={myAccount?.permission === 'read' ? undefined : (ids) => (selectedServerIds = ids)} />
           {:else}
             <div class="unavailable-panel"><strong>No servers match</strong></div>
           {/if}
@@ -1825,7 +1831,7 @@
                 {:else if settingsSection === 'api'}
                   {#await lazy.ApiAccessSettings() then { default: ApiAccessSettings }}<ApiAccessSettings isOwner={myAccount?.role === 'owner'} currentUser={myAccount?.username ?? ''} canEdit={myAccount?.permission === 'edit'} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'updates'}
-                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings outdatedNodes={outdatedNodes.length} {totalNodes} nodesBusy={nodesUpdateBusy} onUpdateNodes={() => void updateAllNodes()} status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
+                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings latestNode={latestNodeVersion} outdatedNodes={outdatedNodes.length} {totalNodes} nodesBusy={nodesUpdateBusy} onUpdateNodes={() => void updateAllNodes()} status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'tls'}
                   {#await lazy.TlsSettings() then { default: TlsSettings }}<TlsSettings readOnly={myAccount?.permission === 'read'} {insecureConnection} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {/if}
@@ -1928,12 +1934,12 @@
                 {/if}
                 <StatusPill state={selectedServer.displayState} label={stateLabel(selectedServer.displayState)} />
               </div>
-              <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.version}</p>
+              <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.role === 'node' ? nodeVersionOf(selectedServer) : selectedServer.version}</p>
               {#if renameError}<p class="form-error" role="alert">{renameError}</p>{/if}
             </div>
           </div>
           <div class="server-heading-actions">
-            {#if selectedServer.role === 'node' && myAccount?.role === 'owner'}
+            {#if selectedServer.role === 'node' && myAccount?.role === 'owner' && (PREVIEW_MODE || nodeOutdated(selectedServer))}
               <button class="button primary small" type="button" disabled={nodeUpdateBusy} on:click={() => void updateSelectedNode()}><Icon name="download" size={14} /><span>{nodeUpdateBusy ? 'Updating…' : 'Update node'}</span></button>
             {/if}
             {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}

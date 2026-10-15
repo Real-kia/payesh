@@ -16,7 +16,10 @@ import (
 const DefaultRepository = "Real-kia/payesh"
 
 type GitHubRelease struct {
-	Version     string    `json:"version"`
+	Version string `json:"version"`
+	// NodeVersion is the newest node agent version in this release. Releases
+	// without a NODE_VERSION file ship an agent at the release version.
+	NodeVersion string    `json:"node_version,omitempty"`
 	URL         string    `json:"url"`
 	PublishedAt time.Time `json:"published_at"`
 }
@@ -76,7 +79,39 @@ func (g GitHubClient) Latest(ctx context.Context) (GitHubRelease, error) {
 	if !updater.ValidRelease(version) {
 		return GitHubRelease{}, errors.New("GitHub release has an invalid version tag")
 	}
-	return GitHubRelease{Version: version, URL: "https://github.com/" + repo + "/releases/tag/v" + version, PublishedAt: payload.PublishedAt}, nil
+	return GitHubRelease{Version: version, NodeVersion: g.nodeVersion(ctx, client, base, repo, version), URL: "https://github.com/" + repo + "/releases/tag/v" + version, PublishedAt: payload.PublishedAt}, nil
+}
+
+// nodeVersion reads NODE_VERSION at the release tag. Any failure, or a file
+// that is missing or malformed, falls back to the release version, which is
+// what releases made before the file existed shipped.
+func (g GitHubClient) nodeVersion(ctx context.Context, client *http.Client, base, repo, release string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/repos/"+repo+"/contents/NODE_VERSION?ref=v"+release, nil)
+	if err != nil {
+		return release
+	}
+	req.Header.Set("Accept", "application/vnd.github.raw+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if g.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+g.Token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return release
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return release
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	value := strings.TrimSpace(string(body))
+	if err != nil || !updater.ValidRelease(value) {
+		return release
+	}
+	if cmp, err := updater.CompareReleases(value, release); err != nil || cmp > 0 {
+		return release
+	}
+	return value
 }
 
 func (g GitHubClient) History(ctx context.Context) ([]GitHubRelease, error) {

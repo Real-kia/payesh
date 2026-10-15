@@ -82,3 +82,9 @@ export function displayAddress(server: PreviewServer): string {
 export function roleLabel(role: PreviewServer['role']): string {
   return role === 'node' ? 'Node' : role === 'cli-only' ? 'CLI' : 'Master';
 }
+
+/** The node agent's own version. Agents report it as a capability; older ones only report the release they came from. */
+export function nodeVersionOf(server: PreviewServer): string {
+  const reported = server.capabilities.find((capability) => capability.startsWith('node-version:'));
+  return (reported ? reported.slice('node-version:'.length) : server.version).replace(/^v/, '');
+}

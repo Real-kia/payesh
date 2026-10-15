@@ -88,3 +88,27 @@ func TestPublisherMinimumCoreDeclarationRejectsMissingInvalidAndFutureBaseline(t
 		t.Fatalf("legitimate explicit publisher baseline rejected: %v", err)
 	}
 }
+
+func TestNodeVersionFileDefaultsAndBounds(t *testing.T) {
+	root := t.TempDir()
+	if got, err := nodeVersion(root, "1.2.3"); err != nil || got != "1.2.3" {
+		t.Fatalf("missing file: %q %v", got, err)
+	}
+	for _, tc := range []struct {
+		content, want string
+		fails         bool
+	}{
+		{"1.1.0\n", "1.1.0", false},
+		{"1.2.3", "1.2.3", false},
+		{"1.3.0", "", true},
+		{"garbage", "", true},
+	} {
+		if err := os.WriteFile(filepath.Join(root, "NODE_VERSION"), []byte(tc.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := nodeVersion(root, "1.2.3")
+		if (err != nil) != tc.fails || got != tc.want {
+			t.Fatalf("%q: got %q err=%v", tc.content, got, err)
+		}
+	}
+}

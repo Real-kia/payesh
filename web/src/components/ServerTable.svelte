@@ -6,14 +6,15 @@
   import Pager from './Pager.svelte';
   import { formatNetworkRate } from '../network';
   import { formatHeartbeatInTz } from '../timezone';
-  import { allAddresses, clampPercent, currentNetworkRate, displayAddress, metricValue, resourceLevel, roleLabel, stateLabel } from '../lib/format';
+  import { allAddresses, clampPercent, currentNetworkRate, displayAddress, metricValue, nodeVersionOf, resourceLevel, roleLabel, stateLabel } from '../lib/format';
   import type { PreviewServer } from '../preview/fixtures';
 
-  let { servers, timezone, onSelect, nameHeading = 'Server & address', selectedIds = [], onSelectionChange }: {
+  let { servers, timezone, onSelect, nameHeading = 'Server & address', selectedIds = [], onSelectionChange, latestNode = '' }: {
     servers: PreviewServer[];
     timezone: string;
     onSelect: (server: PreviewServer) => void;
     nameHeading?: string;
+    latestNode?: string;
     selectedIds?: string[];
     onSelectionChange?: (ids: string[]) => void;
   } = $props();
@@ -48,6 +49,14 @@
       return descending ? -order : order;
     });
   });
+
+  function isOlder(installed: string, latest: string): boolean {
+    const parse = (value: string) => value.split(/[-+]/)[0].split('.').map((part) => Number.parseInt(part, 10) || 0);
+    if (!/^\d+\.\d+\.\d+/.test(installed) || !/^\d+\.\d+\.\d+/.test(latest)) return false;
+    const a = parse(installed), b = parse(latest);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+    return false;
+  }
 
   const PAGE_SIZE = 25;
   let page = $state(0);
@@ -92,7 +101,7 @@
       <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
-          <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span></strong>
+          <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span>{#if latestNode && server.role === 'node' && server.connectionState === 'connected' && isOlder(nodeVersionOf(server), latestNode)}<span class="role-chip update-chip" title={`Node v${nodeVersionOf(server)}; v${latestNode} is available`}>Update</span>{/if}</strong>
           <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if} · {detail(server)}</small>
         </div>
         <div class="col-metric">
@@ -247,5 +256,6 @@
     .col-metric:nth-child(4), .col-disk { display: none; }
   }
   .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 11.5px; font-weight: 550; }
+  .update-chip { border-color: var(--accent); color: var(--accent); }
   .more-addresses { color: var(--muted); font-weight: 600; }
 </style>

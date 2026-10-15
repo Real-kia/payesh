@@ -4,7 +4,7 @@
   import { PREVIEW_MODE } from '../../lib/env';
   import type { UpdateStatus, WebUpdateState } from '../../api';
 
-  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, nodesBusy = false, onUpdateNodes }: {
+  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, latestNode = '', nodesBusy = false, onUpdateNodes }: {
     status: UpdateStatus | null;
     installedVersion: string;
     checkBusy: boolean;
@@ -16,6 +16,7 @@
     isNewerVersion: (candidate: string, installed: string) => boolean;
     onCheck: () => void;
     onUpdate: (target: string) => void;
+    latestNode?: string;
     outdatedNodes?: number;
     totalNodes?: number;
     nodesBusy?: boolean;
@@ -80,7 +81,7 @@
   {/if}
   {#if status && !checkBusy && !checkError && totalNodes > 0 && !PREVIEW_MODE}
     <div class="nodes-row">
-      <span>Nodes <strong>{totalNodes - outdatedNodes}/{totalNodes}</strong> on v{status.latest}</span>
+      <span>Nodes <strong>{totalNodes - outdatedNodes}/{totalNodes}</strong> up to date (node v{latestNode || status.latest})</span>
       {#if outdatedNodes > 0 && isOwner && onUpdateNodes}<button class="button small" type="button" disabled={nodesBusy} onclick={onUpdateNodes}><Icon name="download" size={13} />{nodesBusy ? 'Queuing…' : `Update all nodes (${outdatedNodes})`}</button>{/if}
     </div>
   {/if}

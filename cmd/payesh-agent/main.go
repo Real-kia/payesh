@@ -163,7 +163,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "open sample spool:", err)
 			os.Exit(1)
 		}
-		capabilities := []string{"metrics", "traffic", "sampling-policy", transport.MigrationCapability, transport.RelayCapability, transport.AddressesCapability}
+		capabilities := []string{"metrics", "traffic", "sampling-policy", transport.MigrationCapability, transport.RelayCapability, transport.AddressesCapability, version.NodeCapabilityPrefix + version.NodeVersion()}
 		// The relay costs nothing until the hub makes this node a relay.
 		relay := &netproxy.RelayListener{}
 		var actionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse

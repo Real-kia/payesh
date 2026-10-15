@@ -107,6 +107,10 @@ func run(version, output, baseURL, created string, includeWeb bool, minimumCore 
 	if err != nil {
 		return err
 	}
+	agentVersion, err := nodeVersion(root, version)
+	if err != nil {
+		return err
+	}
 	if baseURL == "" {
 		baseURL = "https://github.com/Real-kia/payesh/releases/download/v" + version
 	}
@@ -152,7 +156,11 @@ func run(version, output, baseURL, created string, includeWeb bool, minimumCore 
 		}
 		for _, target := range targets {
 			binary := filepath.Join(archDir, target.name)
-			if err := build(root, target.path, binary, arch, version); err != nil {
+			node := ""
+			if target.name == "payesh-agent" {
+				node = agentVersion
+			}
+			if err := build(root, target.path, binary, arch, version, node); err != nil {
 				return fmt.Errorf("build %s linux/%s: %w", target.name, arch, err)
 			}
 			archiveName := target.name + "-linux-" + arch + ".tar.gz"
@@ -292,8 +300,31 @@ func resolveOutputDir(raw string) (string, error) {
 	return resolved, nil
 }
 
-func build(root, packagePath, output, arch, version string) error {
+// nodeVersion reads the node agent's own version from NODE_VERSION. It
+// defaults to the release version, and may never be newer than it.
+func nodeVersion(root, release string) (string, error) {
+	body, err := os.ReadFile(filepath.Join(root, "NODE_VERSION"))
+	if errors.Is(err, os.ErrNotExist) {
+		return release, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(body))
+	if !validVersion(value) {
+		return "", errors.New("NODE_VERSION must be MAJOR.MINOR.PATCH with an optional prerelease suffix")
+	}
+	if cmp, err := updater.CompareReleases(value, release); err != nil || cmp > 0 {
+		return "", fmt.Errorf("NODE_VERSION %s must not be newer than release %s", value, release)
+	}
+	return value, nil
+}
+
+func build(root, packagePath, output, arch, version, node string) error {
 	ldflags := "-buildid= -X github.com/Real-kia/payesh/internal/version.Value=" + version
+	if node != "" {
+		ldflags += " -X github.com/Real-kia/payesh/internal/version.Node=" + node
+	}
 	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags="+ldflags, "-o", output, packagePath)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")

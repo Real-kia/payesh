@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveLogLevel, generatePreviewFleetLogs } from '../src/lib/logs.ts';
-import { formatBytes, percentage, resourceLevel, metricValue, sumNetworkRate } from '../src/lib/format.ts';
+import { formatBytes, percentage, resourceLevel, metricValue, sumNetworkRate, nodeVersionOf } from '../src/lib/format.ts';
 import { withAlpha } from '../src/lib/chart.ts';
 
 test('stored severities win and INFO text is checked for error and warning markers', () => {
@@ -54,4 +54,9 @@ test('chart colours accept hex and rgb forms', () => {
   assert.equal(withAlpha('#fff', 0.1), 'rgba(255, 255, 255, 0.1)');
   assert.equal(withAlpha('rgb(1, 2, 3)', 0.2), 'rgba(1, 2, 3, 0.2)');
   assert.equal(withAlpha('oklch(0.5 0.1 200)', 0.2), 'oklch(0.5 0.1 200)');
+});
+
+test('a node reports its own agent version, older agents fall back to the release version', () => {
+  assert.equal(nodeVersionOf({ version: '0.7.1', capabilities: ['metrics', 'node-version:0.7.0'] }), '0.7.0');
+  assert.equal(nodeVersionOf({ version: 'v0.6.2', capabilities: ['metrics'] }), '0.6.2');
 });

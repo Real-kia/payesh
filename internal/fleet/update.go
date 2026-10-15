@@ -182,6 +182,10 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				ahead = comparison > 0
 			}
 		}
+		latestNode := latest.NodeVersion
+		if latestNode == "" {
+			latestNode = latest.Version
+		}
 		var history []release.GitHubRelease
 		if historian, ok := checker.(interface {
 			History(context.Context) ([]release.GitHubRelease, error)
@@ -192,13 +196,14 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(struct {
 			Current            string                  `json:"current"`
 			Latest             string                  `json:"latest"`
+			LatestNode         string                  `json:"latest_node"`
 			InstalledAhead     bool                    `json:"installed_ahead"`
 			UpdateAvailable    bool                    `json:"update_available"`
 			URL                string                  `json:"url"`
 			Releases           []release.GitHubRelease `json:"releases"`
 			WebUpdateSupported bool                    `json:"web_update_supported"`
 			WebUpdate          *webupdate.Status       `json:"web_update"`
-		}{version.Value, latest.Version, ahead, available, latest.URL, history, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
+		}{version.Value, latest.Version, latestNode, ahead, available, latest.URL, history, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
 		return
 	}
 	if r.URL.Path != "/api/v1/updates" {

@@ -115,3 +115,27 @@ func TestWebUpdateRequiresOwnerCSRFAndNewerVersion(t *testing.T) {
 		t.Fatalf("browser activation intent lost before completion: %+v %v %v", retained, found, err)
 	}
 }
+
+type nodeReleaseChecker struct{ node string }
+
+func (c nodeReleaseChecker) Latest(context.Context) (release.GitHubRelease, error) {
+	return release.GitHubRelease{Version: "1.2.3", NodeVersion: c.node}, nil
+}
+
+func TestLatestReportsNodeVersionSeparately(t *testing.T) {
+	for _, tc := range []struct{ node, want string }{{"1.1.0", "1.1.0"}, {"", "1.2.3"}} {
+		service := &UpdateService{ReleaseChecker: nodeReleaseChecker{tc.node}, WebUpdateRoot: t.TempDir(), WebUpdateDir: t.TempDir()}
+		w := httptest.NewRecorder()
+		service.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/updates/latest", nil))
+		var result struct {
+			Latest     string `json:"latest"`
+			LatestNode string `json:"latest_node"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != 200 || result.Latest != "1.2.3" || result.LatestNode != tc.want {
+			t.Fatalf("node=%q status=%d result=%+v", tc.node, w.Code, result)
+		}
+	}
+}

@@ -365,3 +365,15 @@ passed their recorded scopes. The current schema startup, authenticated candidat
 preflight, bounded recovery snapshots and storage UI differ from earlier native
 fixtures. Fresh signed systemd lifecycle evidence for this exact generation is
 still required; building pinned native inputs does not establish activation.
+
+## Node agent version
+
+Nodes have their own version, kept in the `NODE_VERSION` file at the repository
+root and stamped into `payesh-agent` by `scripts/release-package`. Agents report
+it as the `node-version:<x.y.z>` capability. The hub offers a node update only
+when the node's version is older than `NODE_VERSION` at the latest release tag.
+
+- [ ] Bump `NODE_VERSION` to the release version when anything a node runs
+  changes (agent, transport protocol, node-side modules or the root update
+  worker). Leave it unchanged for hub-only releases.
+- [ ] `NODE_VERSION` may never be newer than the release version.
