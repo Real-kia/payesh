@@ -2,6 +2,7 @@
   import FleetSummary from '../components/FleetSummary.svelte';
   import MonitoringCard from '../components/MonitoringCard.svelte';
   import ServerToolbar from '../components/ServerToolbar.svelte';
+  import Pager from '../components/Pager.svelte';
   import LiveIndicator from '../components/LiveIndicator.svelte';
   import { filterServers, loadFilter, saveFilter } from '../lib/serverFilter';
   import type { PreviewServer } from '../preview/fixtures';
@@ -19,6 +20,10 @@
   let filter = $state(loadFilter('monitoring'));
   $effect(() => saveFilter('monitoring', filter));
   const visible = $derived(filterServers(servers, filter));
+  const PAGE_SIZE = 24;
+  let page = $state(0);
+  $effect(() => { filter; page = 0; });
+  const paged = $derived(visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
 </script>
 
 <section class="page" aria-labelledby="monitoring-title">
@@ -39,10 +44,11 @@
       <div class="unavailable-panel"><strong>No servers match</strong></div>
     {:else}
       <div class="monitoring-grid">
-        {#each visible as server (server.id)}
+        {#each paged as server (server.id)}
           <div class="cell"><MonitoringCard {server} {timezone} {onSelect} /></div>
         {/each}
       </div>
+      <Pager total={visible.length} bind:page pageSize={PAGE_SIZE} label="servers" />
     {/if}
   {/if}
 </section>

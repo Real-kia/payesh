@@ -369,6 +369,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "resolve local package identity:", err)
 			}
 		}
+		go store.RunLocalAddressReporter(ctx, moduleManager.LocalServerID)
 		updateScheduler.Executor = &updater.FleetExecutor{
 			Store: store, Producer: nodeHub, LocalServerID: moduleManager.LocalServerID,
 			Local: updater.ExecutorFunc(func(updateCtx context.Context, execution updater.Execution) error {

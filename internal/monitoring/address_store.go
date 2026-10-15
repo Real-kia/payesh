@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"sort"
 	"strings"
@@ -94,4 +95,59 @@ func serverAddresses(configured, peerIP, reported string) []string {
 		}
 	}
 	return out
+}
+
+// LocalInterfaceAddresses lists the addresses on this host's interfaces,
+// leaving out loopback, link-local and container or VPN bridge interfaces.
+func LocalInterfaceAddresses() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || virtualInterface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
+				out = append(out, prefix.Addr().String())
+			}
+		}
+	}
+	return NormalizeNodeAddresses(out)
+}
+
+func virtualInterface(name string) bool {
+	for _, prefix := range []string{"docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "vxlan", "lxc", "lxd", "podman", "kube", "tailscale", "zt", "wg", "tun", "tap"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RunLocalAddressReporter keeps this host's own record up to date. Nodes
+// report their addresses over the transport; the hub's local server has no
+// such connection. It retries quickly until the server row exists.
+func (s *Store) RunLocalAddressReporter(ctx context.Context, serverID contracts.ServerID) {
+	if serverID == "" {
+		return
+	}
+	wait := 15 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = s.RecordServerAddresses(writeCtx, serverID, LocalInterfaceAddresses())
+		cancel()
+		wait = 10 * time.Minute
+	}
 }

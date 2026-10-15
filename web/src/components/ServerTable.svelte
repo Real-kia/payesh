@@ -3,17 +3,33 @@
   import Icon from '../Icon.svelte';
   import CircleChart from '../CircleChart.svelte';
   import StatusPill from './StatusPill.svelte';
+  import Pager from './Pager.svelte';
   import { formatNetworkRate } from '../network';
   import { formatHeartbeatInTz } from '../timezone';
   import { allAddresses, clampPercent, currentNetworkRate, displayAddress, metricValue, resourceLevel, roleLabel, stateLabel } from '../lib/format';
   import type { PreviewServer } from '../preview/fixtures';
 
-  let { servers, timezone, onSelect, nameHeading = 'Server & address' }: {
+  let { servers, timezone, onSelect, nameHeading = 'Server & address', selectedIds = [], onSelectionChange }: {
     servers: PreviewServer[];
     timezone: string;
     onSelect: (server: PreviewServer) => void;
     nameHeading?: string;
+    selectedIds?: string[];
+    onSelectionChange?: (ids: string[]) => void;
   } = $props();
+
+  // Only nodes can be updated or deleted, so the hub row has no checkbox.
+  const selectable = $derived(!!onSelectionChange);
+  const selectableIds = $derived(servers.filter((server) => server.role === 'node').map((server) => server.id));
+  const allSelected = $derived(selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id)));
+  const someSelected = $derived(selectedIds.some((id) => selectableIds.includes(id)));
+
+  function toggle(id: string) {
+    onSelectionChange?.(selectedIds.includes(id) ? selectedIds.filter((entry) => entry !== id) : [...selectedIds, id]);
+  }
+  function toggleAll() {
+    onSelectionChange?.(allSelected ? selectedIds.filter((id) => !selectableIds.includes(id)) : [...new Set([...selectedIds, ...selectableIds])]);
+  }
 
   type SortKey = 'status' | 'name' | 'cpu' | 'memory' | 'disk';
   let sortKey = $state<SortKey | null>(null);
@@ -33,7 +49,12 @@
     });
   });
 
+  const PAGE_SIZE = 25;
+  let page = $state(0);
+  const paged = $derived(sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
+
   function sortBy(key: SortKey) {
+    page = 0;
     if (sortKey === key) {
       if (descending === (key === 'cpu' || key === 'memory' || key === 'disk')) descending = !descending;
       else { sortKey = null; descending = false; }
@@ -48,8 +69,11 @@
   }
 </script>
 
-<div class="table-container">
+<div class="table-container" class:selectable>
   <div class="table-header" role="group" aria-label="Sort servers">
+    {#if selectable && selectableIds.length}
+      <input class="row-check" type="checkbox" aria-label="Select all servers" checked={allSelected} indeterminate={someSelected && !allSelected} onchange={toggleAll} />
+    {/if}
     {#each [['status', 'Status', ''], ['name', nameHeading, ''], ['cpu', 'CPU', ''], ['memory', 'Memory', ''], ['disk', 'Disk', 'col-disk']] as [key, label, extra] (key)}
       <button type="button" class={`sort ${extra}`} class:sorted={sortKey === key} aria-pressed={sortKey === key} aria-label={`Sort by ${label.toLowerCase()}${sortKey === key ? (descending ? ', descending' : ', ascending') : ''}`} onclick={() => sortBy(key as SortKey)}>
         {label}<span class="arrow" aria-hidden="true">{sortKey === key ? (descending ? '↓' : '↑') : '↕'}</span>
@@ -59,8 +83,12 @@
     <span></span>
   </div>
   <div class="server-list stagger">
-    {#each sorted as server, index (server.id)}
+    {#each paged as server, index (server.id)}
       {@const online = server.connectionState === 'connected'}
+      <div class="row-wrap" class:checked={selectedIds.includes(server.id)}>
+      {#if selectable && server.role === 'node'}
+        <input class="row-check" type="checkbox" aria-label={`Select ${serverLabel(server)}`} checked={selectedIds.includes(server.id)} onchange={() => toggle(server.id)} />
+      {/if}
       <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
@@ -97,9 +125,11 @@
         </div>
         <div class="col-action" aria-hidden="true"><Icon name="chevron-right" size={16} /></div>
       </button>
+      </div>
     {/each}
   </div>
 </div>
+<Pager total={sorted.length} bind:page pageSize={PAGE_SIZE} label="servers" />
 
 <style>
   .table-container {
@@ -117,6 +147,7 @@
     padding: 0 20px;
   }
   .table-header {
+    position: relative;
     min-height: 40px;
     border-bottom: 1px solid var(--line);
     background: var(--surface-muted);
@@ -132,6 +163,11 @@
   .sort:hover .arrow, .sort:focus-visible .arrow { opacity: 0.5; }
   .sort.sorted .arrow { opacity: 1; color: var(--accent); }
   .server-list { display: flex; flex-direction: column; }
+  .row-wrap { position: relative; border-bottom: 1px solid var(--line-light); }
+  .row-wrap:last-child { border-bottom: 0; }
+  .row-wrap.checked { background: var(--accent-bg); }
+  .row-check { position: absolute; z-index: 1; left: 18px; top: 50%; width: 16px; height: 16px; margin: -8px 0 0; accent-color: var(--accent); cursor: pointer; }
+  .selectable .table-header, .selectable .server-row { padding-left: 52px; }
   .server-row {
     position: relative;
     width: 100%;

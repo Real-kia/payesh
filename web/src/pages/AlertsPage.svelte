@@ -2,6 +2,7 @@
   import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import StatusPill from '../components/StatusPill.svelte';
+  import Pager from '../components/Pager.svelte';
   import LoadingSkeleton from '../components/LoadingSkeleton.svelte';
   import { formatDateTimeInTz } from '../timezone';
   import { alertCategories, categoryForAlert, categoryForRule, type AlertCategory } from '../lib/alertCategories';
@@ -26,6 +27,8 @@
   let stateFilter = $state<'all' | 'firing' | 'pending' | 'recovered'>('all');
   let categoryFilter = $state<'all' | AlertCategory>('all');
   let showRuleForm = $state(false);
+  const RULES_PER_PAGE = 8;
+  let rulePages = $state<Record<string, number>>({});
   let newRuleName = $state('');
   let newRuleMetric = $state('cpu.utilization');
   let newRuleThreshold = $state(85);
@@ -57,9 +60,37 @@
       return { ...category, total: items.length, firing: items.filter((alert) => alert.state === 'firing').length };
     })
     .filter((category) => category.total > 0));
+  // Starter rules are created per server, so a fleet has one identical rule
+  // per machine. Show each distinct rule once, with the servers it covers.
+  type RuleEntry = { key: string; name: string; expression: string; duration: number; rules: AlertRule[] };
+  function collapse(list: AlertRule[]): RuleEntry[] {
+    const entries = new Map<string, RuleEntry>();
+    for (const rule of list) {
+      const key = `${rule.name}\u0000${rule.expression}\u0000${rule.duration_seconds}`;
+      const entry = entries.get(key) ?? { key, name: rule.name, expression: rule.expression, duration: rule.duration_seconds, rules: [] };
+      entry.rules.push(rule);
+      entries.set(key, entry);
+    }
+    return [...entries.values()];
+  }
   const ruleGroups = $derived(alertCategories
-    .map((category) => ({ ...category, rules: rules.filter((rule) => categoryForRule(rule) === category.id) }))
+    .map((category) => {
+      const members = rules.filter((rule) => categoryForRule(rule) === category.id);
+      return { ...category, rules: members, entries: collapse(members) };
+    })
     .filter((group) => group.rules.length > 0));
+  function scopeLabel(entry: RuleEntry): string {
+    if (entry.rules.length > 1) return `${entry.rules.length} servers`;
+    return entry.rules[0].server_id ? serverName(entry.rules[0].server_id) : 'All servers';
+  }
+  async function toggleEntry(entry: RuleEntry) {
+    if (ruleBusy) return;
+    const enable = !entry.rules.every((rule) => rule.enabled);
+    ruleBusy = true; ruleError = '';
+    try { for (const rule of entry.rules) if (rule.enabled !== enable) await onSetRuleEnabled(rule, enable); }
+    catch (error) { ruleError = error instanceof Error ? error.message : 'Unable to update this rule.'; }
+    finally { ruleBusy = false; }
+  }
   const filtered = $derived(inCategory.filter((alert) => stateFilter === 'all' || (stateFilter === 'recovered' ? alert.state !== 'firing' && alert.state !== 'pending' : alert.state === stateFilter)));
   const pageCount = $derived(Math.max(1, Math.ceil(filtered.length / pageSize)));
   const paged = $derived(filtered.slice(page * pageSize, (page + 1) * pageSize));
@@ -100,8 +131,18 @@
     {#if ruleError}<p class="form-error" role="alert">{ruleError}</p>{/if}
     {#each ruleGroups as group (group.id)}
       <div class="rule-group">
-        <h3 class="rule-group-title"><Icon name={group.icon} size={13} />{group.label}<span class="n">{group.rules.length}</span></h3>
-        <div class="rule-list">{#each group.rules as rule (rule.id)}<div class="rule-row"><span class:disabled={!rule.enabled} class="rule-state"></span><div><strong>{rule.name}</strong><small>{rule.expression} · for {rule.duration_seconds}s</small></div>{#if canEdit}<button class="button ghost small" type="button" onclick={() => void toggleRule(rule)}>{rule.enabled ? 'Disable' : 'Enable'}</button>{/if}</div>{/each}</div>
+        <h3 class="rule-group-title"><Icon name={group.icon} size={13} />{group.label}<span class="n">{group.entries.length}</span></h3>
+        <div class="rule-list">{#each group.entries.slice((rulePages[group.id] ?? 0) * RULES_PER_PAGE, ((rulePages[group.id] ?? 0) + 1) * RULES_PER_PAGE) as entry (entry.key)}
+          {@const enabledCount = entry.rules.filter((rule) => rule.enabled).length}
+          <div class="rule-row">
+            <span class:disabled={enabledCount === 0} class:partial={enabledCount > 0 && enabledCount < entry.rules.length} class="rule-state"></span>
+            <div>
+              <strong>{entry.name}</strong>
+              <small>{entry.expression} · for {entry.duration}s · {scopeLabel(entry)}{#if enabledCount < entry.rules.length} · {enabledCount === 0 ? 'disabled' : `${enabledCount} of ${entry.rules.length} enabled`}{/if}</small>
+            </div>
+            {#if canEdit}<button class="button ghost small" type="button" disabled={ruleBusy} onclick={() => void toggleEntry(entry)}>{enabledCount === entry.rules.length ? (entry.rules.length > 1 ? 'Disable all' : 'Disable') : (entry.rules.length > 1 ? 'Enable all' : 'Enable')}</button>{/if}
+          </div>{/each}</div>
+        <Pager total={group.entries.length} bind:page={rulePages[group.id]} pageSize={RULES_PER_PAGE} label="rules" />
       </div>
     {:else}<p class="muted">No alert rules have been configured.</p>{/each}
   </article>
@@ -197,6 +238,7 @@
   .rule-row small { color: var(--muted); font-size: 12px; }
   .rule-state { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
   .rule-state.disabled { background: var(--muted); }
+  .rule-state.partial { background: var(--warning); }
   .rule-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 10px; border: 1px solid var(--line-light); border-radius: var(--radius-md); }
   .rule-form input, .rule-form select { min-width: 140px; }
   .n { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

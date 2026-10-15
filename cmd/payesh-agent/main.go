@@ -6,8 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -184,7 +182,7 @@ func main() {
 			ActionHandler:  actionHandler,
 			SamplingPolicy: func(seconds int) { hubSampleSeconds.Store(int64(seconds)) },
 			RelayPolicy:    func(policy contracts.RelayPolicy) { applyRelayPolicy(relay, policy) },
-			Addresses:      interfaceAddresses,
+			Addresses:      monitoring.LocalInterfaceAddresses,
 			Proxy:          hubProxy,
 			Logf:           func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
 		}
@@ -304,40 +302,6 @@ func splitCSV(value string) []string {
 		}
 	}
 	return parts
-}
-
-// interfaceAddresses lists the addresses on the host's interfaces, leaving
-// out loopback, link-local and container or VPN bridge interfaces.
-func interfaceAddresses() []string {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || virtualInterface(iface.Name) {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
-				out = append(out, prefix.Addr().String())
-			}
-		}
-	}
-	return monitoring.NormalizeNodeAddresses(out)
-}
-
-func virtualInterface(name string) bool {
-	for _, prefix := range []string{"docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "vxlan", "lxc", "lxd", "podman", "kube", "tailscale", "zt", "wg", "tun", "tap"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // applyRelayPolicy starts, updates or stops the node's relay. Errors are

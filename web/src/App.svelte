@@ -953,6 +953,75 @@
     }
   }
 
+  let selectedServerIds: string[] = [];
+  let bulkBusy = false;
+  $: if (selectedServerIds.length) {
+    const live = selectedServerIds.filter((id) => servers.some((server) => server.id === id));
+    if (live.length !== selectedServerIds.length) selectedServerIds = live;
+  }
+
+  async function updateSelectedNodes(): Promise<void> {
+    if (bulkBusy) return;
+    const targets = servers.filter((server) => selectedServerIds.includes(server.id) && server.role === 'node' && server.connectionState === 'connected');
+    bulkBusy = true; jobError = '';
+    try {
+      if (!targets.length) throw new Error('None of the selected servers are connected nodes that can be updated.');
+      if (!PREVIEW_MODE) {
+        const latest = await apiClient.checkLatestUpdate();
+        updateStatus = latest;
+        const release = latest.latest.replace(/^v/, '');
+        if (!release || release === '—') throw new Error('No release is available. Check for updates first.');
+        const ids = targets.map((server) => server.id);
+        for (let start = 0; start < ids.length; start += 20) {
+          recordJob(await apiClient.createUpdate({ release, selected_server_ids: ids.slice(start, start + 20), idempotency_key: operationKey('bulk-update') }));
+        }
+      }
+      showNotice(`Update queued for ${targets.length} node${targets.length === 1 ? '' : 's'}.`);
+      selectedServerIds = [];
+    } catch (error) {
+      jobError = error instanceof Error ? error.message : 'Unable to queue the updates.';
+      showNotice(jobError);
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+    } finally { bulkBusy = false; }
+  }
+
+  function promptDeleteSelected() {
+    const targets = servers.filter((server) => selectedServerIds.includes(server.id) && server.role === 'node');
+    if (!targets.length || bulkBusy) return;
+    openConfirmModal({
+      title: `Delete ${targets.length} server${targets.length === 1 ? '' : 's'}?`,
+      description: `Permanently delete ${targets.length === 1 ? targets[0].name : `these ${targets.length} servers`} and all associated metrics, logs, and monitoring history. This action cannot be undone.`,
+      tone: 'danger',
+      icon: 'trash',
+      confirmText: `Delete ${targets.length === 1 ? 'server' : 'servers'}`,
+      cancelText: 'Cancel',
+      action: async () => {
+        bulkBusy = true; jobError = '';
+        const deleted: string[] = [];
+        let failure = '';
+        try {
+          for (const target of targets) {
+            try {
+              await apiClient.deleteServer(target.id, target.configurationRevision);
+              deleted.push(target.id);
+              if (activeInstall?.serverId === target.id) saveActiveInstall(null);
+            } catch (error) {
+              failure = error instanceof Error ? error.message : 'Unable to delete server.';
+              if (error instanceof ApiError && error.authExpired) { authExpired = true; break; }
+            }
+          }
+        } finally {
+          servers = servers.filter((server) => !deleted.includes(server.id));
+          selectedServerIds = selectedServerIds.filter((id) => !deleted.includes(id));
+          if (deleted.includes(selectedServerId)) selectedServerId = servers[0]?.id ?? '';
+          bulkBusy = false;
+        }
+        if (failure) { jobError = `Deleted ${deleted.length} of ${targets.length}. ${failure}`; showNotice(jobError); }
+        else showNotice(`Deleted ${deleted.length} server${deleted.length === 1 ? '' : 's'} and their stored data.`);
+      }
+    });
+  }
+
   async function updateSelectedNode(): Promise<void> {
     if (!selectedServer || selectedServer.role !== 'node' || nodeUpdateBusy) return;
     nodeUpdateBusy = true; nodeUpdateError = '';
@@ -1616,7 +1685,16 @@
         {#if servers.length}
           <ServerToolbar servers={displayServers} bind:state={serversFilter} shown={filteredServers.length} />
           {#if filteredServers.length}
-            <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} />
+            {#if selectedServerIds.length}
+              <div class="bulk-bar" role="region" aria-label="Bulk actions">
+                <strong>{selectedServerIds.length} selected</strong>
+                <button class="button ghost small" type="button" on:click={() => (selectedServerIds = [])}>Clear</button>
+                <span class="bulk-spacer"></span>
+                <button class="button small" type="button" disabled={bulkBusy} on:click={() => void updateSelectedNodes()}><Icon name="download" size={13} /><span>Update</span></button>
+                <button class="button danger small" type="button" disabled={bulkBusy} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
+              </div>
+            {/if}
+            <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} selectedIds={selectedServerIds} onSelectionChange={myAccount?.permission === 'read' ? undefined : (ids) => (selectedServerIds = ids)} />
           {:else}
             <div class="unavailable-panel"><strong>No servers match</strong></div>
           {/if}
@@ -2007,6 +2085,8 @@
 />
 
 <style>
+  .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); font-size: 13px; }
+  .bulk-spacer { flex: 1; }
   /* ------------------------------------------------------------------------
      Shell
      ------------------------------------------------------------------------ */

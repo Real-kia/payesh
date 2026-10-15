@@ -40,10 +40,14 @@
   }
 
   const disk = $derived(server.metrics.disk);
+  const hasSwap = $derived(
+    server.metrics.swap !== null || hasSamples(history('swap')) || (chartData ? hasSamples(chartData.swap) : false)
+  );
+  const visibleCards = $derived(cards.filter((card) => card.key !== 'swap' || hasSwap));
 </script>
 
 <div class="metric-grid stagger">
-  {#each cards as card, index (card.key)}
+  {#each visibleCards as card, index (card.key)}
     {@const values = history(card.key)}
     {@const value = server.metrics[card.key]}
     <article class={`metric-card ${resourceLevel(value)}`} class:purple={card.tone === 'purple'} class:blue={card.tone === 'blue'} style:--i={index}>
@@ -102,6 +106,7 @@
   {:else}<div class="unavailable-panel"><strong>Memory history unavailable</strong><span>No telemetry samples have been recorded yet for this range.</span></div>{/if}
 </article>
 
+{#if hasSwap}
 <article class="panel chart-panel">
   <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div></div>
   {#if chartData && chartData.coverage !== 'unavailable' && hasSamples(chartData.swap)}
@@ -109,6 +114,7 @@
     <div class="highlights"><span>Swap range <strong class="tabular">{seriesRange(chartData.swap)}</strong></span></div>
   {:else}<div class="unavailable-panel"><strong>Swap history unavailable</strong><span>This node may not expose swap telemetry.</span></div>{/if}
 </article>
+{/if}
 
 <article class="panel disk-panel">
   <div class="panel-heading"><div><h2>Disk storage</h2><span class="muted">Root filesystem</span></div></div>
