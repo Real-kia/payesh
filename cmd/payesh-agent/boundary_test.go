@@ -16,17 +16,17 @@ import (
 // The hub side of the node transport (Hub, certificate-bound connections,
 // port migration) lives in internal/nodehub and must stay out of this list.
 //
-// Remaining debt: auth, monitoring and dbschema (and with them the SQLite
-// driver) are linked through webupdate -> updater and through two helpers the
-// agent calls in monitoring. Splitting webupdate into the part the agent calls
-// and the root worker, and moving those helpers into small packages, would let
-// all of them go.
+// auth, monitoring, dbschema and updater (and with them the SQLite driver) are
+// linked on purpose: the same binary also runs next to the hub, where it reads
+// the local storage settings (monitoring.ReadLocalSamplingSeconds) and takes
+// part in signed updates (webupdate -> updater). Dropping them would need a
+// separate node-only agent binary.
 var allowedAgentPackages = map[string]bool{
 	"collector":  true,
 	"contracts":  true,
 	"dbschema":   true, // via monitoring and updater
 	"auth":       true, // via monitoring
-	"monitoring": true, // via updater and two agent helpers
+	"monitoring": true, // local storage settings, updater
 	"netproxy":   true,
 	"privd":      true,
 	"transport":  true,
