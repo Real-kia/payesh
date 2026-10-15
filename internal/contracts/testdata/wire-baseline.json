@@ -1,0 +1,111 @@
+{
+  "Acknowledgement": [
+    "accepted",
+    "addresses",
+    "error",
+    "error.code",
+    "error.correlation_id",
+    "error.fields",
+    "error.message",
+    "error.retryable",
+    "relay",
+    "relay.enabled",
+    "relay.grants",
+    "relay.grants.destinations",
+    "relay.grants.expires_at",
+    "relay.grants.password_sha256",
+    "relay.grants.username",
+    "relay.port",
+    "request_id",
+    "sampling_interval_seconds",
+    "through_sequence"
+  ],
+  "ActionRequest": [
+    "action",
+    "arguments",
+    "deadline",
+    "expected_revision",
+    "idempotency_key",
+    "protocol",
+    "request_id",
+    "target",
+    "target_server_id"
+  ],
+  "ActionResponse": [
+    "accepted",
+    "core_update",
+    "core_update.job_id",
+    "core_update.release",
+    "core_update.state",
+    "error",
+    "error.code",
+    "error.correlation_id",
+    "error.fields",
+    "error.message",
+    "error.retryable",
+    "request_id",
+    "revision"
+  ],
+  "Cancellation": [
+    "expected_revision",
+    "idempotency_key",
+    "job_id"
+  ],
+  "CoreUpdateIntent": [
+    "job_id",
+    "release"
+  ],
+  "Envelope": [
+    "body",
+    "message",
+    "protocol",
+    "request_id",
+    "sent_at"
+  ],
+  "Heartbeat": [
+    "health",
+    "sent_at",
+    "server_id"
+  ],
+  "Hello": [
+    "architecture",
+    "capabilities",
+    "configuration_revision",
+    "installed_modules",
+    "installed_modules.id",
+    "installed_modules.version",
+    "platform",
+    "protocol_max",
+    "protocol_min",
+    "version"
+  ],
+  "NodeAddresses": [
+    "addresses"
+  ],
+  "RelayPolicy": [
+    "enabled",
+    "grants",
+    "grants.destinations",
+    "grants.expires_at",
+    "grants.password_sha256",
+    "grants.username",
+    "port"
+  ],
+  "SampleBatch": [
+    "gaps",
+    "gaps.collector_epoch",
+    "gaps.from_sequence",
+    "gaps.reason",
+    "gaps.to_sequence",
+    "samples",
+    "samples.collector_epoch",
+    "samples.counters",
+    "samples.observed_at",
+    "samples.sequence",
+    "samples.server_id",
+    "samples.timestamp_uncertainty",
+    "samples.units",
+    "samples.validity",
+    "samples.values"
+  ]
+}

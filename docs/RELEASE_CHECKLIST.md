@@ -377,3 +377,19 @@ when the node's version is older than `NODE_VERSION` at the latest release tag.
   changes (agent, transport protocol, node-side modules or the root update
   worker). Leave it unchanged for hub-only releases.
 - [ ] `NODE_VERSION` may never be newer than the release version.
+- [ ] `scripts/check-node-version.sh` (run by the release workflow) warns when
+  code linked into the agent changed since the previous release but
+  `NODE_VERSION` did not. Run it with `STRICT=1` to make that an error.
+
+## Keeping old nodes and hubs working
+
+Hubs and nodes are updated independently, and the node protocol is decoded
+strictly, so an unknown field makes the receiver reject the message.
+
+- [ ] `go test ./internal/contracts` compares the wire types with
+  `testdata/wire-baseline.json`. Removing or renaming a field fails it. Adding a
+  field fails it until the field is listed in `wireAdditions` with the reason
+  older peers keep working (for example, it is only sent to peers that advertise
+  a capability).
+- [ ] `go test ./cmd/payesh-agent` fails if the agent starts linking a new
+  hub-side package. Shrink `allowedAgentPackages` when one is removed.

@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -27,6 +29,8 @@ jobs:
       - run: make web-check
       - name: Verify process module and API
         run: go test -race ./internal/processmonitor ./internal/modules ./internal/fleet
+      - name: Check node version
+        run: sh scripts/check-node-version.sh
       - name: Build release bundle
         env:
           PAYESH_RELEASE_MIN_CORE: ${{ vars.PAYESH_RELEASE_MIN_CORE }}
