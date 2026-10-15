@@ -1,4 +1,4 @@
-package transport
+package nodehub
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/transport"
 )
 
 var ErrAlreadyConnected = errors.New("node already has an active hub connection")
@@ -28,7 +29,7 @@ var actionPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 // store transaction succeeds.
 type Hub struct {
 	Ports       *NodePorts
-	CA          *CertificateAuthority
+	CA          *transport.CertificateAuthority
 	Store       *monitoring.Store
 	mu          sync.Mutex
 	connections map[contracts.ServerID]*Connection
@@ -83,12 +84,12 @@ func (c *Connection) touchRelayUse(ctx context.Context, now time.Time) {
 	_ = c.hub.Store.TouchRelayUse(writeCtx, c.ServerID, ip, now)
 }
 
-func NewHub(ca *CertificateAuthority, store *monitoring.Store) (*Hub, error) {
+func NewHub(ca *transport.CertificateAuthority, store *monitoring.Store) (*Hub, error) {
 	if ca == nil || store == nil {
 		return nil, errors.New("certificate authority and store are required")
 	}
 	h := &Hub{CA: ca, Store: store, connections: make(map[contracts.ServerID]*Connection)}
-	ca.addRevocationListener(h.handleRevocation)
+	ca.AddRevocationListener(h.handleRevocation)
 	return h, nil
 }
 
@@ -167,22 +168,22 @@ func supportsActionDelivery(capabilities []string) bool {
 // over its protected bootstrap channel; it is never persisted by the hub.
 // The CA consumes it exactly once and the returned identity is the only place
 // the new private key is exposed to the caller.
-func (h *Hub) ConsumeEnrollment(ctx context.Context, token string, now time.Time) (NodeIdentity, error) {
+func (h *Hub) ConsumeEnrollment(ctx context.Context, token string, now time.Time) (transport.NodeIdentity, error) {
 	if h == nil || h.CA == nil || h.Store == nil {
-		return NodeIdentity{}, errors.New("hub is not configured")
+		return transport.NodeIdentity{}, errors.New("hub is not configured")
 	}
 	serverID, err := h.CA.EnrollmentServerID(token, now)
 	if err != nil {
-		return NodeIdentity{}, err
+		return transport.NodeIdentity{}, err
 	}
 	if _, found, err := h.Store.GetServer(ctx, serverID); err != nil {
-		return NodeIdentity{}, err
+		return transport.NodeIdentity{}, err
 	} else if !found {
-		return NodeIdentity{}, errors.New("unenrolled_server")
+		return transport.NodeIdentity{}, errors.New("unenrolled_server")
 	}
 	identity, err := h.CA.ConsumeEnrollmentToken(token, now)
 	if err != nil {
-		return NodeIdentity{}, err
+		return transport.NodeIdentity{}, err
 	}
 	return identity, nil
 }
@@ -192,41 +193,41 @@ func (h *Hub) ConsumeEnrollment(ctx context.Context, token string, now time.Time
 // private key never enter SQLite. A successful claim returns the identity to
 // the node and marks the job succeeded; invalid or expired claims become a
 // durable failed job, so retries cannot silently replay work.
-func (h *Hub) ConsumeEnrollmentJob(ctx context.Context, jobID string, token string, now time.Time) (NodeIdentity, contracts.Job, error) {
+func (h *Hub) ConsumeEnrollmentJob(ctx context.Context, jobID string, token string, now time.Time) (transport.NodeIdentity, contracts.Job, error) {
 	if h == nil || h.Store == nil || h.CA == nil || jobID == "" || token == "" {
-		return NodeIdentity{}, contracts.Job{}, errors.New("invalid enrollment job request")
+		return transport.NodeIdentity{}, contracts.Job{}, errors.New("invalid enrollment job request")
 	}
 	job, found, err := h.Store.GetJob(ctx, jobID)
 	if err != nil {
-		return NodeIdentity{}, contracts.Job{}, err
+		return transport.NodeIdentity{}, contracts.Job{}, err
 	}
 	if !found {
-		return NodeIdentity{}, contracts.Job{}, monitoring.ErrJobNotFound
+		return transport.NodeIdentity{}, contracts.Job{}, monitoring.ErrJobNotFound
 	}
 	if job.Kind != "enrollment" || job.TargetServerID == "" {
-		return NodeIdentity{}, job, monitoring.ErrEnrollmentJobInvalid
+		return transport.NodeIdentity{}, job, monitoring.ErrEnrollmentJobInvalid
 	}
 	if job.State == contracts.JobSucceeded || job.State == contracts.JobFailed || job.State == contracts.JobCancelled || job.State == contracts.JobRecoveryRequired {
-		return NodeIdentity{}, job, ErrEnrollmentJobComplete
+		return transport.NodeIdentity{}, job, ErrEnrollmentJobComplete
 	}
 	tokenServerID, err := h.CA.EnrollmentServerID(token, now)
 	if err != nil {
-		return NodeIdentity{}, job, err
+		return transport.NodeIdentity{}, job, err
 	}
 	if tokenServerID != job.TargetServerID {
-		return NodeIdentity{}, job, errors.New("enrollment token does not belong to job target")
+		return transport.NodeIdentity{}, job, errors.New("enrollment token does not belong to job target")
 	}
 	claimed, err := h.Store.ClaimEnrollmentJob(ctx, job.ID, job.TargetServerID, job.Revision, now)
 	if err != nil {
-		return NodeIdentity{}, job, err
+		return transport.NodeIdentity{}, job, err
 	}
 	identity, err := h.ConsumeEnrollment(ctx, token, now)
 	if err != nil {
 		failed, transitionErr := h.Store.TransitionJob(ctx, claimed.ID, claimed.Revision, contracts.JobFailed, 100, &contracts.Error{Code: "enrollment_failed", Message: "enrollment bootstrap failed", Retryable: false}, now)
 		if transitionErr != nil {
-			return NodeIdentity{}, claimed, fmt.Errorf("enrollment failed: %v; recording failure: %w", err, transitionErr)
+			return transport.NodeIdentity{}, claimed, fmt.Errorf("enrollment failed: %v; recording failure: %w", err, transitionErr)
 		}
-		return NodeIdentity{}, failed, err
+		return transport.NodeIdentity{}, failed, err
 	}
 	succeeded, transitionErr := h.Store.TransitionJob(ctx, claimed.ID, claimed.Revision, contracts.JobSucceeded, 100, nil, now)
 	if transitionErr != nil {
@@ -248,7 +249,7 @@ func (h *Hub) Open(ctx context.Context, certificatePEM []byte, hello contracts.H
 	if err != nil {
 		return nil, err
 	}
-	certificateFingerprint, err := certificateFingerprintPEM(certificatePEM)
+	certificateFingerprint, err := transport.CertificateFingerprintPEM(certificatePEM)
 	if err != nil {
 		return nil, err
 	}
@@ -301,25 +302,25 @@ func (c *Connection) Close() {
 // CA revokes the predecessor as part of the same durable transition; the
 // websocket handler sends the returned identity before closing this socket so
 // the node can reconnect with the replacement certificate.
-func (c *Connection) Renew(ctx context.Context, now time.Time) (NodeIdentity, error) {
+func (c *Connection) Renew(ctx context.Context, now time.Time) (transport.NodeIdentity, error) {
 	if c == nil || c.hub == nil || c.hub.CA == nil || now.IsZero() {
-		return NodeIdentity{}, errors.New("invalid renewal connection")
+		return transport.NodeIdentity{}, errors.New("invalid renewal connection")
 	}
 	c.stateMu.RLock()
 	if c.closed {
 		c.stateMu.RUnlock()
-		return NodeIdentity{}, ErrConnectionClosed
+		return transport.NodeIdentity{}, ErrConnectionClosed
 	}
-	identity := NodeIdentity{ServerID: c.ServerID, CertificatePEM: append([]byte(nil), c.certificatePEM...), Fingerprint: c.certificateFingerprint}
+	identity := transport.NodeIdentity{ServerID: c.ServerID, CertificatePEM: append([]byte(nil), c.certificatePEM...), Fingerprint: c.certificateFingerprint}
 	c.stateMu.RUnlock()
 	if err := ctx.Err(); err != nil {
-		return NodeIdentity{}, err
+		return transport.NodeIdentity{}, err
 	}
 	// A hub that no longer owns the server must not extend its trust; the
 	// store's own writes are fenced separately, this stops the CA acting alone.
 	if c.hub.Store != nil {
 		if err := c.hub.Store.RequireServerAuthority(ctx, c.ServerID); err != nil {
-			return NodeIdentity{}, err
+			return transport.NodeIdentity{}, err
 		}
 	}
 	return c.hub.CA.Renew(identity, now)
@@ -405,7 +406,7 @@ func (c *Connection) ReceiveBatch(ctx context.Context, batch contracts.SampleBat
 			return contracts.Acknowledgement{Accepted: false, Error: &contracts.Error{Code: "identity_mismatch", Message: "sample identity does not match authenticated node"}}, errors.New("sample identity mismatch")
 		}
 	}
-	if err := validateBatchEpoch(batch); err != nil {
+	if err := transport.ValidateBatchEpoch(batch); err != nil {
 		return contracts.Acknowledgement{Accepted: false, Error: &contracts.Error{Code: "invalid_batch", Message: "all samples and gaps must use one collector epoch"}}, err
 	}
 	result, err := c.hub.Store.IngestNodeBatch(ctx, c.ServerID, batch.Samples, batch.Gaps, now.UTC())
@@ -432,7 +433,7 @@ func (c *Connection) ReceiveBatch(ctx context.Context, batch contracts.SampleBat
 	}
 	through := uint64(0)
 	if len(batch.Samples) > 0 || len(batch.Gaps) > 0 {
-		epoch := batchEpoch(batch)
+		epoch := transport.BatchEpoch(batch)
 		durableThrough, found, err := c.hub.Store.HighestContiguousCoverageSequence(ctx, c.ServerID, epoch)
 		if err != nil {
 			return contracts.Acknowledgement{Accepted: false, Error: &contracts.Error{Code: "acknowledgement_state_failed", Message: "measurement accepted but acknowledgement state could not be read", Retryable: true}}, err
@@ -446,38 +447,6 @@ func (c *Connection) ReceiveBatch(ctx context.Context, batch contracts.SampleBat
 		through = durableThrough
 	}
 	return contracts.Acknowledgement{Accepted: true, ThroughSequence: through}, nil
-}
-
-func batchEpoch(batch contracts.SampleBatch) contracts.CollectorEpoch {
-	if len(batch.Samples) > 0 {
-		return batch.Samples[0].CollectorEpoch
-	}
-	if len(batch.Gaps) > 0 {
-		return batch.Gaps[0].CollectorEpoch
-	}
-	return ""
-}
-
-// validateBatchEpoch keeps the acknowledgement unambiguous. ThroughSequence
-// has no epoch field, so acknowledging a mixed-epoch batch could advance the
-// wrong spool after an agent restart.
-func validateBatchEpoch(batch contracts.SampleBatch) error {
-	var epoch contracts.CollectorEpoch
-	for _, sample := range batch.Samples {
-		if epoch == "" {
-			epoch = sample.CollectorEpoch
-		} else if sample.CollectorEpoch != epoch {
-			return errors.New("sample batch contains multiple collector epochs")
-		}
-	}
-	for _, gap := range batch.Gaps {
-		if epoch == "" {
-			epoch = gap.CollectorEpoch
-		} else if gap.CollectorEpoch != epoch {
-			return errors.New("sample batch contains multiple collector epochs")
-		}
-	}
-	return nil
 }
 
 // contiguousSampleSequence returns the highest sample sequence beginning at

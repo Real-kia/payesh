@@ -1,7 +1,8 @@
-package transport
+package nodehub
 
 import (
 	"context"
+	"github.com/Real-kia/payesh/internal/transport"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestHubAcknowledgesOnlyAuthenticatedDurableBatch(t *testing.T) {
 	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Node", Role: "node", Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}, ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	ca, _ := NewCertificateAuthority(now)
+	ca, _ := transport.NewCertificateAuthority(now)
 	enrollment, _ := ca.IssueEnrollment(id, now)
 	identity, err := ca.Enroll(&enrollment, enrollment.Token, now)
 	if err != nil {
@@ -112,7 +113,7 @@ func TestHubConsumesBootstrapEnrollmentToken(t *testing.T) {
 	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Node", Role: "node", Architecture: "amd64", Platform: "linux", ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestHubConsumesDurableEnrollmentJobAfterRestartWithoutPersistingToken(t *te
 	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Node", Role: "node", Architecture: "amd64", Platform: "linux", ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := NewPersistentCertificateAuthority(now, store)
+	ca, err := transport.NewPersistentCertificateAuthority(now, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestHubConsumesDurableEnrollmentJobAfterRestartWithoutPersistingToken(t *te
 		t.Fatal(err)
 	}
 	defer restartedStore.Close()
-	restartedCA, err := NewPersistentCertificateAuthority(now.Add(time.Second), restartedStore)
+	restartedCA, err := transport.NewPersistentCertificateAuthority(now.Add(time.Second), restartedStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestRevokingIdentityClosesLiveConnection(t *testing.T) {
 	if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: "Revocable", Role: "node", Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}, ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/Real-kia/payesh/internal/monitoring"
-	"github.com/Real-kia/payesh/internal/transport"
+	"github.com/Real-kia/payesh/internal/nodehub"
 )
 
 func TestNodeTransportSettingsRequireSessionCSRFAndEditPermission(t *testing.T) {
@@ -81,7 +81,7 @@ func TestNodeTransportSettingsHTTPContract(t *testing.T) {
 	}
 	address := reservation.Addr().String()
 	_ = reservation.Close()
-	ports, err := transport.NewNodePorts(filepath.Join(t.TempDir(), "ports.json"), address, store,
+	ports, err := nodehub.NewNodePorts(filepath.Join(t.TempDir(), "ports.json"), address, store,
 		func(port string) string { return "wss://hub.example.test:" + port + "/node/v1" }, func(net.Listener) {})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestNodeTransportSettingsHTTPContract(t *testing.T) {
 				t.Fatalf("status=%d content-type=%q body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 			}
 			if tc.want == 200 {
-				var status transport.NodePortStatus
+				var status nodehub.NodePortStatus
 				if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 					t.Fatal(err)
 				}

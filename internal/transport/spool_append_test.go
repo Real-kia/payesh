@@ -83,7 +83,7 @@ func TestSpoolStaysCheapWhenFullAndWhileCatchingUp(t *testing.T) {
 		for _, gap := range batch.Gaps {
 			through = max(through, gap.ToSequence)
 		}
-		if err := spool.Acknowledge(batchEpoch(batch), through); err != nil {
+		if err := spool.Acknowledge(BatchEpoch(batch), through); err != nil {
 			t.Fatal(err)
 		}
 		sent++

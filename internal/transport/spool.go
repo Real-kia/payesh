@@ -187,7 +187,7 @@ func (s *Spool) load() error {
 }
 
 func describeSpoolRecord(record storedSpoolRecord, offset, length int64) spoolEntry {
-	entry := spoolEntry{offset: offset, length: length, epoch: batchEpoch(record.Batch), low: ^uint64(0)}
+	entry := spoolEntry{offset: offset, length: length, epoch: BatchEpoch(record.Batch), low: ^uint64(0)}
 	for _, sample := range record.Batch.Samples {
 		entry.hasSamples = true
 		entry.low = min(entry.low, sample.Sequence)
@@ -693,7 +693,7 @@ func evictionGaps(records []storedSpoolRecord) []contracts.CoverageGap {
 	type interval struct{ from, to uint64 }
 	ranges := make(map[contracts.CollectorEpoch][]interval)
 	for _, record := range records {
-		epoch := batchEpoch(record.Batch)
+		epoch := BatchEpoch(record.Batch)
 		if epoch == "" {
 			continue
 		}
@@ -818,7 +818,7 @@ func validateSpoolBatch(batch contracts.SampleBatch) error {
 	if err := batch.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrSpoolBatchInvalid, err)
 	}
-	if err := validateBatchEpoch(batch); err != nil {
+	if err := ValidateBatchEpoch(batch); err != nil {
 		return fmt.Errorf("%w: %v", ErrSpoolBatchInvalid, err)
 	}
 	return nil

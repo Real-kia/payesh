@@ -1,10 +1,11 @@
-package transport
+package nodehub
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"github.com/Real-kia/payesh/internal/transport"
 	"net"
 	"net/http"
 	"os"
@@ -35,7 +36,7 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	relayID, targetID := contracts.ServerID("server-relay-node-0001"), contracts.ServerID("server-iran-target-0001")
-	identities := map[contracts.ServerID]NodeIdentity{}
+	identities := map[contracts.ServerID]transport.NodeIdentity{}
 	for _, id := range []contracts.ServerID{relayID, targetID} {
 		if err := store.EnsureServer(ctx, contracts.Server{ID: id, Name: string(id), Role: "node", Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}, ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 			t.Fatal(err)
@@ -95,7 +96,7 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	sample := func(id contracts.ServerID, value float64) contracts.SampleBatch {
 		return contracts.SampleBatch{Samples: []contracts.NodeMetricSample{{ServerID: id, CollectorEpoch: contracts.CollectorEpoch("epoch-" + string(id)), Sequence: 0, ObservedAt: now, Values: map[string]float64{"cpu.utilization": value}}}}
 	}
-	run := func(client *AgentClient, batch contracts.SampleBatch) error {
+	run := func(client *transport.AgentClient, batch contracts.SampleBatch) error {
 		batches := make(chan contracts.SampleBatch, 1)
 		batches <- batch
 		close(batches)
@@ -104,8 +105,8 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	hello := func(capabilities ...string) contracts.Hello {
 		return contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: append([]string{"metrics"}, capabilities...)}
 	}
-	newSpool := func() *Spool {
-		spool, err := OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), MaxSpoolBytes)
+	newSpool := func() *transport.Spool {
+		spool, err := transport.OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), transport.MaxSpoolBytes)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +117,7 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	relay := &netproxy.RelayListener{}
 	defer relay.Apply(0, nil)
 	var relayPolicies atomic.Int32
-	relayClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[relayID], TrustPEM: trust, Spool: newSpool(), Hello: hello(RelayCapability, AddressesCapability),
+	relayClient := &transport.AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[relayID], TrustPEM: trust, Spool: newSpool(), Hello: hello(transport.RelayCapability, transport.AddressesCapability),
 		Addresses: func() []string { return []string{"198.51.100.7", "10.0.0.2"} },
 		RelayPolicy: func(policy contracts.RelayPolicy) {
 			relayPolicies.Add(1)
@@ -156,7 +157,7 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	var targetPolicies atomic.Int32
-	targetClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Spool: newSpool(), Hello: hello(), Proxy: proxy,
+	targetClient := &transport.AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Spool: newSpool(), Hello: hello(), Proxy: proxy,
 		Addresses:   func() []string { targetPolicies.Add(100); return nil },
 		RelayPolicy: func(contracts.RelayPolicy) { targetPolicies.Add(1) }}
 	if err := run(targetClient, sample(targetID, 2)); err != nil {
@@ -174,14 +175,14 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	}
 
 	// The install-time port check uses the same proxy path.
-	checker := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Proxy: proxy}
+	checker := &transport.AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Proxy: proxy}
 	if err := checker.CheckEndpoint(ctx); err != nil {
 		t.Fatalf("endpoint check through relay: %v", err)
 	}
 
 	// A wrong password is refused by the relay before reaching the hub.
 	bad, _ := netproxy.Parse("http://node-target:wrong@127.0.0.1:" + strconv.Itoa(relayPort))
-	badClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Proxy: bad}
+	badClient := &transport.AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Proxy: bad}
 	if err := badClient.CheckEndpoint(ctx); err == nil {
 		t.Fatal("relay accepted a wrong password")
 	}

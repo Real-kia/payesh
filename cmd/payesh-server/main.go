@@ -30,6 +30,7 @@ import (
 	installpkg "github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/modules"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/nodehub"
 	"github.com/Real-kia/payesh/internal/porttraffic"
 	"github.com/Real-kia/payesh/internal/privd"
 	"github.com/Real-kia/payesh/internal/traffic"
@@ -213,18 +214,18 @@ func main() {
 		os.Exit(1)
 	}
 	var enrollmentAuthority *transport.CertificateAuthority
-	var nodeHub *transport.Hub
+	var nodeHub *nodehub.Hub
 	var updateScheduler *updater.Scheduler
 	var installService *fleet.InstallService
 	var nodeServer *http.Server
-	var nodePorts *transport.NodePorts
+	var nodePorts *nodehub.NodePorts
 	if nodeConfig.Enabled() || *bootstrapSecret != "" {
 		enrollmentAuthority, err = transport.NewPersistentCertificateAuthority(time.Now().UTC(), store)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "configure enrollment authority:", err)
 			os.Exit(1)
 		}
-		nodeHub, err = transport.NewHub(enrollmentAuthority, store)
+		nodeHub, err = nodehub.NewHub(enrollmentAuthority, store)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "configure node transport hub:", err)
 			os.Exit(1)
@@ -249,10 +250,10 @@ func main() {
 				fmt.Fprintln(os.Stderr, "dashboard address:", splitErr)
 				os.Exit(2)
 			}
-			address = net.JoinHostPort(host, transport.DefaultNodePort)
+			address = net.JoinHostPort(host, nodehub.DefaultNodePort)
 		}
 		_, originalNodePort, _ := net.SplitHostPort(address)
-		nodePorts, err = transport.NewNodePorts(filepath.Join(*tlsDir, "node-ports.json"), address, store, func(port string) string {
+		nodePorts, err = nodehub.NewNodePorts(filepath.Join(*tlsDir, "node-ports.json"), address, store, func(port string) string {
 			if nodeConfig.CertFile == "" && !httpsManager.Active() {
 				return ""
 			}
@@ -268,12 +269,12 @@ func main() {
 						}
 					}
 				}
-				return transport.NodeURL(configured, advertisedPort)
+				return nodehub.NodeURL(configured, advertisedPort)
 			}
 			if !httpsManager.Active() {
 				return ""
 			}
-			return transport.NodeURL("wss://"+httpsManager.Domain()+"/node/v1", port)
+			return nodehub.NodeURL("wss://"+httpsManager.Domain()+"/node/v1", port)
 		}, func(l net.Listener) {
 			fmt.Fprintf(os.Stderr, "payesh node transport listening on %s\n", l.Addr().String())
 			go func() {
@@ -536,14 +537,14 @@ func main() {
 	<-shutdownDone
 }
 
-func nodeTransportHandler(hub *transport.Hub) http.Handler {
+func nodeTransportHandler(hub *nodehub.Hub) http.Handler {
 	mux := http.NewServeMux()
 	// The TLS handshake may omit a client certificate so a node can perform
 	// its one-time bootstrap. The ordinary node route still rejects an
 	// anonymous peer in WebSocketHandler before upgrading, and Hub.Open
 	// remains authoritative for CA ownership/revocation checks.
-	mux.Handle("/node/bootstrap/v1", transport.BootstrapWebSocketHandler(hub))
-	mux.Handle("/node/v1", transport.WebSocketHandler(hub))
+	mux.Handle("/node/bootstrap/v1", nodehub.BootstrapWebSocketHandler(hub))
+	mux.Handle("/node/v1", nodehub.WebSocketHandler(hub))
 	return mux
 }
 

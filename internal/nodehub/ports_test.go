@@ -1,12 +1,12 @@
-package transport
+package nodehub
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Real-kia/payesh/internal/transport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +44,7 @@ func addMigrationNode(t *testing.T, store *monitoring.Store, id contracts.Server
 	t.Helper()
 	caps := []string{"metrics"}
 	if supported {
-		caps = append(caps, MigrationCapability)
+		caps = append(caps, transport.MigrationCapability)
 	}
 	if err := store.EnsureServer(context.Background(), contracts.Server{ID: id, Name: string(id), Role: "node", Architecture: "amd64", Platform: "linux", Capabilities: caps, ConnectionState: "never-connected", FreshnessState: "unknown"}); err != nil {
 		t.Fatal(err)
@@ -130,38 +130,11 @@ func TestLegacyNodesRequireUpgradeAndKeepDashboardAccess(t *testing.T) {
 		t.Fatal("legacy endpoint retired before migration")
 	}
 }
-func TestAgentEndpointPersistenceAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.json")
-	a := &AgentClient{URL: "wss://hub.example.test/node/v1", IdentityPath: path}
-	if err := a.loadEndpoint(); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.saveEndpoint("wss://hub.example.test:9797/node/v1", a.URL); err != nil {
-		t.Fatal(err)
-	}
-	b := &AgentClient{URL: a.URL, IdentityPath: path}
-	if err := b.loadEndpoint(); err != nil {
-		t.Fatal(err)
-	}
-	if b.URL != "wss://hub.example.test:9797/node/v1" || b.previousURL != a.URL {
-		t.Fatalf("endpoint=%+v", b)
-	}
-	for _, target := range []string{"ws://hub.example.test:9797/node/v1", "wss://other.example.test:9797/node/v1", "wss://hub.example.test:9797/node/v1?token=x", "wss://hub.example.test:99999/node/v1", "wss://user@hub.example.test:9797/node/v1"} {
-		if validMigration(a.URL, target) {
-			t.Fatalf("unsafe target %s accepted", target)
-		}
-	}
-	c := &AgentClient{URL: "wss://replacement.example.test:9797/node/v1", IdentityPath: path}
-	if err := c.loadEndpoint(); err != nil || c.URL != "wss://replacement.example.test:9797/node/v1" {
-		t.Fatal("explicit configuration was overridden")
-	}
-}
-
 func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	store := migrationStore(t)
-	ca, err := NewCertificateAuthority(time.Now().UTC())
+	ca, err := transport.NewCertificateAuthority(time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +162,7 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 	hub.Ports = ports
 	ports.Start()
 	ids := []contracts.ServerID{"node-online-migrate-001", "node-offline-migrate-001"}
-	identities := []NodeIdentity{}
+	identities := []transport.NodeIdentity{}
 	for _, id := range ids {
 		addMigrationNode(t, store, id, true)
 		enrollment, _ := ca.IssueEnrollment(id, time.Now().UTC())
@@ -200,7 +173,7 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 		identities = append(identities, identity)
 	}
 	oldURL := ports.URL()
-	if err = CheckNodeEndpoint(ctx, oldURL, identities[0], certPEM); err != nil {
+	if err = transport.CheckNodeEndpoint(ctx, oldURL, identities[0], certPEM); err != nil {
 		t.Fatal("open node endpoint rejected:", err)
 	}
 	statusAfterProbe, _ := ports.Status(ctx)
@@ -208,10 +181,10 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 		t.Fatal("installation probe claimed a live controller session")
 	}
 	wrongTrust, _, _ := disposableServerCertificate()
-	if err = CheckNodeEndpoint(ctx, oldURL, identities[0], wrongTrust); err == nil {
+	if err = transport.CheckNodeEndpoint(ctx, oldURL, identities[0], wrongTrust); err == nil {
 		t.Fatal("installation probe accepted an untrusted TLS listener")
 	}
-	if err = CheckNodeEndpoint(ctx, "wss://127.0.0.1:"+freeNodePort(t)+"/node/v1", identities[0], certPEM); err == nil {
+	if err = transport.CheckNodeEndpoint(ctx, "wss://127.0.0.1:"+freeNodePort(t)+"/node/v1", identities[0], certPEM); err == nil {
 		t.Fatal("installation probe accepted an unavailable port")
 	}
 	paths := []string{filepath.Join(t.TempDir(), "online.json"), filepath.Join(t.TempDir(), "offline.json")}
@@ -223,20 +196,20 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 	batches[0] <- sample(0, 0)
 	batches[1] <- sample(1, 0)
 	start := func(i int) {
-		spool, e := OpenSpool(filepath.Join(t.TempDir(), "spool"), MaxSpoolBytes)
+		spool, e := transport.OpenSpool(filepath.Join(t.TempDir(), "spool"), transport.MaxSpoolBytes)
 		if e != nil {
 			t.Fatal(e)
 		}
-		agent := &AgentClient{URL: oldURL, Identity: identities[i], IdentityPath: paths[i], TrustPEM: certPEM, Spool: spool, Backoff: ReconnectBackoff{Base: 10 * time.Millisecond, Max: 100 * time.Millisecond}, Hello: contracts.Hello{Version: "test", Architecture: "amd64", Platform: "linux", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Capabilities: []string{"metrics", MigrationCapability}}}
+		agent := &transport.AgentClient{URL: oldURL, Identity: identities[i], IdentityPath: paths[i], TrustPEM: certPEM, Spool: spool, Backoff: transport.ReconnectBackoff{Base: 10 * time.Millisecond, Max: 100 * time.Millisecond}, Hello: contracts.Hello{Version: "test", Architecture: "amd64", Platform: "linux", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Capabilities: []string{"metrics", transport.MigrationCapability}}}
 		go func() { done <- agent.Run(ctx, batches[i]) }()
 	}
 	// Restart during a migration whose candidate is unreachable. The agent
 	// must authenticate on the retained endpoint and keep collecting.
-	failedCandidate := &AgentClient{URL: oldURL, IdentityPath: paths[0]}
-	if err = failedCandidate.loadEndpoint(); err != nil {
+	failedCandidate := &transport.AgentClient{URL: oldURL, IdentityPath: paths[0]}
+	if err = failedCandidate.LoadEndpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if err = failedCandidate.saveEndpoint("wss://127.0.0.1:"+freeNodePort(t)+"/node/v1", oldURL); err != nil {
+	if err = failedCandidate.SaveEndpoint("wss://127.0.0.1:"+freeNodePort(t)+"/node/v1", oldURL); err != nil {
 		t.Fatal(err)
 	}
 	start(0)
@@ -269,7 +242,7 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 	for _, path := range paths {
 		wait(func() bool {
 			data, e := os.ReadFile(path + ".transport.json")
-			var saved agentEndpoint
+			var saved transport.AgentEndpoint
 			return e == nil && json.Unmarshal(data, &saved) == nil && saved.Current == ports.URL() && saved.Previous == ""
 		})
 	}
@@ -294,10 +267,10 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 	// An installed agent retains its original configured URL after migration.
 	// Its diagnostic must resolve the saved endpoint just as Run does, while
 	// an explicit new installation/configuration must still take precedence.
-	if err = CheckNodeEndpoint(ctx, oldURL, identities[0], certPEM); err == nil {
+	if err = transport.CheckNodeEndpoint(ctx, oldURL, identities[0], certPEM); err == nil {
 		t.Fatal("retired configured endpoint unexpectedly passed the direct probe")
 	}
-	checker := &AgentClient{URL: oldURL, IdentityPath: paths[0], Identity: identities[0], TrustPEM: certPEM}
+	checker := &transport.AgentClient{URL: oldURL, IdentityPath: paths[0], Identity: identities[0], TrustPEM: certPEM}
 	savedBefore, err := os.ReadFile(paths[0] + ".transport.json")
 	if err != nil {
 		t.Fatal(err)
@@ -313,14 +286,14 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 		t.Fatal("transport diagnostic changed persisted migration state")
 	}
 	stalePath := filepath.Join(t.TempDir(), "stale-identity.json")
-	stale := &AgentClient{URL: oldURL, IdentityPath: stalePath}
-	if err = stale.loadEndpoint(); err != nil {
+	stale := &transport.AgentClient{URL: oldURL, IdentityPath: stalePath}
+	if err = stale.LoadEndpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if err = stale.saveEndpoint("wss://127.0.0.1:"+original+"/node/v1", ""); err != nil {
+	if err = stale.SaveEndpoint("wss://127.0.0.1:"+original+"/node/v1", ""); err != nil {
 		t.Fatal(err)
 	}
-	explicit := &AgentClient{URL: ports.URL(), IdentityPath: stalePath, Identity: identities[0], TrustPEM: certPEM}
+	explicit := &transport.AgentClient{URL: ports.URL(), IdentityPath: stalePath, Identity: identities[0], TrustPEM: certPEM}
 	if err = explicit.CheckEndpoint(ctx); err != nil || explicit.URL != ports.URL() {
 		t.Fatalf("explicit endpoint overridden: URL=%q err=%v", explicit.URL, err)
 	}
@@ -329,88 +302,6 @@ func TestLiveNodePortMigrationIncludesReturningOfflineNode(t *testing.T) {
 		if err = <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-	}
-}
-
-func TestMigrationFailuresKeepWorkingEndpoint(t *testing.T) {
-	for _, kind := range []string{"unreachable", "untrusted", "cannot-persist", "file-sync", "directory-sync"} {
-		t.Run(kind, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			now := time.Now().UTC()
-			ca, _ := NewCertificateAuthority(now)
-			enrollment, _ := ca.IssueEnrollment("node-failed-migration-001", now)
-			identity, err := ca.Enroll(&enrollment, enrollment.Token, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			store := migrationStore(t)
-			addMigrationNode(t, store, identity.ServerID, true)
-			hub, _ := NewHub(ca, store)
-			certPEM, keyPEM, _ := disposableServerCertificate()
-			certificate, _ := tls.X509KeyPair(certPEM, keyPEM)
-			original := "wss://127.0.0.1:8787/node/v1"
-			target := "wss://127.0.0.1:" + freeNodePort(t) + "/node/v1"
-			if kind != "unreachable" {
-				l, e := net.Listen("tcp", "127.0.0.1:0")
-				if e != nil {
-					t.Fatal(e)
-				}
-				server := &http.Server{Handler: WebSocketHandler(hub)}
-				defer server.Close()
-				go func() {
-					_ = server.Serve(tls.NewListener(l, &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequestClientCert, Certificates: []tls.Certificate{certificate}}))
-				}()
-				target = "wss://" + l.Addr().String() + "/node/v1"
-			}
-			trust := certPEM
-			if kind == "untrusted" {
-				trust, _, _ = disposableServerCertificate()
-			}
-			path := filepath.Join(t.TempDir(), "identity.json")
-			if kind == "cannot-persist" {
-				path = filepath.Join(t.TempDir(), "missing", "identity.json")
-			}
-			agent := &AgentClient{URL: original, configuredURL: original, Identity: identity, IdentityPath: path, TrustPEM: trust}
-			if kind == "file-sync" || kind == "directory-sync" {
-				agent.endpointSync = func(file *os.File) error {
-					info, err := file.Stat()
-					if err != nil {
-						return err
-					}
-					if (kind == "file-sync" && !info.IsDir()) || (kind == "directory-sync" && info.IsDir()) {
-						return errors.New("injected transport sync failure")
-					}
-					return file.Sync()
-				}
-			}
-			serverConn, clientConn := net.Pipe()
-			defer serverConn.Close()
-			defer clientConn.Close()
-			_ = serverConn.SetDeadline(time.Now().Add(3 * time.Second))
-			_ = clientConn.SetDeadline(time.Now().Add(3 * time.Second))
-			ws := &webSocket{conn: clientConn, br: bufio.NewReader(clientConn), bw: bufio.NewWriter(clientConn), mask: true}
-			reader := &webSocket{conn: serverConn, br: bufio.NewReader(serverConn), bw: bufio.NewWriter(serverConn), readMask: true}
-			done := make(chan error, 1)
-			go func() { done <- agent.migrate(ctx, ws, target) }()
-			payload, _, err := reader.ReadMessage()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result contracts.Envelope
-			if err = decodeEnvelope(payload, &result); err != nil || result.Message != "transport_result" {
-				t.Fatalf("result=%+v err=%v", result, err)
-			}
-			if err = <-done; err != nil {
-				t.Fatal(err)
-			}
-			if agent.URL != original || agent.previousURL != "" {
-				t.Fatal("failed migration replaced working endpoint")
-			}
-			if _, err = os.Stat(path + ".transport.json"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("failed migration saved a new endpoint")
-			}
-		})
 	}
 }
 

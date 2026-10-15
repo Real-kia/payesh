@@ -14,17 +14,17 @@ func TestWebSocketMaskedClientFramesRoundTrip(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
 	defer clientConn.Close()
-	server := &webSocket{conn: serverConn, br: bufio.NewReader(serverConn), bw: bufio.NewWriter(serverConn), readMask: true}
-	client := &webSocket{conn: clientConn, br: bufio.NewReader(clientConn), bw: bufio.NewWriter(clientConn), mask: true}
-	want := contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "heartbeat", SentAt: time.Now().UTC(), Body: mustJSON(contracts.Heartbeat{ServerID: "server-frame-roundtrip01", SentAt: time.Now().UTC(), Health: "healthy"})}
+	server := &WebSocket{conn: serverConn, br: bufio.NewReader(serverConn), bw: bufio.NewWriter(serverConn), readMask: true}
+	client := &WebSocket{conn: clientConn, br: bufio.NewReader(clientConn), bw: bufio.NewWriter(clientConn), mask: true}
+	want := contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "heartbeat", SentAt: time.Now().UTC(), Body: MustJSON(contracts.Heartbeat{ServerID: "server-frame-roundtrip01", SentAt: time.Now().UTC(), Health: "healthy"})}
 	errCh := make(chan error, 1)
 	go func() { errCh <- client.WriteEnvelope(want) }()
 	payload, opcode, err := server.ReadMessage()
-	if err != nil || opcode != wsOpcodeText {
+	if err != nil || opcode != WSOpcodeText {
 		t.Fatalf("read frame opcode=%d err=%v", opcode, err)
 	}
 	var got contracts.Envelope
-	if err := decodeEnvelope(payload, &got); err != nil || got.Message != want.Message {
+	if err := DecodeEnvelope(payload, &got); err != nil || got.Message != want.Message {
 		t.Fatalf("decoded envelope=%+v err=%v", got, err)
 	}
 	if err := <-errCh; err != nil {

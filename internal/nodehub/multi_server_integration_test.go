@@ -1,4 +1,4 @@
-package transport
+package nodehub
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"github.com/Real-kia/payesh/internal/transport"
 	"math/big"
 	"net"
 	"net/http"
@@ -42,7 +43,7 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +104,10 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 	serverTrust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: parsedServerCert.Raw})
 	endpoint := "wss://" + tlsListener.Addr().String()
 
-	identities := make([]NodeIdentity, len(ids))
+	identities := make([]transport.NodeIdentity, len(ids))
 	for i := range ids {
 		bootstrapEndpoint := endpoint + "/node/bootstrap/v1"
-		identity, bootstrapErr := BootstrapAgent(ctx, bootstrapEndpoint, jobs[i].ID, tokens[i], serverTrust, nil)
+		identity, bootstrapErr := transport.BootstrapAgent(ctx, bootstrapEndpoint, jobs[i].ID, tokens[i], serverTrust, nil)
 		if bootstrapErr != nil {
 			t.Fatalf("bootstrap node %s: %v", ids[i], bootstrapErr)
 		}
@@ -125,13 +126,13 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 		t.Fatal(err)
 	}
 	var samplingPolicies [2]atomic.Int64
-	clients := make([]*AgentClient, len(ids))
+	clients := make([]*transport.AgentClient, len(ids))
 	for i := range ids {
-		spool, spoolErr := OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), MaxSpoolBytes)
+		spool, spoolErr := transport.OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), transport.MaxSpoolBytes)
 		if spoolErr != nil {
 			t.Fatal(spoolErr)
 		}
-		clients[i] = &AgentClient{URL: endpoint + "/node/v1", Identity: identities[i], TrustPEM: serverTrust, Spool: spool, Hello: contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}}}
+		clients[i] = &transport.AgentClient{URL: endpoint + "/node/v1", Identity: identities[i], TrustPEM: serverTrust, Spool: spool, Hello: contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics"}}}
 	}
 	// One legacy peer and one upgraded peer share the same hub. Legacy peers
 	// receive no extension field; upgraded peers receive the configured cadence.
@@ -145,7 +146,7 @@ func TestTwoAgentsBootstrapAndIngest(t *testing.T) {
 	errs := make(chan error, len(clients))
 	for i, client := range clients {
 		wg.Add(1)
-		go func(index int, c *AgentClient) {
+		go func(index int, c *transport.AgentClient) {
 			defer wg.Done()
 			batches := make(chan contracts.SampleBatch, 1)
 			batches <- contracts.SampleBatch{Samples: []contracts.NodeMetricSample{{ServerID: ids[index], CollectorEpoch: contracts.CollectorEpoch("epoch-multi-" + string(rune('a'+index))), Sequence: 0, ObservedAt: now, Values: map[string]float64{"cpu.utilization": float64(index + 1)}}}}
@@ -192,7 +193,7 @@ func TestAgentRenewsAndDeliversAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestAgentRenewsAndDeliversAction(t *testing.T) {
 	parsedServerCert, _ := x509.ParseCertificate(serverTLSCert.Certificate[0])
 	serverTrust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: parsedServerCert.Raw})
 	endpoint := "wss://" + tlsListener.Addr().String()
-	identity, err := BootstrapAgent(ctx, endpoint+"/node/bootstrap/v1", enrollmentJob.ID, enrollment.Token, serverTrust, nil)
+	identity, err := transport.BootstrapAgent(ctx, endpoint+"/node/bootstrap/v1", enrollmentJob.ID, enrollment.Token, serverTrust, nil)
 	if err != nil {
 		t.Fatal("bootstrap:", err)
 	}
@@ -251,15 +252,15 @@ func TestAgentRenewsAndDeliversAction(t *testing.T) {
 	// its normal validity and therefore does not create a renewal loop.
 	identity.NotAfter = now.Add(-time.Second)
 	identityPath := filepath.Join(t.TempDir(), "node-identity.json")
-	if err := SaveNodeIdentity(identityPath, identity); err != nil {
+	if err := transport.SaveNodeIdentity(identityPath, identity); err != nil {
 		t.Fatal(err)
 	}
-	spool, err := OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), MaxSpoolBytes)
+	spool, err := transport.OpenSpool(filepath.Join(t.TempDir(), "agent.spool"), transport.MaxSpoolBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var actionCalls atomic.Int32
-	client := &AgentClient{
+	client := &transport.AgentClient{
 		URL: endpoint + "/node/v1", Identity: identity, IdentityPath: identityPath, TrustPEM: serverTrust, Spool: spool,
 		Hello: contracts.Hello{Version: "test", ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: "amd64", Platform: "linux", Capabilities: []string{"metrics", "actions"}},
 		ActionHandler: func(_ context.Context, request contracts.ActionRequest) contracts.ActionResponse {
@@ -271,9 +272,9 @@ func TestAgentRenewsAndDeliversAction(t *testing.T) {
 	agentDone := make(chan error, 1)
 	go func() { agentDone <- client.Run(ctx, batches) }()
 
-	var renewed NodeIdentity
+	var renewed transport.NodeIdentity
 	for ctx.Err() == nil {
-		renewed, err = LoadNodeIdentity(identityPath)
+		renewed, err = transport.LoadNodeIdentity(identityPath)
 		if err == nil && renewed.Fingerprint != oldFingerprint {
 			break
 		}
@@ -341,7 +342,7 @@ func disposableServerCertificate() ([]byte, []byte, error) {
 // Ensure the test's TLS trust setup is not accidentally weakened by a future
 // change that makes the bootstrap client accept a system-wide root pool.
 func TestBootstrapRequiresTrustWhenNoTLSConfig(t *testing.T) {
-	_, err := BootstrapAgent(context.Background(), "wss://127.0.0.1:1/node/bootstrap/v1", "job-012345678901", "token", nil, nil)
+	_, err := transport.BootstrapAgent(context.Background(), "wss://127.0.0.1:1/node/bootstrap/v1", "job-012345678901", "token", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "trust anchor") {
 		t.Fatalf("expected explicit trust-anchor failure, got %v", err)
 	}

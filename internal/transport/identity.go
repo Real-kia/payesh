@@ -476,10 +476,10 @@ func (ca *CertificateAuthority) Revoke(identity NodeIdentity) error {
 	return nil
 }
 
-// addRevocationListener lets a hub terminate a connection as soon as its
+// AddRevocationListener lets a hub terminate a connection as soon as its
 // certificate is revoked. The callback is deliberately process-local, just
 // like the CA's current in-memory ownership state.
-func (ca *CertificateAuthority) addRevocationListener(listener func(contracts.ServerID, string)) {
+func (ca *CertificateAuthority) AddRevocationListener(listener func(contracts.ServerID, string)) {
 	if listener == nil {
 		return
 	}
@@ -488,7 +488,7 @@ func (ca *CertificateAuthority) addRevocationListener(listener func(contracts.Se
 	ca.mu.Unlock()
 }
 
-func certificateFingerprintPEM(certPEM []byte) (string, error) {
+func CertificateFingerprintPEM(certPEM []byte) (string, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return "", errors.New("invalid certificate")

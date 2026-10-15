@@ -88,6 +88,7 @@
         {label}<span class="arrow" aria-hidden="true">{sortKey === key ? (descending ? '↓' : '↑') : '↕'}</span>
       </button>
     {/each}
+    <span class="col-version">Version</span>
     <span class="col-rxtx">Rx / Tx</span>
     <span></span>
   </div>
@@ -124,6 +125,7 @@
             </div>
           {:else}<span class="faint">—</span>{/if}
         </div>
+        <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{server.version && server.version !== '—' ? `v${server.role === 'node' ? nodeVersionOf(server) : server.version.replace(/^v/, '')}` : '—'}</div>
         <div class="col-rxtx">
           {#if online}
             <span class="rates tabular">
@@ -150,7 +152,7 @@
   }
   .table-header, .server-row {
     display: grid;
-    grid-template-columns: 128px minmax(180px, 2fr) 92px 92px 104px minmax(150px, 1.2fr) 24px;
+    grid-template-columns: 128px minmax(180px, 2fr) 92px 92px 104px 76px minmax(150px, 1.2fr) 24px;
     gap: 16px;
     align-items: center;
     padding: 0 20px;
@@ -229,6 +231,7 @@
   .disk-cell { display: inline-flex; align-items: center; gap: 8px; }
   .disk-cell strong { font-size: 13.5px; font-weight: 600; }
 
+  .col-version { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .rates { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; font-weight: 500; }
   .down { color: var(--accent); }
   .up { color: var(--blue); }
@@ -238,7 +241,7 @@
 
   @media (max-width: 1100px) {
     .table-header, .server-row { grid-template-columns: 120px minmax(150px, 1.5fr) 84px 84px 100px 20px; }
-    .col-rxtx { display: none; }
+    .col-rxtx, .col-version { display: none; }
   }
   @media (max-width: 760px) {
     .table-header { display: none; }

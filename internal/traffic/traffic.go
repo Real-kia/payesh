@@ -247,7 +247,7 @@ func (p *Processor) ObserveSamples(ctx context.Context, samples []contracts.Metr
 	return results, nil
 }
 
-// ObserveIngestion adapts the processor to transport.Hub's post-commit
+// ObserveIngestion adapts the processor to nodehub.Hub's post-commit
 // observer callback. The returned evaluations are durable; the callback only
 // needs to report processing failure to the transport layer.
 func (p *Processor) ObserveIngestion(ctx context.Context, samples []contracts.MetricSample) error {

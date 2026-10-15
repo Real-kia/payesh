@@ -1,4 +1,4 @@
-package transport
+package nodehub
 
 import (
 	"context"
@@ -17,10 +17,10 @@ import (
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/transport"
 )
 
 const DefaultNodePort = "9797"
-const MigrationCapability = "transport-migration"
 
 type endpointObservation struct {
 	Port  string `json:"port"`
@@ -126,10 +126,10 @@ func (p *NodePorts) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	if err = makeTransportDirectory(filepath.Dir(p.path), p.syncFile); err != nil {
+	if err = transport.MakeTransportDirectory(filepath.Dir(p.path), p.syncFile); err != nil {
 		return err
 	}
-	return persistTransportFile(p.path, data, p.syncFile)
+	return transport.PersistTransportFile(p.path, data, p.syncFile)
 }
 func (p *NodePorts) currentLocked() string { return p.state.Ports[len(p.state.Ports)-1] }
 func (p *NodePorts) URL() string {
@@ -244,7 +244,7 @@ func (p *NodePorts) statusLocked(ctx context.Context, limit int, after string) (
 			} else {
 				supported := false
 				for _, cap := range node.Capabilities {
-					if cap == MigrationCapability {
+					if cap == transport.MigrationCapability {
 						supported = true
 					}
 				}

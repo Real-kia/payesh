@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 )
 
-// persistTransportFile returns success only after both the replacement content
+// PersistTransportFile returns success only after both the replacement content
 // and directory entry have been synced. A failed post-rename sync attempts to
 // restore the prior file; persistent storage faults still require operator repair.
-func persistTransportFile(path string, data []byte, syncFile func(*os.File) error) error {
+func PersistTransportFile(path string, data []byte, syncFile func(*os.File) error) error {
 	previous, err := os.ReadFile(path)
 	absent := errors.Is(err, os.ErrNotExist)
 	if err != nil && !absent {
@@ -84,7 +84,7 @@ func replaceTransportFile(path string, data []byte, syncFile func(*os.File) erro
 // Create each missing parent separately and sync its containing directory before
 // publishing any state underneath it. Failed creation is retriable without
 // treating an unsynced leftover empty directory as an established boundary.
-func makeTransportDirectory(path string, syncFile func(*os.File) error) error {
+func MakeTransportDirectory(path string, syncFile func(*os.File) error) error {
 	info, err := os.Stat(path)
 	if err == nil {
 		if !info.IsDir() {
@@ -96,7 +96,7 @@ func makeTransportDirectory(path string, syncFile func(*os.File) error) error {
 		return err
 	}
 	parent := filepath.Dir(path)
-	if err = makeTransportDirectory(parent, syncFile); err != nil {
+	if err = MakeTransportDirectory(parent, syncFile); err != nil {
 		return err
 	}
 	if err = os.Mkdir(path, 0700); err != nil {

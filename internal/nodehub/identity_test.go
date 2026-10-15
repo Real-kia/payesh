@@ -1,7 +1,8 @@
-package transport
+package nodehub
 
 import (
 	"context"
+	"github.com/Real-kia/payesh/internal/transport"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 func TestEnrollmentIsSingleUseAndRevocable(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestCertificateAuthoritySurvivesStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := NewPersistentCertificateAuthority(now, store)
+	ca, err := transport.NewPersistentCertificateAuthority(now, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestCertificateAuthoritySurvivesStoreReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	restored, err := NewPersistentCertificateAuthority(now.Add(2*time.Second), store)
+	restored, err := transport.NewPersistentCertificateAuthority(now.Add(2*time.Second), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestCertificateAuthoritySurvivesStoreReopen(t *testing.T) {
 
 func TestEnrollmentExpiry(t *testing.T) {
 	now := time.Now().UTC()
-	ca, _ := NewCertificateAuthority(now)
+	ca, _ := transport.NewCertificateAuthority(now)
 	e, _ := ca.IssueEnrollment(contracts.ServerID("server-0123456789"), now)
 	if _, err := ca.Enroll(&e, e.Token, e.ExpiresAt); err == nil {
 		t.Fatal("expired token accepted")
@@ -126,7 +127,7 @@ func TestEnrollmentExpiry(t *testing.T) {
 
 func TestEnrollmentRejectsCompetingServerIdentity(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestEnrollmentRejectsCompetingServerIdentity(t *testing.T) {
 
 func TestCertificateRenewalReplacesAndRevokesPreviousIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func TestCertificateRenewalReplacesAndRevokesPreviousIdentity(t *testing.T) {
 
 func TestConsumeEnrollmentTokenIsSingleUseWithoutCallerEnrollmentState(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestConsumeEnrollmentTokenIsSingleUseWithoutCallerEnrollmentState(t *testin
 
 func TestIssueNodeIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}

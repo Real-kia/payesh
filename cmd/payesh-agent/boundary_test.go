@@ -13,15 +13,20 @@ import (
 // agent links today. A new dependency fails the test; one that is no longer
 // linked must be removed from the list so the boundary only tightens.
 //
-// auth, monitoring and dbschema are linked only because the transport package
-// holds both the hub and the agent side; moving the hub side out of transport
-// would let all three go.
+// The hub side of the node transport (Hub, certificate-bound connections,
+// port migration) lives in internal/nodehub and must stay out of this list.
+//
+// Remaining debt: auth, monitoring and dbschema (and with them the SQLite
+// driver) are linked through webupdate -> updater and through two helpers the
+// agent calls in monitoring. Splitting webupdate into the part the agent calls
+// and the root worker, and moving those helpers into small packages, would let
+// all of them go.
 var allowedAgentPackages = map[string]bool{
 	"collector":  true,
 	"contracts":  true,
-	"dbschema":   true, // via monitoring
-	"auth":       true, // via transport
-	"monitoring": true, // via transport
+	"dbschema":   true, // via monitoring and updater
+	"auth":       true, // via monitoring
+	"monitoring": true, // via updater and two agent helpers
 	"netproxy":   true,
 	"privd":      true,
 	"transport":  true,

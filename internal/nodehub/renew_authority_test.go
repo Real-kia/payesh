@@ -1,8 +1,9 @@
-package transport
+package nodehub
 
 import (
 	"context"
 	"errors"
+	"github.com/Real-kia/payesh/internal/transport"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 func TestConnectionRenewRefusedAfterAuthorityLeavesTheHub(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
-	ca, err := NewCertificateAuthority(now)
+	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
 		t.Fatal(err)
 	}

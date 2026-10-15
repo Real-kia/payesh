@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
-	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/netproxy"
 )
 
@@ -36,7 +35,7 @@ const (
 	webSocketVersion      = "13"
 	webSocketGUID         = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	maxWebSocketHeader    = 16 << 10
-	webSocketReadDeadline = 2 * time.Minute
+	WebSocketReadDeadline = 2 * time.Minute
 )
 
 var (
@@ -66,368 +65,7 @@ type RenewalRequest struct {
 // node envelopes into Hub.  The surrounding HTTP server must use TLS with
 // ClientAuth set to RequireAnyClientCert (Hub performs the authoritative CA
 // check, including revocation and single-certificate ownership).
-func WebSocketHandler(hub *Hub) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hub == nil || r.URL.Path != "/node/v1" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-			http.Error(w, "client certificate required", http.StatusUnauthorized)
-			return
-		}
-		if _, err := hub.CA.Verify(pemCertificate(r.TLS.PeerCertificates[0]), time.Now().UTC()); err != nil {
-			http.Error(w, "invalid node identity", http.StatusUnauthorized)
-			return
-		}
-		conn, rw, err := upgradeWebSocket(w, r)
-		if err != nil {
-			// upgradeWebSocket owns an HTTP error response until it returns a
-			// connection; do not write a second response here.
-			return
-		}
-		defer conn.Close()
-		certificatePEM := pemCertificate(r.TLS.PeerCertificates[0])
-		serveNodeWebSocket(r.Context(), rw, hub, certificatePEM)
-	})
-}
-
-// BootstrapWebSocketHandler upgrades /node/bootstrap/v1 using server TLS
-// authentication only. It is deliberately separate from WebSocketHandler:
-// the node has no client certificate until this one-time exchange succeeds.
-// The surrounding HTTP server must pin the enrollment CA (or another
-// operator-selected hub trust anchor) on the node side.
-func BootstrapWebSocketHandler(hub *Hub) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hub == nil || r.URL.Path != "/node/bootstrap/v1" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.TLS == nil {
-			http.Error(w, "TLS is required", http.StatusUnauthorized)
-			return
-		}
-		conn, rw, err := upgradeWebSocket(w, r)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		serveBootstrapWebSocket(r.Context(), rw, hub)
-	})
-}
-
-func serveBootstrapWebSocket(ctx context.Context, ws *webSocket, hub *Hub) {
-	if err := ws.SetReadDeadline(time.Now().Add(webSocketReadDeadline)); err != nil {
-		return
-	}
-	payload, opcode, err := ws.ReadMessage()
-	if err != nil || opcode == wsOpcodeClose || opcode == wsOpcodePing {
-		if opcode == wsOpcodePing {
-			_ = ws.WriteMessage(wsOpcodePong, payload)
-		}
-		return
-	}
-	var envelope contracts.Envelope
-	if err := decodeEnvelope(payload, &envelope); err != nil || envelope.Protocol != contracts.NodeProtocol || envelope.Message != "bootstrap" {
-		_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_bootstrap", "a bootstrap request is required", false)})
-		return
-	}
-	var request BootstrapRequest
-	if err := decodeBody(envelope.Body, &request); err != nil || !validBootstrapRequest(request) {
-		_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_bootstrap", "bootstrap job and token are invalid", false)})
-		return
-	}
-	identity, _, err := hub.ConsumeEnrollmentJob(ctx, request.JobID, request.Token, time.Now().UTC())
-	if err != nil {
-		_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("bootstrap_failed", "bootstrap enrollment failed", false)})
-		return
-	}
-	_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "bootstrap_response", Request: envelope.Request, SentAt: time.Now().UTC(), Body: mustJSON(identity)})
-}
-
-func validBootstrapRequest(request BootstrapRequest) bool {
-	return request.JobID != "" && len(request.JobID) <= 128 && request.Token != "" && len(request.Token) <= maxBootstrapToken
-}
-
-const maxBootstrapToken = 256
-
-func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificatePEM []byte) {
-	var connection *Connection
-	var dispatchCancel context.CancelFunc
-	var dispatchDone <-chan struct{}
-	defer func() {
-		if dispatchCancel != nil {
-			dispatchCancel()
-			<-dispatchDone
-		}
-		if connection != nil {
-			connection.Close()
-		}
-	}()
-	for {
-		if err := ws.SetReadDeadline(time.Now().Add(webSocketReadDeadline)); err != nil {
-			return
-		}
-		payload, opcode, err := ws.ReadMessage()
-		if err != nil || opcode == wsOpcodeClose {
-			return
-		}
-		if opcode != wsOpcodeText && opcode != wsOpcodeBinary {
-			if opcode == wsOpcodePing {
-				_ = ws.WriteMessage(wsOpcodePong, payload)
-			}
-			continue
-		}
-		var envelope contracts.Envelope
-		if err := decodeEnvelope(payload, &envelope); err != nil {
-			_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", SentAt: time.Now().UTC(), Body: errorBody("malformed_envelope", err.Error(), false)})
-			return
-		}
-		if envelope.Protocol != contracts.NodeProtocol {
-			_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("unsupported_protocol", "node protocol is required", false)})
-			return
-		}
-		switch envelope.Message {
-		case "hello":
-			if connection != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("duplicate_hello", "hello was already accepted", false)})
-				return
-			}
-			var hello contracts.Hello
-			if err := decodeBody(envelope.Body, &hello); err != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_hello", err.Error(), false)})
-				return
-			}
-			opened, err := hub.Open(ctx, certificatePEM, hello, time.Now().UTC())
-			if err != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("authentication_failed", err.Error(), false)})
-				return
-			}
-			connection = opened
-			hub.recordPeer(ctx, connection, ws)
-			if hub.Ports != nil {
-				if err := hub.Ports.Observe(connection.ServerID, localPort(ws)); err != nil {
-					return
-				}
-			}
-			for _, capability := range hello.Capabilities {
-				if capability == MigrationCapability {
-					if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "hello_accepted", SentAt: time.Now().UTC()}); err != nil {
-						return
-					}
-					break
-				}
-			}
-			var dispatchCtx context.Context
-			var cancel context.CancelFunc
-			dispatchCtx, cancel = context.WithCancel(ctx)
-			// Keep the cancel function behind the connection-scoped cleanup
-			// closure; this also makes the lifetime explicit to static analysis.
-			dispatchCancel = func() { cancel() }
-			done := make(chan struct{})
-			dispatchDone = done
-			go func() {
-				defer close(done)
-				dispatchNodeJobs(dispatchCtx, ws, hub, connection)
-			}()
-		case "transport_result":
-			if connection == nil {
-				return
-			}
-			var result transportMigrationResult
-			if err := decodeBody(envelope.Body, &result); err != nil {
-				return
-			}
-			if hub.Ports != nil {
-				hub.Ports.ReportFailure(connection.ServerID, result.Error)
-			}
-		case "heartbeat":
-			if connection == nil {
-				return
-			}
-			var heartbeat contracts.Heartbeat
-			if err := decodeBody(envelope.Body, &heartbeat); err != nil || connection.Heartbeat(ctx, heartbeat, time.Now().UTC()) != nil {
-				return
-			}
-		case "renewal_request":
-			if connection == nil {
-				return
-			}
-			var request RenewalRequest
-			if err := decodeBody(envelope.Body, &request); err != nil || request.ServerID != connection.ServerID {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_renewal", "renewal identity does not match authenticated node", false)})
-				return
-			}
-			renewed, err := connection.Renew(ctx, time.Now().UTC())
-			if err != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("renewal_failed", "certificate renewal failed; authenticated recovery is required", false)})
-				return
-			}
-			if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "renewal_response", Request: envelope.Request, SentAt: time.Now().UTC(), Body: mustJSON(renewed)}); err != nil {
-				return
-			}
-			// CA renewal revokes the predecessor and the hub callback marks this
-			// connection closed. End the old socket after the response is flushed;
-			// the client reconnects with its replacement identity.
-			return
-		case "sample_batch":
-			if connection == nil {
-				return
-			}
-			var batch contracts.SampleBatch
-			ack := contracts.Acknowledgement{RequestID: envelope.Request}
-			if err := decodeBody(envelope.Body, &batch); err != nil {
-				ack.Error = &contracts.Error{Code: "invalid_batch", Message: err.Error()}
-			} else {
-				accepted, receiveErr := connection.ReceiveBatch(ctx, batch, time.Now().UTC())
-				ack = accepted
-				ack.RequestID = envelope.Request
-				if receiveErr != nil && ack.Error == nil {
-					ack.Error = &contracts.Error{Code: "batch_rejected", Message: receiveErr.Error(), Retryable: true}
-				}
-			}
-			ack.SamplingIntervalSeconds = connection.samplingPolicySeconds(ctx)
-			connection.touchRelayUse(ctx, time.Now().UTC())
-			ack.Relay = connection.relayPolicy(ctx)
-			ack.Addresses = connection.supports(AddressesCapability)
-			body, _ := json.Marshal(ack)
-			if ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "acknowledgement", Request: envelope.Request, SentAt: time.Now().UTC(), Body: body}) != nil {
-				return
-			}
-		case "addresses":
-			if connection == nil || !connection.supports(AddressesCapability) {
-				return
-			}
-			var reported contracts.NodeAddresses
-			if err := decodeBody(envelope.Body, &reported); err != nil || len(reported.Addresses) > 4*monitoring.MaxNodeAddresses {
-				return
-			}
-			if connection.allowAddressReport(time.Now()) {
-				writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				_ = hub.Store.RecordServerAddresses(writeCtx, connection.ServerID, reported.Addresses)
-				cancel()
-			}
-		case "action_response":
-			if connection == nil {
-				return
-			}
-			var response contracts.ActionResponse
-			if err := decodeBody(envelope.Body, &response); err != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_action_response", err.Error(), false)})
-				continue
-			}
-			if response.RequestID == "" {
-				response.RequestID = envelope.Request
-			}
-			lease, owned := connection.leaseFor(response.RequestID)
-			if !owned {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("action_lease_lost", "action response does not belong to this connection", false)})
-				continue
-			}
-			if _, err := hub.Store.CompleteActionJob(ctx, lease.Job.ID, lease.Token, response, time.Now().UTC()); err != nil {
-				// A duplicate result after a reconnect is safe: the durable job is
-				// already terminal and the node can forget its response. Other
-				// failures are reported but do not tear down the authenticated
-				// channel, so unrelated samples/actions continue to flow.
-				if !errors.Is(err, monitoring.ErrActionJobNotFound) && !errors.Is(err, monitoring.ErrJobLeaseLost) {
-					_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("action_result_rejected", err.Error(), true)})
-				}
-			} else {
-				connection.forgetLease(response.RequestID)
-			}
-		case "cancellation":
-			// Cancellation is owner/API initiated and represented durably in the
-			// jobs table. Nodes may send the typed message as a safety signal; it
-			// is acknowledged at the transport layer without changing state.
-			if connection == nil {
-				return
-			}
-			var cancellation contracts.Cancellation
-			if err := decodeBody(envelope.Body, &cancellation); err != nil {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("invalid_cancellation", err.Error(), false)})
-			}
-		default:
-			_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: errorBody("unsupported_message", "message type is not supported", false)})
-			return
-		}
-	}
-}
-
-// dispatchNodeJobs is intentionally a separate writer loop. The reader must
-// remain blocked on the websocket so the hub can receive heartbeats/samples,
-// while queued jobs need to be pushed proactively even when a node is idle.
-// nodeJobPollInterval bounds how often each connection asks the store for
-// queued action jobs. Jobs are operator-initiated, so a second of latency is
-// invisible, while polling every tick made every node a constant database load.
-const nodeJobPollInterval = time.Second
-
-func dispatchNodeJobs(ctx context.Context, ws *webSocket, hub *Hub, connection *Connection) {
-	lastMigration := time.Time{}
-	lastLease := time.Time{}
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			if hub.Ports != nil && now.Sub(lastMigration) >= 30*time.Second {
-				lastMigration = now
-				if target := hub.Ports.migrationURL(connection); target != "" {
-					if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "transport_migrate", SentAt: now.UTC(), Body: mustJSON(transportMigration{URL: target})}); err != nil {
-						return
-					}
-				}
-			}
-			if job, ok := connection.NextJob(now); ok {
-				if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_request", Request: job.RequestID, SentAt: now.UTC(), Body: mustJSON(job)}); err != nil {
-					return
-				}
-				continue
-			}
-			if now.Sub(lastLease) < nodeJobPollInterval {
-				continue
-			}
-			lastLease = now
-			lease, ok, err := hub.LeaseNextJob(ctx, connection, now.UTC())
-			if err != nil || !ok {
-				continue
-			}
-			// A delivered job may have a successor; look again on the next tick.
-			lastLease = time.Time{}
-			connection.rememberLease(lease)
-			if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_request", Request: lease.Action.RequestID, SentAt: now.UTC(), Body: mustJSON(lease.Action)}); err != nil {
-				// The lease remains durable until expiry; a reconnect can reclaim
-				// it and idempotency protects a node that completed before the
-				// socket write failed.
-				return
-			}
-		}
-	}
-}
-
-func (c *Connection) rememberLease(lease monitoring.JobLease) {
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
-	if !c.closed {
-		c.leases[lease.Action.RequestID] = lease
-	}
-}
-
-func (c *Connection) leaseFor(requestID string) (monitoring.JobLease, bool) {
-	c.stateMu.RLock()
-	defer c.stateMu.RUnlock()
-	lease, ok := c.leases[requestID]
-	return lease, ok
-}
-
-func (c *Connection) forgetLease(requestID string) {
-	c.stateMu.Lock()
-	delete(c.leases, requestID)
-	c.stateMu.Unlock()
-}
-
-func decodeEnvelope(payload []byte, out *contracts.Envelope) error {
+func DecodeEnvelope(payload []byte, out *contracts.Envelope) error {
 	if len(payload) == 0 || len(payload) > contracts.MaxEnvelopeBytes {
 		return ErrFrameTooLarge
 	}
@@ -437,7 +75,7 @@ func decodeEnvelope(payload []byte, out *contracts.Envelope) error {
 	return out.Validate()
 }
 
-func decodeBody(body json.RawMessage, out any) error {
+func DecodeBody(body json.RawMessage, out any) error {
 	if len(body) == 0 || len(body) > contracts.MaxEnvelopeBytes {
 		return ErrFrameMalformed
 	}
@@ -453,12 +91,12 @@ func decodeBody(body json.RawMessage, out any) error {
 	return nil
 }
 
-func errorBody(code, message string, retryable bool) json.RawMessage {
+func ErrorBody(code, message string, retryable bool) json.RawMessage {
 	body, _ := json.Marshal(contracts.Error{Code: code, Message: message, Retryable: retryable})
 	return body
 }
 
-func pemCertificate(cert *x509.Certificate) []byte {
+func PEMCertificate(cert *x509.Certificate) []byte {
 	if cert == nil {
 		return nil
 	}
@@ -568,70 +206,6 @@ type AgentClient struct {
 
 // Only advertise an extension to peers that explicitly support it. Older
 // agents reject unknown acknowledgement fields rather than ignoring them.
-func (c *Connection) samplingPolicySeconds(ctx context.Context) int {
-	c.stateMu.RLock()
-	supported := false
-	for _, capability := range c.hello.Capabilities {
-		if capability == "sampling-policy" {
-			supported = true
-			break
-		}
-	}
-	c.stateMu.RUnlock()
-	if !supported {
-		return 0
-	}
-	return c.hub.Store.SamplingSeconds(ctx)
-}
-
-// supports reports whether the agent advertised capability.
-func (c *Connection) supports(capability string) bool {
-	c.stateMu.RLock()
-	defer c.stateMu.RUnlock()
-	for _, advertised := range c.hello.Capabilities {
-		if advertised == capability {
-			return true
-		}
-	}
-	return false
-}
-
-// allowAddressReport accepts at most one address report per minute per
-// connection, so a misbehaving agent cannot turn it into a write load.
-func (c *Connection) allowAddressReport(now time.Time) bool {
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
-	if !c.addressesAt.IsZero() && now.Sub(c.addressesAt) < time.Minute {
-		return false
-	}
-	c.addressesAt = now
-	return true
-}
-
-// relayPolicy is sent only to agents that understand it; older agents reject
-// unknown acknowledgement fields. A lookup error returns nil, which agents
-// treat as "keep the current relay", so a transient failure never cuts off
-// the servers that depend on this relay.
-func (c *Connection) relayPolicy(ctx context.Context) *contracts.RelayPolicy {
-	c.stateMu.RLock()
-	supported := false
-	for _, capability := range c.hello.Capabilities {
-		if capability == RelayCapability {
-			supported = true
-			break
-		}
-	}
-	c.stateMu.RUnlock()
-	if !supported {
-		return nil
-	}
-	policy, err := c.hub.Store.RelayPolicy(ctx, c.ServerID, time.Now().UTC())
-	if err != nil {
-		return nil
-	}
-	return policy
-}
-
 type inboundEnvelope struct {
 	envelope contracts.Envelope
 	opcode   byte
@@ -643,7 +217,7 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 	if a == nil || a.URL == "" || a.Identity.ServerID == "" || a.Spool == nil {
 		return ErrAgentNotConfigured
 	}
-	if err := a.loadEndpoint(); err != nil {
+	if err := a.LoadEndpoint(); err != nil {
 		return err
 	}
 	backoff := a.Backoff
@@ -697,14 +271,14 @@ func (a *AgentClient) Run(ctx context.Context, batches <-chan contracts.SampleBa
 	}
 }
 
-func (a *AgentClient) session(ctx context.Context, ws *webSocket, batches <-chan contracts.SampleBatch) error {
+func (a *AgentClient) session(ctx context.Context, ws *WebSocket, batches <-chan contracts.SampleBatch) error {
 	ctx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 	incoming := make(chan inboundEnvelope, 16)
 	readErr := make(chan error, 1)
 	go a.readIncoming(ctx, ws, incoming, readErr)
 	a.addressesSent = false
-	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "hello", SentAt: time.Now().UTC(), Body: mustJSON(a.Hello)}); err != nil {
+	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "hello", SentAt: time.Now().UTC(), Body: MustJSON(a.Hello)}); err != nil {
 		return err
 	}
 	if err := a.replay(ctx, ws, incoming, readErr); err != nil {
@@ -756,16 +330,16 @@ func (a *AgentClient) session(ctx context.Context, ws *webSocket, batches <-chan
 		case err := <-readErr:
 			return err
 		case <-heartbeat.C:
-			if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "heartbeat", SentAt: time.Now().UTC(), Body: mustJSON(contracts.Heartbeat{ServerID: a.Identity.ServerID, SentAt: time.Now().UTC(), Health: "healthy"})}); err != nil {
+			if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "heartbeat", SentAt: time.Now().UTC(), Body: MustJSON(contracts.Heartbeat{ServerID: a.Identity.ServerID, SentAt: time.Now().UTC(), Health: "healthy"})}); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (a *AgentClient) readIncoming(ctx context.Context, ws *webSocket, incoming chan<- inboundEnvelope, readErr chan<- error) {
+func (a *AgentClient) readIncoming(ctx context.Context, ws *WebSocket, incoming chan<- inboundEnvelope, readErr chan<- error) {
 	for {
-		if err := ws.SetReadDeadline(time.Now().Add(webSocketReadDeadline)); err != nil {
+		if err := ws.SetReadDeadline(time.Now().Add(WebSocketReadDeadline)); err != nil {
 			readErr <- err
 			return
 		}
@@ -778,22 +352,22 @@ func (a *AgentClient) readIncoming(ctx context.Context, ws *webSocket, incoming 
 			}
 			return
 		}
-		if opcode == wsOpcodePing {
-			if err := ws.WriteMessage(wsOpcodePong, payload); err != nil {
+		if opcode == WSOpcodePing {
+			if err := ws.WriteMessage(WSOpcodePong, payload); err != nil {
 				readErr <- err
 				return
 			}
 			continue
 		}
-		if opcode == wsOpcodeClose {
+		if opcode == WSOpcodeClose {
 			readErr <- ErrWebSocketClosed
 			return
 		}
-		if opcode != wsOpcodeText && opcode != wsOpcodeBinary {
+		if opcode != WSOpcodeText && opcode != WSOpcodeBinary {
 			continue
 		}
 		var envelope contracts.Envelope
-		if err := decodeEnvelope(payload, &envelope); err != nil {
+		if err := DecodeEnvelope(payload, &envelope); err != nil {
 			readErr <- err
 			return
 		}
@@ -806,11 +380,11 @@ func (a *AgentClient) readIncoming(ctx context.Context, ws *webSocket, incoming 
 	}
 }
 
-func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message inboundEnvelope) error {
+func (a *AgentClient) handleIncoming(ctx context.Context, ws *WebSocket, message inboundEnvelope) error {
 	envelope := message.envelope
 	if envelope.Message == "hello_accepted" {
 		if a.previousURL != "" {
-			if err := a.saveEndpoint(a.URL, ""); err != nil {
+			if err := a.SaveEndpoint(a.URL, ""); err != nil {
 				return err
 			}
 			a.previousURL = ""
@@ -818,8 +392,8 @@ func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message
 		return nil
 	}
 	if envelope.Message == "transport_migrate" {
-		var migration transportMigration
-		if err := decodeBody(envelope.Body, &migration); err != nil {
+		var migration TransportMigration
+		if err := DecodeBody(envelope.Body, &migration); err != nil {
 			return err
 		}
 		return a.migrate(ctx, ws, migration.URL)
@@ -828,7 +402,7 @@ func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message
 		return nil
 	}
 	var request contracts.ActionRequest
-	if err := decodeBody(envelope.Body, &request); err != nil {
+	if err := DecodeBody(envelope.Body, &request); err != nil {
 		return err
 	}
 	if envelope.Request != "" && request.RequestID != envelope.Request {
@@ -852,13 +426,13 @@ func (a *AgentClient) handleIncoming(ctx context.Context, ws *webSocket, message
 			defer func() { a.actionMu.Lock(); delete(a.actionRunning, request.IdempotencyKey); a.actionMu.Unlock() }()
 			response := a.executeAction(ctx, request)
 			if ctx.Err() == nil && (response.Error == nil || response.Error.Code != "core_update_interrupted") {
-				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: mustJSON(response)})
+				_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: MustJSON(response)})
 			}
 		}()
 		return nil
 	}
 	response := a.executeAction(ctx, request)
-	return ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: mustJSON(response)})
+	return ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_response", Request: request.RequestID, SentAt: time.Now().UTC(), Body: MustJSON(response)})
 }
 
 func (a *AgentClient) executeAction(ctx context.Context, request contracts.ActionRequest) contracts.ActionResponse {
@@ -926,9 +500,9 @@ func identityRenewalDelay(identity NodeIdentity, now time.Time, renewBefore time
 	return delay
 }
 
-func (a *AgentClient) renewOverWebSocket(ctx context.Context, ws *webSocket, incoming <-chan inboundEnvelope, readErr <-chan error) (NodeIdentity, error) {
+func (a *AgentClient) renewOverWebSocket(ctx context.Context, ws *WebSocket, incoming <-chan inboundEnvelope, readErr <-chan error) (NodeIdentity, error) {
 	requestID := randomRequestID()
-	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "renewal_request", Request: requestID, SentAt: time.Now().UTC(), Body: mustJSON(RenewalRequest{ServerID: a.Identity.ServerID})}); err != nil {
+	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "renewal_request", Request: requestID, SentAt: time.Now().UTC(), Body: MustJSON(RenewalRequest{ServerID: a.Identity.ServerID})}); err != nil {
 		return NodeIdentity{}, err
 	}
 	for {
@@ -954,7 +528,7 @@ func (a *AgentClient) renewOverWebSocket(ctx context.Context, ws *webSocket, inc
 				continue
 			}
 			var renewed NodeIdentity
-			if err := decodeBody(envelope.Body, &renewed); err != nil {
+			if err := DecodeBody(envelope.Body, &renewed); err != nil {
 				return NodeIdentity{}, fmt.Errorf("decode renewed identity: %w", err)
 			}
 			if err := validateNodeIdentity(renewed, a.Identity.ServerID); err != nil {
@@ -999,7 +573,7 @@ func dialTLS(ctx context.Context, proxy *netproxy.Proxy, addr string, config *tl
 
 // BootstrapAgentVia is BootstrapAgent through an optional proxy.
 func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, jobID, token string, trustPEM []byte, tlsConfig *tls.Config) (NodeIdentity, error) {
-	if endpoint == "" || jobID == "" || token == "" || len(token) > maxBootstrapToken {
+	if endpoint == "" || jobID == "" || token == "" || len(token) > MaxBootstrapToken {
 		return NodeIdentity{}, ErrAgentNotConfigured
 	}
 	u, err := url.Parse(endpoint)
@@ -1043,7 +617,7 @@ func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, job
 	}
 	defer ws.Close()
 	requestID := randomRequestID()
-	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "bootstrap", Request: requestID, SentAt: time.Now().UTC(), Body: mustJSON(BootstrapRequest{JobID: jobID, Token: token})}); err != nil {
+	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "bootstrap", Request: requestID, SentAt: time.Now().UTC(), Body: MustJSON(BootstrapRequest{JobID: jobID, Token: token})}); err != nil {
 		return NodeIdentity{}, err
 	}
 	for {
@@ -1051,17 +625,17 @@ func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, job
 		if err != nil {
 			return NodeIdentity{}, err
 		}
-		if opcode == wsOpcodePing {
-			if err := ws.WriteMessage(wsOpcodePong, payload); err != nil {
+		if opcode == WSOpcodePing {
+			if err := ws.WriteMessage(WSOpcodePong, payload); err != nil {
 				return NodeIdentity{}, err
 			}
 			continue
 		}
-		if opcode == wsOpcodeClose {
+		if opcode == WSOpcodeClose {
 			return NodeIdentity{}, ErrWebSocketClosed
 		}
 		var envelope contracts.Envelope
-		if err := decodeEnvelope(payload, &envelope); err != nil || envelope.Request != requestID {
+		if err := DecodeEnvelope(payload, &envelope); err != nil || envelope.Request != requestID {
 			continue
 		}
 		if envelope.Message == "error" {
@@ -1071,7 +645,7 @@ func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, job
 			continue
 		}
 		var identity NodeIdentity
-		if err := decodeBody(envelope.Body, &identity); err != nil {
+		if err := DecodeBody(envelope.Body, &identity); err != nil {
 			return NodeIdentity{}, fmt.Errorf("decode bootstrap identity: %w", err)
 		}
 		if err := validateNodeIdentity(identity, ""); err != nil {
@@ -1105,7 +679,7 @@ func validateNodeIdentity(identity NodeIdentity, expectedServerID contracts.Serv
 	return nil
 }
 
-func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan inboundEnvelope, readErr <-chan error) error {
+func (a *AgentClient) replay(ctx context.Context, ws *WebSocket, incoming <-chan inboundEnvelope, readErr <-chan error) error {
 	for {
 		records, err := a.Spool.Pending(1)
 		if err != nil {
@@ -1116,7 +690,7 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 		}
 		batch := records[0].Batch
 		requestID := randomRequestID()
-		if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "sample_batch", Request: requestID, SentAt: time.Now().UTC(), Body: mustJSON(batch)}); err != nil {
+		if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "sample_batch", Request: requestID, SentAt: time.Now().UTC(), Body: MustJSON(batch)}); err != nil {
 			return err
 		}
 		for {
@@ -1137,7 +711,7 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 					continue
 				}
 				var ack contracts.Acknowledgement
-				if err := decodeBody(envelope.Body, &ack); err != nil {
+				if err := DecodeBody(envelope.Body, &ack); err != nil {
 					return err
 				}
 				if a.SamplingPolicy != nil && ack.SamplingIntervalSeconds >= 5 && ack.SamplingIntervalSeconds <= 3600 {
@@ -1157,7 +731,7 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 					}
 					return errors.New("hub rejected sample batch")
 				}
-				epoch := batchEpoch(batch)
+				epoch := BatchEpoch(batch)
 				if err := a.Spool.Acknowledge(epoch, ack.ThroughSequence); err != nil {
 					return err
 				}
@@ -1173,7 +747,7 @@ const addressCheckInterval = 10 * time.Minute
 
 // reportAddresses sends the node's addresses once per connection and again
 // when they change. Interfaces are read at most every addressCheckInterval.
-func (a *AgentClient) reportAddresses(ws *webSocket, now time.Time) error {
+func (a *AgentClient) reportAddresses(ws *WebSocket, now time.Time) error {
 	if a.Addresses == nil || (a.addressesSent && now.Sub(a.addressesChecked) < addressCheckInterval) {
 		return nil
 	}
@@ -1186,18 +760,18 @@ func (a *AgentClient) reportAddresses(ws *webSocket, now time.Time) error {
 	if addresses == nil {
 		addresses = []string{}
 	}
-	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "addresses", SentAt: now.UTC(), Body: mustJSON(contracts.NodeAddresses{Addresses: addresses})}); err != nil {
+	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "addresses", SentAt: now.UTC(), Body: MustJSON(contracts.NodeAddresses{Addresses: addresses})}); err != nil {
 		return err
 	}
 	a.addressesSent, a.addressesKey = true, key
 	return nil
 }
 
-func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {
+func (a *AgentClient) dial(ctx context.Context) (*WebSocket, error) {
 	return a.dialURL(ctx, a.URL)
 }
 
-func (a *AgentClient) dialURL(ctx context.Context, endpoint string) (*webSocket, error) {
+func (a *AgentClient) dialURL(ctx context.Context, endpoint string) (*WebSocket, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "wss" || u.Host == "" {
 		return nil, fmt.Errorf("%w: URL must use wss", ErrAgentNotConfigured)
@@ -1276,7 +850,7 @@ func configureTLSValidation(config *tls.Config, u *url.URL) {
 	}
 }
 
-func mustJSON(v any) json.RawMessage {
+func MustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
@@ -1289,14 +863,37 @@ func randomRequestID() string {
 
 const (
 	wsOpcodeContinuation = 0x0
-	wsOpcodeText         = 0x1
-	wsOpcodeBinary       = 0x2
-	wsOpcodeClose        = 0x8
-	wsOpcodePing         = 0x9
-	wsOpcodePong         = 0xA
+	WSOpcodeText         = 0x1
+	WSOpcodeBinary       = 0x2
+	WSOpcodeClose        = 0x8
+	WSOpcodePing         = 0x9
+	WSOpcodePong         = 0xA
 )
 
-type webSocket struct {
+// NewWebSocket wraps an established connection that has already completed the
+// HTTP upgrade. server selects the server side: it expects masked frames and
+// sends unmasked ones, as RFC 6455 requires.
+func NewWebSocket(conn net.Conn, server bool) *WebSocket {
+	return &WebSocket{conn: conn, br: bufio.NewReader(conn), bw: bufio.NewWriter(conn), mask: !server, readMask: server}
+}
+
+// LocalAddr and RemoteAddr describe the underlying connection; they are nil
+// when the socket has none.
+func (ws *WebSocket) LocalAddr() net.Addr {
+	if ws == nil || ws.conn == nil {
+		return nil
+	}
+	return ws.conn.LocalAddr()
+}
+
+func (ws *WebSocket) RemoteAddr() net.Addr {
+	if ws == nil || ws.conn == nil {
+		return nil
+	}
+	return ws.conn.RemoteAddr()
+}
+
+type WebSocket struct {
 	conn net.Conn
 	br   *bufio.Reader
 	bw   *bufio.Writer
@@ -1307,7 +904,7 @@ type webSocket struct {
 	readMask bool
 }
 
-func upgradeWebSocket(w http.ResponseWriter, r *http.Request) (net.Conn, *webSocket, error) {
+func UpgradeWebSocket(w http.ResponseWriter, r *http.Request) (net.Conn, *WebSocket, error) {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || !headerContainsToken(r.Header, "Connection", "upgrade") || r.Header.Get("Sec-WebSocket-Version") != webSocketVersion {
 		http.Error(w, "websocket upgrade required", http.StatusUpgradeRequired)
 		return nil, nil, ErrWebSocketHandshake
@@ -1332,10 +929,10 @@ func upgradeWebSocket(w http.ResponseWriter, r *http.Request) (net.Conn, *webSoc
 		_ = conn.Close()
 		return nil, nil, ErrWebSocketHandshake
 	}
-	return conn, &webSocket{conn: conn, br: rw.Reader, bw: rw.Writer, readMask: true}, nil
+	return conn, &WebSocket{conn: conn, br: rw.Reader, bw: rw.Writer, readMask: true}, nil
 }
 
-func clientUpgrade(conn net.Conn, requestURI string) (*webSocket, error) {
+func clientUpgrade(conn net.Conn, requestURI string) (*WebSocket, error) {
 	keyBytes := make([]byte, 16)
 	if _, err := cryptorand.Read(keyBytes); err != nil {
 		return nil, err
@@ -1354,13 +951,13 @@ func clientUpgrade(conn net.Conn, requestURI string) (*webSocket, error) {
 	if response.Header.Get("Sec-WebSocket-Accept") != base64.StdEncoding.EncodeToString(acceptHash[:]) {
 		return nil, ErrWebSocketHandshake
 	}
-	return &webSocket{conn: conn, br: br, bw: bufio.NewWriter(conn), mask: true}, nil
+	return &WebSocket{conn: conn, br: br, bw: bufio.NewWriter(conn), mask: true}, nil
 }
 
-func (ws *webSocket) Close() error                      { return ws.conn.Close() }
-func (ws *webSocket) SetReadDeadline(t time.Time) error { return ws.conn.SetReadDeadline(t) }
+func (ws *WebSocket) Close() error                      { return ws.conn.Close() }
+func (ws *WebSocket) SetReadDeadline(t time.Time) error { return ws.conn.SetReadDeadline(t) }
 
-func (ws *webSocket) ReadMessage() ([]byte, byte, error) {
+func (ws *WebSocket) ReadMessage() ([]byte, byte, error) {
 	var message []byte
 	var opcode byte
 	for {
@@ -1374,7 +971,7 @@ func (ws *webSocket) ReadMessage() ([]byte, byte, error) {
 		}
 		fin := first&0x80 != 0
 		currentOpcode := first & 0x0f
-		if first&0x70 != 0 || currentOpcode == 0x3 || currentOpcode == 0x4 || currentOpcode == 0x5 || currentOpcode == 0x6 || currentOpcode == 0x7 || currentOpcode > wsOpcodePong {
+		if first&0x70 != 0 || currentOpcode == 0x3 || currentOpcode == 0x4 || currentOpcode == 0x5 || currentOpcode == 0x6 || currentOpcode == 0x7 || currentOpcode > WSOpcodePong {
 			return nil, 0, ErrFrameMalformed
 		}
 		masked := second&0x80 != 0
@@ -1394,7 +991,7 @@ func (ws *webSocket) ReadMessage() ([]byte, byte, error) {
 				length = length<<8 | uint64(v)
 			}
 		}
-		if (currentOpcode == wsOpcodeClose || currentOpcode == wsOpcodePing || currentOpcode == wsOpcodePong) && (!fin || length > 125) {
+		if (currentOpcode == WSOpcodeClose || currentOpcode == WSOpcodePing || currentOpcode == WSOpcodePong) && (!fin || length > 125) {
 			return nil, 0, ErrFrameMalformed
 		}
 		if length > contracts.MaxEnvelopeBytes || masked != ws.readMask {
@@ -1415,7 +1012,7 @@ func (ws *webSocket) ReadMessage() ([]byte, byte, error) {
 				payload[i] ^= maskKey[i%4]
 			}
 		}
-		if currentOpcode == wsOpcodePing || currentOpcode == wsOpcodePong || currentOpcode == wsOpcodeClose {
+		if currentOpcode == WSOpcodePing || currentOpcode == WSOpcodePong || currentOpcode == WSOpcodeClose {
 			return payload, currentOpcode, nil
 		}
 		if currentOpcode != wsOpcodeContinuation {
@@ -1436,7 +1033,7 @@ func (ws *webSocket) ReadMessage() ([]byte, byte, error) {
 	}
 }
 
-func (ws *webSocket) WriteEnvelope(envelope contracts.Envelope) error {
+func (ws *WebSocket) WriteEnvelope(envelope contracts.Envelope) error {
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
@@ -1444,10 +1041,10 @@ func (ws *webSocket) WriteEnvelope(envelope contracts.Envelope) error {
 	if err != nil || len(payload) > contracts.MaxEnvelopeBytes {
 		return ErrFrameTooLarge
 	}
-	return ws.WriteMessage(wsOpcodeText, payload)
+	return ws.WriteMessage(WSOpcodeText, payload)
 }
 
-func (ws *webSocket) WriteMessage(opcode byte, payload []byte) error {
+func (ws *WebSocket) WriteMessage(opcode byte, payload []byte) error {
 	if len(payload) > contracts.MaxEnvelopeBytes {
 		return ErrFrameTooLarge
 	}
