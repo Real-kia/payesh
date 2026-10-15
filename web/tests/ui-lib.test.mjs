@@ -60,3 +60,26 @@ test('a node reports its own agent version, older agents fall back to the releas
   assert.equal(nodeVersionOf({ version: '0.7.1', capabilities: ['metrics', 'node-version:0.7.0'] }), '0.7.0');
   assert.equal(nodeVersionOf({ version: 'v0.6.2', capabilities: ['metrics'] }), '0.6.2');
 });
+
+import { phaseOf, isActive, elapsedLabel, failureMessage } from '../src/lib/nodeUpdate.ts';
+
+test('node update phase follows the job and what the node reports', () => {
+  const track = { serverId: 's', jobId: 'j', release: '0.7.1', from: '0.6.2', startedAt: 1000, jobState: 'queued', error: '', sawOffline: false };
+  const up = { connectionState: 'connected', version: '0.6.2' };
+  assert.equal(phaseOf(track, up, 2000), 'queued');
+  assert.equal(phaseOf({ ...track, jobState: 'running' }, up, 2000), 'updating');
+  assert.equal(phaseOf({ ...track, jobState: 'running' }, { connectionState: 'disconnected', version: '0.6.2' }, 2000), 'restarting');
+  assert.equal(phaseOf({ ...track, jobState: 'running', sawOffline: true }, up, 2000), 'verifying');
+  assert.equal(phaseOf({ ...track, jobState: 'running' }, { connectionState: 'connected', version: 'v0.7.1' }, 2000), 'done');
+  assert.equal(phaseOf({ ...track, jobState: 'failed' }, up, 2000), 'failed');
+  assert.equal(phaseOf({ ...track, jobState: 'running' }, up, 1000 + 11 * 60 * 1000), 'stalled');
+  assert.equal(isActive('restarting'), true);
+  assert.equal(isActive('done'), false);
+});
+
+test('node update helpers format time and failures', () => {
+  assert.equal(elapsedLabel(42_000), '42s');
+  assert.equal(elapsedLabel(125_000), '2m 05s');
+  assert.equal(failureMessage({ message: 'node core update failed' }, 'failed'), 'node core update failed');
+  assert.equal(failureMessage(undefined, 'cancelled'), 'The update was cancelled.');
+});

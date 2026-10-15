@@ -235,6 +235,10 @@ export class ApiClient {
     } catch (error) {
       // Abort is intentionally allowed through so stale requests cannot update
       // the view after navigation.
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      // Browsers report a dropped or unreachable connection as a bare
+      // "Load failed" / "Failed to fetch"; say what actually happened.
+      if (error instanceof TypeError) throw new Error('Could not reach the hub. It may be restarting or busy; try again in a moment.');
       throw error;
     }
     if (response.ok) {

@@ -4,7 +4,7 @@
   import { PREVIEW_MODE } from '../../lib/env';
   import type { UpdateStatus, WebUpdateState } from '../../api';
 
-  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, latestNode = '', nodesBusy = false, onUpdateNodes }: {
+  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, latestNode = '', offlineNodes = 0, offlineOutdatedNodes = 0, nodesBusy = false, onUpdateNodes }: {
     status: UpdateStatus | null;
     installedVersion: string;
     checkBusy: boolean;
@@ -17,6 +17,8 @@
     onCheck: () => void;
     onUpdate: (target: string) => void;
     latestNode?: string;
+    offlineNodes?: number;
+    offlineOutdatedNodes?: number;
     outdatedNodes?: number;
     totalNodes?: number;
     nodesBusy?: boolean;
@@ -81,7 +83,11 @@
   {/if}
   {#if status && !checkBusy && !checkError && totalNodes > 0 && !PREVIEW_MODE}
     <div class="nodes-row">
-      <span>Nodes <strong>{totalNodes - outdatedNodes}/{totalNodes}</strong> up to date (node v{latestNode || status.latest})</span>
+      <span class="nodes-summary">
+        <span>Online nodes <strong>{totalNodes - outdatedNodes}/{totalNodes}</strong> on the newest node agent (v{latestNode || status.latest})</span>
+        {#if latestNode && latestNode !== status.latest}<small>Release v{status.latest} changed only the hub, so nodes don't need it.</small>{/if}
+        {#if offlineNodes > 0}<small class="offline">{offlineNodes} offline node{offlineNodes === 1 ? '' : 's'} could not be checked{offlineOutdatedNodes > 0 ? `, ${offlineOutdatedNodes} on an older agent` : ''}. They update after they reconnect.</small>{/if}
+      </span>
       {#if outdatedNodes > 0 && isOwner && onUpdateNodes}<button class="button small" type="button" disabled={nodesBusy} onclick={onUpdateNodes}><Icon name="download" size={13} />{nodesBusy ? 'Queuing…' : `Update all nodes (${outdatedNodes})`}</button>{/if}
     </div>
   {/if}
@@ -154,4 +160,7 @@
     .release-actions { grid-column: 2; }
   }
   .nodes-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; font-size: 13px; }
+  .nodes-summary { display: grid; gap: 3px; }
+  .nodes-summary small { color: var(--muted); font-size: 12px; }
+  .nodes-summary small.offline { color: var(--warning); }
 </style>

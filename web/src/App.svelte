@@ -9,6 +9,8 @@
   import Sidebar from './components/Sidebar.svelte';
   import StatusPill from './components/StatusPill.svelte';
   import ServerTable from './components/ServerTable.svelte';
+  import NodeUpdateCard from './components/NodeUpdateCard.svelte';
+  import { isActive, phaseOf, type NodeUpdateTrack } from './lib/nodeUpdate';
   import OverviewPage from './pages/OverviewPage.svelte';
   import MonitoringPage from './pages/MonitoringPage.svelte';
   import AlertsPage from './pages/AlertsPage.svelte';
@@ -940,6 +942,71 @@
   }
   $: outdatedNodes = servers.filter((server) => server.connectionState === 'connected' && nodeOutdated(server));
   $: totalNodes = servers.filter((server) => server.role === 'node' && server.connectionState === 'connected').length;
+  $: offlineNodes = servers.filter((server) => server.role === 'node' && server.connectionState !== 'connected' && server.connectionState !== 'never-connected' && server.connectionState !== 'revoked');
+  $: offlineOutdatedNodes = offlineNodes.filter((server) => nodeOutdated(server)).length;
+
+  // Progress of node updates started from this browser. The hub only reports
+  // the job as a whole, so each node's step is worked out from the job and
+  // from whether the node went offline and came back on the new version.
+  function loadUpdateTracks(): Record<string, NodeUpdateTrack> {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem('payesh-node-updates') ?? '{}') as Record<string, NodeUpdateTrack>;
+      const fresh: Record<string, NodeUpdateTrack> = {};
+      for (const [id, track] of Object.entries(saved)) if (track && Date.now() - track.startedAt < 60 * 60 * 1000) fresh[id] = track;
+      return fresh;
+    } catch { return {}; }
+  }
+  function saveUpdateTracks(): void {
+    try { window.localStorage.setItem('payesh-node-updates', JSON.stringify(nodeUpdates)); } catch { /* non-critical */ }
+  }
+  let nodeUpdates: Record<string, NodeUpdateTrack> = loadUpdateTracks();
+  let nowTick = Date.now();
+  let updatePoll: number | undefined;
+  function trackNodeUpdates(ids: string[], job: Job, release: string): void {
+    const next = { ...nodeUpdates };
+    for (const id of ids) {
+      const server = servers.find((entry) => entry.id === id);
+      next[id] = { serverId: id, jobId: job.id, release: release.replace(/^v/, ''), from: server ? nodeVersionOf(server) : '', startedAt: Date.now(), jobState: job.state, error: '', sawOffline: false };
+    }
+    nodeUpdates = next; nowTick = Date.now(); saveUpdateTracks(); ensureUpdatePoll();
+  }
+  function dismissNodeUpdate(id: string): void {
+    const { [id]: _removed, ...rest } = nodeUpdates;
+    nodeUpdates = rest; saveUpdateTracks();
+  }
+  function ensureUpdatePoll(): void {
+    if (updatePoll === undefined && typeof window !== 'undefined') updatePoll = window.setInterval(() => void tickNodeUpdates(), 3000);
+  }
+  async function tickNodeUpdates(): Promise<void> {
+    nowTick = Date.now();
+    const active = Object.values(nodeUpdates).filter((track) => {
+      const server = servers.find((entry) => entry.id === track.serverId);
+      return !server || isActive(phaseOf(track, server, nowTick));
+    });
+    if (!active.length) { window.clearInterval(updatePoll); updatePoll = undefined; return; }
+    let changed = false;
+    const next = { ...nodeUpdates };
+    for (const track of active) {
+      const server = servers.find((entry) => entry.id === track.serverId);
+      if (server && server.connectionState !== 'connected' && !track.sawOffline) { next[track.serverId] = { ...next[track.serverId], sawOffline: true }; changed = true; }
+    }
+    for (const jobId of new Set(active.map((track) => track.jobId))) {
+      try {
+        const job = await apiClient.getJob(jobId);
+        for (const track of active.filter((entry) => entry.jobId === jobId)) {
+          const message = job.error?.message ?? (job.error?.code ? `The update failed (${job.error.code}).` : '');
+          if (next[track.serverId].jobState !== job.state || next[track.serverId].error !== message) { next[track.serverId] = { ...next[track.serverId], jobState: job.state, error: message }; changed = true; }
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.authExpired) authExpired = true;
+      }
+    }
+    if (changed) { nodeUpdates = next; saveUpdateTracks(); }
+    if (selectedServerId && nodeUpdates[selectedServerId]) void refreshSelectedServer();
+  }
+  if (typeof window !== 'undefined' && Object.keys(nodeUpdates).length) ensureUpdatePoll();
+  $: selectedTrack = selectedServer ? nodeUpdates[selectedServer.id] ?? null : null;
+
   let nodesUpdateBusy = false;
   async function updateAllNodes(): Promise<void> {
     if (!latestRelease || !outdatedNodes.length || nodesUpdateBusy) return;
@@ -947,8 +1014,10 @@
     try {
       const ids = outdatedNodes.map((server) => server.id);
       for (let start = 0; start < ids.length; start += 20) {
-        const job = await apiClient.createUpdate({ release: latestRelease, selected_server_ids: ids.slice(start, start + 20), idempotency_key: operationKey('update-nodes') });
+        const batch = ids.slice(start, start + 20);
+        const job = await apiClient.createUpdate({ release: latestRelease, selected_server_ids: batch, idempotency_key: operationKey('update-nodes') });
         recordJob(job);
+        trackNodeUpdates(batch, job, latestRelease);
       }
       showNotice(`Update to v${latestRelease} queued for ${ids.length} node${ids.length === 1 ? '' : 's'}.`);
     } catch (error) {
@@ -979,7 +1048,10 @@
         if (!release || release === '—') throw new Error('No release is available. Check for updates first.');
         const ids = targets.map((server) => server.id);
         for (let start = 0; start < ids.length; start += 20) {
-          recordJob(await apiClient.createUpdate({ release, selected_server_ids: ids.slice(start, start + 20), idempotency_key: operationKey('bulk-update') }));
+          const batch = ids.slice(start, start + 20);
+          const job = await apiClient.createUpdate({ release, selected_server_ids: batch, idempotency_key: operationKey('bulk-update') });
+          recordJob(job);
+          trackNodeUpdates(batch, job, release);
         }
       }
       showNotice(`Update queued for ${targets.length} node${targets.length === 1 ? '' : 's'}.`);
@@ -1041,7 +1113,8 @@
         if (!release || release === '—') throw new Error('No release is available for this node. Check for updates first.');
         const job = await apiClient.createUpdate({ release, selected_server_ids: [selectedServer.id], idempotency_key: operationKey('node-update') });
         recordJob(job);
-        showNotice(`Update queued for ${selectedServer.name}.`);
+        trackNodeUpdates([selectedServer.id], job, release);
+        showNotice(`Update queued for ${selectedServer.name}. Follow its progress on this page.`);
       }
     } catch (error) {
       nodeUpdateError = error instanceof Error ? error.message : 'Unable to queue the node update.';
@@ -1831,7 +1904,7 @@
                 {:else if settingsSection === 'api'}
                   {#await lazy.ApiAccessSettings() then { default: ApiAccessSettings }}<ApiAccessSettings isOwner={myAccount?.role === 'owner'} currentUser={myAccount?.username ?? ''} canEdit={myAccount?.permission === 'edit'} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'updates'}
-                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings latestNode={latestNodeVersion} outdatedNodes={outdatedNodes.length} {totalNodes} nodesBusy={nodesUpdateBusy} onUpdateNodes={() => void updateAllNodes()} status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
+                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings latestNode={latestNodeVersion} offlineNodes={offlineNodes.length} {offlineOutdatedNodes} outdatedNodes={outdatedNodes.length} {totalNodes} nodesBusy={nodesUpdateBusy} onUpdateNodes={() => void updateAllNodes()} status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'tls'}
                   {#await lazy.TlsSettings() then { default: TlsSettings }}<TlsSettings readOnly={myAccount?.permission === 'read'} {insecureConnection} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {/if}
@@ -1939,9 +2012,6 @@
             </div>
           </div>
           <div class="server-heading-actions">
-            {#if selectedServer.role === 'node' && myAccount?.role === 'owner' && (PREVIEW_MODE || nodeOutdated(selectedServer))}
-              <button class="button primary small" type="button" disabled={nodeUpdateBusy} on:click={() => void updateSelectedNode()}><Icon name="download" size={14} /><span>{nodeUpdateBusy ? 'Updating…' : 'Update node'}</span></button>
-            {/if}
             {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
               <button class="button danger small" type="button" disabled={deleteServerBusy} on:click={() => promptDeleteServer()}>
                 <Icon name="trash" size={14} />
@@ -1991,6 +2061,10 @@
           {#if selectedServer.connectionState === 'never-connected' && myAccount?.permission !== 'read'}
             <JoinCommandPanel existing={{ id: selectedServer.id, name: selectedServer.name }} relays={relayCandidates} onRelayUsed={() => void loadRelays()} />
           {/if}
+        {/if}
+
+        {#if selectedServer.role === 'node'}
+          <NodeUpdateCard server={selectedServer} latestNode={latestNodeVersion} {latestRelease} track={selectedTrack} now={nowTick} canUpdate={myAccount?.role === 'owner'} busy={nodeUpdateBusy} error={nodeUpdateError} onUpdate={() => void updateSelectedNode()} onDismiss={() => dismissNodeUpdate(selectedServer.id)} />
         {/if}
 
         {#if selectedServer.connectionState === 'connected' && availableTabs.length > 0}
