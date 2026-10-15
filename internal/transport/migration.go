@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/netproxy"
 )
 
 var errTransportMigrated = errors.New("node transport migrated")
@@ -91,18 +92,22 @@ func (a *AgentClient) CheckEndpoint(ctx context.Context) error {
 	if err := a.loadEndpoint(); err != nil {
 		return err
 	}
-	return CheckNodeEndpoint(ctx, a.URL, a.Identity, a.TrustPEM)
+	return checkNodeEndpoint(ctx, a.URL, a.Identity, a.TrustPEM, a.Proxy)
 }
 
 // CheckNodeEndpoint verifies the node-to-hub TLS/WebSocket path without
 // opening a controller session, collecting samples, or changing local state.
 func CheckNodeEndpoint(ctx context.Context, endpoint string, identity NodeIdentity, trustPEM []byte) error {
+	return checkNodeEndpoint(ctx, endpoint, identity, trustPEM, nil)
+}
+
+func checkNodeEndpoint(ctx context.Context, endpoint string, identity NodeIdentity, trustPEM []byte, proxy *netproxy.Proxy) error {
 	if len(trustPEM) == 0 {
 		return errors.New("hub trust anchor is required")
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	client := &AgentClient{URL: endpoint, Identity: identity, TrustPEM: trustPEM}
+	client := &AgentClient{URL: endpoint, Identity: identity, TrustPEM: trustPEM, Proxy: proxy}
 	ws, err := client.dial(probeCtx)
 	if err != nil {
 		return err

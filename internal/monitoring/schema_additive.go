@@ -49,6 +49,28 @@ var additiveTables = []additiveTable{
   updated_at TEXT NOT NULL,
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 )`},
+	// Nodes acting as a CONNECT relay for servers the hub cannot reach.
+	{name: "relay_nodes", ddl: `CREATE TABLE IF NOT EXISTS relay_nodes (
+  server_id TEXT PRIMARY KEY,
+  port INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+)`},
+	// Relay credentials. Only the password hash is stored; the plaintext lives
+	// in the target node's configuration (node grants) or in memory for the
+	// length of one installation (install grants).
+	{name: "relay_grants", ddl: `CREATE TABLE IF NOT EXISTS relay_grants (
+  relay_server_id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password_sha256 TEXT NOT NULL,
+  destinations_json TEXT NOT NULL,
+  expires_at TEXT NOT NULL DEFAULT '',
+  target_server_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (relay_server_id, username),
+  FOREIGN KEY (relay_server_id) REFERENCES relay_nodes(server_id) ON DELETE CASCADE,
+  FOREIGN KEY (target_server_id) REFERENCES servers(id) ON DELETE CASCADE
+)`},
 }
 
 var additiveColumns = []additiveColumn{}

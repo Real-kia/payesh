@@ -29,6 +29,7 @@ import (
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/netproxy"
 )
 
 const (
@@ -286,6 +287,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				}
 			}
 			ack.SamplingIntervalSeconds = connection.samplingPolicySeconds(ctx)
+			ack.Relay = connection.relayPolicy(ctx)
 			body, _ := json.Marshal(ack)
 			if ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "acknowledgement", Request: envelope.Request, SentAt: time.Now().UTC(), Body: body}) != nil {
 				return
@@ -339,8 +341,14 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 // dispatchNodeJobs is intentionally a separate writer loop. The reader must
 // remain blocked on the websocket so the hub can receive heartbeats/samples,
 // while queued jobs need to be pushed proactively even when a node is idle.
+// nodeJobPollInterval bounds how often each connection asks the store for
+// queued action jobs. Jobs are operator-initiated, so a second of latency is
+// invisible, while polling every tick made every node a constant database load.
+const nodeJobPollInterval = time.Second
+
 func dispatchNodeJobs(ctx context.Context, ws *webSocket, hub *Hub, connection *Connection) {
 	lastMigration := time.Time{}
+	lastLease := time.Time{}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -362,10 +370,16 @@ func dispatchNodeJobs(ctx context.Context, ws *webSocket, hub *Hub, connection *
 				}
 				continue
 			}
+			if now.Sub(lastLease) < nodeJobPollInterval {
+				continue
+			}
+			lastLease = now
 			lease, ok, err := hub.LeaseNextJob(ctx, connection, now.UTC())
 			if err != nil || !ok {
 				continue
 			}
+			// A delivered job may have a successor; look again on the next tick.
+			lastLease = time.Time{}
 			connection.rememberLease(lease)
 			if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "action_request", Request: lease.Action.RequestID, SentAt: now.UTC(), Body: mustJSON(lease.Action)}); err != nil {
 				// The lease remains durable until expiry; a reconnect can reclaim
@@ -515,6 +529,12 @@ type AgentClient struct {
 	// does not interpret action arguments as shell commands.
 	ActionHandler  func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 	SamplingPolicy func(int)
+	// RelayPolicy receives the hub's relay configuration when the agent
+	// advertises RelayCapability.
+	RelayPolicy func(contracts.RelayPolicy)
+	// Proxy, when set, carries the hub connection through an HTTP CONNECT or
+	// SOCKS5 proxy. TLS still runs end to end with the hub.
+	Proxy *netproxy.Proxy
 	// Logf, when set, receives rate-limited reports of failed connections and
 	// the following recovery. Without it reconnects stay silent.
 	Logf          func(format string, args ...any)
@@ -539,6 +559,30 @@ func (c *Connection) samplingPolicySeconds(ctx context.Context) int {
 		return 0
 	}
 	return c.hub.Store.SamplingSeconds(ctx)
+}
+
+// relayPolicy is sent only to agents that understand it; older agents reject
+// unknown acknowledgement fields. A lookup error returns nil, which agents
+// treat as "keep the current relay", so a transient failure never cuts off
+// the servers that depend on this relay.
+func (c *Connection) relayPolicy(ctx context.Context) *contracts.RelayPolicy {
+	c.stateMu.RLock()
+	supported := false
+	for _, capability := range c.hello.Capabilities {
+		if capability == RelayCapability {
+			supported = true
+			break
+		}
+	}
+	c.stateMu.RUnlock()
+	if !supported {
+		return nil
+	}
+	policy, err := c.hub.Store.RelayPolicy(ctx, c.ServerID, time.Now().UTC())
+	if err != nil {
+		return nil
+	}
+	return policy
 }
 
 type inboundEnvelope struct {
@@ -877,6 +921,32 @@ func (a *AgentClient) renewOverWebSocket(ctx context.Context, ws *webSocket, inc
 // caller must persist the returned identity using SaveNodeIdentity only after
 // this method succeeds; this function never writes credentials itself.
 func BootstrapAgent(ctx context.Context, endpoint, jobID, token string, trustPEM []byte, tlsConfig *tls.Config) (NodeIdentity, error) {
+	return BootstrapAgentVia(ctx, nil, endpoint, jobID, token, trustPEM, tlsConfig)
+}
+
+// RelayCapability is advertised by agents that can run a relay.
+const RelayCapability = "relay"
+
+// dialTLS opens the hub connection directly or through proxy. Certificate
+// checks are identical either way because TLS runs inside the tunnel.
+func dialTLS(ctx context.Context, proxy *netproxy.Proxy, addr string, config *tls.Config) (net.Conn, error) {
+	if proxy == nil {
+		return (&tls.Dialer{Config: config}).DialContext(ctx, "tcp", addr)
+	}
+	raw, err := proxy.DialContext(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// BootstrapAgentVia is BootstrapAgent through an optional proxy.
+func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, jobID, token string, trustPEM []byte, tlsConfig *tls.Config) (NodeIdentity, error) {
 	if endpoint == "" || jobID == "" || token == "" || len(token) > maxBootstrapToken {
 		return NodeIdentity{}, ErrAgentNotConfigured
 	}
@@ -907,7 +977,7 @@ func BootstrapAgent(ctx context.Context, endpoint, jobID, token string, trustPEM
 		config.RootCAs = pool
 	}
 	configureTLSValidation(config, u)
-	conn, err := (&tls.Dialer{Config: config}).DialContext(ctx, "tcp", u.Host)
+	conn, err := dialTLS(ctx, proxy, u.Host, config)
 	if err != nil {
 		return NodeIdentity{}, err
 	}
@@ -1021,6 +1091,9 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 				if a.SamplingPolicy != nil && ack.SamplingIntervalSeconds >= 5 && ack.SamplingIntervalSeconds <= 3600 {
 					a.SamplingPolicy(ack.SamplingIntervalSeconds)
 				}
+				if a.RelayPolicy != nil && ack.Relay != nil {
+					a.RelayPolicy(*ack.Relay)
+				}
 				if !ack.Accepted {
 					if ack.Error != nil && ack.Error.Retryable {
 						return errors.New(ack.Error.Code)
@@ -1075,8 +1148,7 @@ func (a *AgentClient) dialURL(ctx context.Context, endpoint string) (*webSocket,
 		return nil, fmt.Errorf("load node identity: %w", err)
 	}
 	config.Certificates = []tls.Certificate{cert}
-	dialer := tls.Dialer{Config: config}
-	conn, err := dialer.DialContext(ctx, "tcp", u.Host)
+	conn, err := dialTLS(ctx, a.Proxy, u.Host, config)
 	if err != nil {
 		return nil, err
 	}

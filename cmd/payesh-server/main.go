@@ -42,6 +42,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "ssh-proxy-bridge" {
+		os.Exit(runSSHProxyBridge(os.Args[2:]))
+	}
 	dbPath := flag.String("db", "payesh.db", "SQLite database path")
 	listen := flag.String("listen", "127.0.0.1:8787", "local listen address")
 	token := flag.String("token", os.Getenv("PAYESH_LOCAL_TOKEN"), "Bearer token for protected local API (or PAYESH_LOCAL_TOKEN)")
@@ -135,6 +138,22 @@ func main() {
 	if countryLookup {
 		go geo.NewResolver(store, "payesh/"+version.Value).Run(ctx)
 	}
+	// Older databases keep auto_vacuum off and never shrink; convert them once
+	// in the background so startup (and update health checks) are not delayed.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Minute):
+		}
+		result, err := store.CompactIfNeeded(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			fmt.Fprintln(os.Stderr, "database compaction skipped:", err)
+		case result.Ran:
+			fmt.Fprintf(os.Stderr, "database compacted: %d MB -> %d MB; incremental vacuum enabled\n", result.BeforeBytes>>20, result.AfterBytes>>20)
+		}
+	}()
 	retentionDone := make(chan struct{})
 	go func() {
 		defer close(retentionDone)
@@ -147,6 +166,9 @@ func main() {
 			}
 			if livenessErr := evaluateUnreachable(pruneCtx, store, alertEngine, now); livenessErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "evaluate node liveness:", livenessErr)
+			}
+			if _, expireErr := store.ExpireStaleEnrollmentJobs(pruneCtx, now); expireErr != nil && pruneCtx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "expire enrollment jobs:", expireErr)
 			}
 			if limitErr := store.EnforceStorageLimit(pruneCtx); limitErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "storage limit:", limitErr)
@@ -714,6 +736,11 @@ func evaluateUnreachable(ctx context.Context, store *monitoring.Store, engine *a
 			unreachable, err := store.IsServerUnreachable(ctx, server.ID)
 			if err != nil {
 				return err
+			}
+			// A stale duplicate is the same machine as a connected record; the
+			// machine is up, so it must not raise (or keep) an outage.
+			if server.DuplicateOf != "" {
+				unreachable = false
 			}
 			if _, err := engine.EvaluateUnreachable(ctx, server.ID, at, unreachable); err != nil {
 				return err

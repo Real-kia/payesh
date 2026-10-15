@@ -635,7 +635,7 @@ func tokenPermissionCategory(r *http.Request) string {
 			return TokenCategoryTraffic
 		case "modules":
 			return TokenCategoryPackages
-		case "enrollment", "enrollment-token", "install", "control":
+		case "enrollment", "enrollment-token", "install", "join-script", "control":
 			return TokenCategoryOperations
 		}
 	}
@@ -647,7 +647,7 @@ func tokenPermissionCategory(r *http.Request) string {
 	if strings.HasPrefix(path, "/api/v1/modules") {
 		return TokenCategoryPackages
 	}
-	if strings.HasPrefix(path, "/api/v1/jobs") || strings.HasPrefix(path, "/api/v1/installations") {
+	if strings.HasPrefix(path, "/api/v1/jobs") || strings.HasPrefix(path, "/api/v1/installations") || path == "/api/v1/relays" {
 		return TokenCategoryOperations
 	}
 	if strings.HasPrefix(path, "/api/v1/settings") {

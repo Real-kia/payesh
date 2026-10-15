@@ -17,6 +17,7 @@ import (
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/netproxy"
 	"github.com/Real-kia/payesh/internal/transport"
 )
 
@@ -74,7 +75,14 @@ type InstallService struct {
 
 	mu      sync.Mutex
 	pending map[string]install.SSHInstallOptions
-	notify  chan struct{}
+	// relays holds the relay node chosen for a pending job, consumed with
+	// the credentials in pending.
+	relays map[string]pendingRelay
+	notify chan struct{}
+	// joinScripts are open one-command joins, keyed by their capability id.
+	joinScripts map[string]*joinScript
+	// relayReady probes a relay credential; tests replace it.
+	relayReady func(context.Context, *netproxy.Proxy, string) error
 }
 
 func NewInstallService(store *monitoring.Store) (*InstallService, error) {
@@ -122,6 +130,17 @@ type installRequest struct {
 	Start                      bool       `json:"start,omitempty"`
 	IdempotencyKey             string     `json:"idempotency_key"`
 	ExpiresAt                  *time.Time `json:"expires_at,omitempty"`
+	// ProxyURL (http:// or socks5://, optionally with credentials) carries
+	// the hub's SSH connection. Like the SSH password it is held in memory
+	// only; the job keeps just its redacted host:port.
+	ProxyURL string `json:"proxy_url,omitempty"`
+	// NodeRoute decides how the installed agent reaches the hub when a proxy
+	// or relay is used: "auto" (default) stays direct when that works and
+	// falls back to the proxy, "proxy" always uses it, "direct" never does.
+	NodeRoute string `json:"node_route,omitempty"`
+	// RelayServerID names a connected node that relays both the installation
+	// and the new node's hub connection. The hub configures it automatically.
+	RelayServerID string `json:"relay_server_id,omitempty"`
 }
 
 func (s *InstallService) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +216,23 @@ func (s *InstallService) Enqueue(ctx context.Context, request installRequest) (c
 	if (request.Password == "") == (request.PrivateKey == "") {
 		return contracts.Job{}, errors.New("exactly one SSH authentication method is required")
 	}
+	proxy, err := netproxy.Parse(request.ProxyURL)
+	if err != nil {
+		return contracts.Job{}, err
+	}
+	if proxy != nil && request.RelayServerID != "" {
+		return contracts.Job{}, errors.New("choose either a proxy or a relay node, not both")
+	}
+	switch request.NodeRoute {
+	case "", "auto", "proxy", "direct":
+	default:
+		return contracts.Job{}, errors.New("node_route must be auto, proxy or direct")
+	}
+	if request.RelayServerID != "" {
+		if err := s.validateRelay(ctx, contracts.ServerID(request.RelayServerID), contracts.ServerID(request.ServerID)); err != nil {
+			return contracts.Job{}, err
+		}
+	}
 	if s.ResolveTransport != nil {
 		var err error
 		request.transportURL, request.hubTrustPEM, err = s.ResolveTransport()
@@ -228,6 +264,10 @@ func (s *InstallService) Enqueue(ctx context.Context, request installRequest) (c
 	// Hash only non-secret request fields. Keeping a credential digest in the
 	// database would create a durable password-derived oracle.
 	hashInput := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%t\x00%s", serverID, request.Mode, request.Port, request.Host, request.User, request.Role, request.Listen, request.ExpectedHostKeyFingerprint, request.Start, expires.Format(time.RFC3339Nano))
+	if proxy != nil || request.RelayServerID != "" {
+		// Only the proxy's host:port is hashed, never its credentials.
+		hashInput += fmt.Sprintf("\x00%s\x00%s\x00%s", proxy.Redacted(), request.nodeRoute(), request.RelayServerID)
+	}
 	digest := sha256.Sum256([]byte(hashInput))
 	requestHash := hex.EncodeToString(digest[:])
 	if existingFound {
@@ -276,7 +316,27 @@ func savePendingInstall(s *InstallService, id string, request installRequest) bo
 		clear(previous.Auth.SudoPassword)
 	}
 	s.pending[id] = s.optionsFor(request)
+	if s.relays == nil {
+		s.relays = make(map[string]pendingRelay)
+	}
+	if request.RelayServerID != "" {
+		s.relays[id] = pendingRelay{ID: contracts.ServerID(request.RelayServerID), NodeRoute: request.nodeRoute()}
+	} else {
+		delete(s.relays, id)
+	}
 	return true
+}
+
+type pendingRelay struct {
+	ID        contracts.ServerID
+	NodeRoute string
+}
+
+func (r installRequest) nodeRoute() string {
+	if r.NodeRoute == "" {
+		return "auto"
+	}
+	return r.NodeRoute
 }
 
 func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOptions {
@@ -314,7 +374,26 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 		transportURL, hubTrustPEM = request.transportURL, request.hubTrustPEM
 	}
 	verificationStart := s.now()
+	var proxy *netproxy.Proxy
+	nodeProxy := ""
+	if parsed, err := netproxy.Parse(request.ProxyURL); err == nil && parsed != nil {
+		proxy = parsed
+		if request.nodeRoute() != "direct" {
+			nodeProxy = parsed.String()
+		}
+	}
+	var selectArtifacts func(arch, role string) (map[string]string, error)
+	if proxy != nil || request.RelayServerID != "" {
+		// Proxied targets often have no internet of their own: upload the
+		// files over the proxied SSH connection instead of downloading, using
+		// the hub's build for the target's architecture.
+		download = nil
+		selectArtifacts = func(arch, role string) (map[string]string, error) {
+			return install.SelectLinuxArtifacts(s.InstallerPath, s.Artifacts, s.MatrixDir, arch, role, s.VerifyArtifact)
+		}
+	}
 	return install.SSHInstallOptions{
+		Proxy: proxy, NodeProxy: nodeProxy, NodeProxyAuto: request.nodeRoute() == "auto", SelectArtifacts: selectArtifacts,
 		ServerID:          string(serverID),
 		DownloadArtifacts: download, ReleaseVersion: s.ReleaseVersion,
 		TransportURL:     transportURL,
@@ -357,7 +436,7 @@ func cloneStrings(input map[string]string) map[string]string {
 // pending map before the external call, so a replay cannot race or overwrite
 // buffers being used by SSH. A running job remains visible after interruption;
 // a later pass records a retryable failure because credentials are one-shot.
-func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job, error) {
+func (s *InstallService) RunOnce(ctx context.Context, id string) (outcome contracts.Job, runErr error) {
 	if s == nil || s.Store == nil || id == "" {
 		return contracts.Job{}, errors.New("install service and job are required")
 	}
@@ -392,12 +471,23 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 	}
 	s.mu.Lock()
 	opts, ok := s.pending[id]
+	relay := s.relays[id]
 	if ok {
 		delete(s.pending, id)
+		delete(s.relays, id)
 	}
 	s.mu.Unlock()
 	if !ok || (len(opts.Auth.Password) == 0 && len(opts.Auth.PrivateKey) == 0) {
 		return s.fail(ctx, job, "credentials_unavailable", "installation credentials are no longer available; resubmit the installation", true)
+	}
+	var nodeProxied bool
+	if relay.ID != "" {
+		finish, relayErr := s.prepareRelay(ctx, job, relay.ID, relay.NodeRoute, &opts)
+		if relayErr != nil {
+			clearInstallAuth(&opts.Auth)
+			return s.fail(ctx, job, "relay_unavailable", relayErr.Error(), true)
+		}
+		defer func() { finish(runErr == nil && outcome.State == contracts.JobSucceeded, nodeProxied) }()
 	}
 	currentJob := job
 	var progressMu sync.Mutex
@@ -413,6 +503,7 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (contracts.Job,
 	}
 	defer clearInstallAuth(&opts.Auth)
 	result, execErr := s.Executor.Install(ctx, opts)
+	nodeProxied = result.NodeProxied
 	if ctx.Err() != nil && (errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded)) {
 		progressMu.Lock()
 		latest := currentJob

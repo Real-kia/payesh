@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ type API struct {
 	Token           string
 	authorizef      func(http.ResponseWriter, *http.Request) bool
 	trafficForecast http.Handler
+	// metricCache coalesces identical metric reads from open dashboards.
+	metricCache responseCache
 }
 
 func NewAPI(store *Store, token string) (*API, error) {
@@ -97,7 +100,9 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusNotFound, "not_found", "resource not found", false)
 			return
 		}
-		a.queryMetrics(w, r, serverID)
+		// Authorization for this server already happened above, so the key
+		// only needs the server and the normalized query.
+		a.metricCache.serve(w, string(serverID)+"?"+r.URL.Query().Encode(), func(w http.ResponseWriter) { a.queryMetrics(w, r, serverID) })
 	case "traffic":
 		if len(parts) != 2 {
 			writeAPIError(w, http.StatusNotFound, "not_found", "resource not found", false)
@@ -133,10 +138,7 @@ func isTrafficForecastPath(path string) bool {
 }
 
 func (a *API) getServer(w http.ResponseWriter, r *http.Request, serverID contracts.ServerID) {
-	if err := a.Store.RefreshServerStates(r.Context(), time.Now().UTC()); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "storage_error", "could not refresh server state", true)
-		return
-	}
+	a.refreshStates(r)
 	server, found, err := a.Store.GetServer(r.Context(), serverID)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "storage_error", "could not read server", true)
@@ -147,6 +149,15 @@ func (a *API) getServer(w http.ResponseWriter, r *http.Request, serverID contrac
 		return
 	}
 	writeJSON(w, http.StatusOK, server)
+}
+
+// refreshStates re-derives connection state before a read. It is
+// best-effort: when the writer is busy (a long cleanup or compaction) the
+// read is served with state at most a few seconds old instead of waiting.
+func (a *API) refreshStates(r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	_ = a.Store.RefreshServerStatesForRead(ctx, time.Now().UTC())
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) bool {
@@ -171,10 +182,7 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (a *API) listServers(w http.ResponseWriter, r *http.Request) {
-	if err := a.Store.RefreshServerStates(r.Context(), time.Now().UTC()); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "storage_error", "could not refresh server state", true)
-		return
-	}
+	a.refreshStates(r)
 	limit, ok := parseLimit(r.URL.Query().Get("limit"))
 	if !ok {
 		writeAPIError(w, http.StatusBadRequest, "invalid_limit", "limit must be 1..200", false)

@@ -49,6 +49,9 @@ type API struct {
 	updates               http.Handler
 	install               http.Handler
 	installDownloads      http.Handler
+	joinScript            http.Handler
+	joinScriptDownloads   http.Handler
+	relays                http.Handler
 	enrollment            http.Handler
 	enrollmentToken       http.Handler
 	enrollmentAuthority   *transport.CertificateAuthority
@@ -183,6 +186,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	}
 	var installHandler http.Handler
 	var installDownloads http.Handler
+	var joinScriptHandler, joinScriptDownloads, relaysHandler http.Handler
 	if options.InstallService != nil {
 		if options.InstallService.Store != store {
 			return nil, errors.New("install service store does not match API store")
@@ -191,6 +195,9 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		if options.InstallService.Downloads != nil {
 			installDownloads = options.InstallService.Downloads
 		}
+		joinScriptHandler = sessions.Middleware(options.InstallService.JoinScriptHandler())
+		joinScriptDownloads = options.InstallService.JoinScriptDownloads()
+		relaysHandler = sessions.Middleware(options.InstallService.RelaysHandler())
 	}
 	var httpsSettingsHandler http.Handler
 	if options.HTTPSSettings != nil {
@@ -200,7 +207,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.NodeTransportSettings != nil {
 		nodeSettingsHandler = sessions.Middleware(options.NodeTransportSettings)
 	}
-	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
+	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, joinScript: joinScriptHandler, joinScriptDownloads: joinScriptDownloads, relays: relaysHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
 	result.mcp = &mcp.Server{API: http.HandlerFunc(result.serveHTTP), OpenAPI: api.OpenAPI, Version: version.Value}
 	return result, nil
 }
@@ -232,6 +239,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.installDownloads != nil && strings.HasPrefix(r.URL.Path, "/api/v1/install-artifacts/") {
 		a.installDownloads.ServeHTTP(w, r)
+		return
+	}
+	if a.joinScriptDownloads != nil && strings.HasPrefix(r.URL.Path, "/api/v1/join-scripts/") {
+		a.joinScriptDownloads.ServeHTTP(w, r)
 		return
 	}
 	if r.URL.Path == "/healthz" {
@@ -308,6 +319,14 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
 		a.modules.ServeHTTP(w, r)
+		return
+	}
+	if a.relays != nil && trimmedPath == "/api/v1/relays" {
+		a.relays.ServeHTTP(w, r)
+		return
+	}
+	if a.joinScript != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/join-script") {
+		a.joinScript.ServeHTTP(w, r)
 		return
 	}
 	if a.install != nil {

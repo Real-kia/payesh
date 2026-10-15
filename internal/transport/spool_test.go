@@ -181,11 +181,19 @@ func TestSpoolMultiEpochEvictionPersistsSeparateGapRecords(t *testing.T) {
 
 func TestSpoolRejectsCorruptionAndOversizedRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "offline.spool")
-	if err := os.WriteFile(path, []byte{0, 0, 0, 10, '{'}, 0o600); err != nil {
+	// A complete record whose content does not decode is corruption.
+	if err := os.WriteFile(path, []byte{0, 0, 0, 3, '{', 'x', '}'}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := OpenSpool(path, 1024); !errors.Is(err, ErrSpoolCorrupt) {
 		t.Fatalf("open corrupt err=%v", err)
+	}
+	// A zero length prefix cannot come from a torn append either.
+	if err := os.WriteFile(path, []byte{0, 0, 0, 0}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSpool(path, 1024); !errors.Is(err, ErrSpoolCorrupt) {
+		t.Fatalf("open zero-length err=%v", err)
 	}
 	spool, err := OpenSpool(filepath.Join(t.TempDir(), "offline.spool"), 512)
 	if err != nil {

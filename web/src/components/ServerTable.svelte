@@ -62,7 +62,7 @@
     {#each sorted as server, index (server.id)}
       {@const online = server.connectionState === 'connected'}
       <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
-        <div class="col-status"><StatusPill state={server.displayState} label={stateLabel(server.displayState)} /></div>
+        <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
           <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span></strong>
           <small class="mono">{displayAddress(server)} · {detail(server)}</small>
@@ -210,4 +210,5 @@
     .col-metric:nth-child(3) .microbar { width: 54px; }
     .col-metric:nth-child(4), .col-disk { display: none; }
   }
+  .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 11.5px; font-weight: 550; }
 </style>

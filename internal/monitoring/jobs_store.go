@@ -461,6 +461,17 @@ func (s *Store) LeaseNextActionJob(ctx context.Context, serverID contracts.Serve
 	if !validStoreServerID(serverID) || now.IsZero() || leaseTTL <= 0 || leaseTTL > 24*time.Hour {
 		return JobLease{}, false, errors.New("invalid action lease request")
 	}
+	// Every connected node polls here. Almost always nothing is waiting, so
+	// answer that from the read pool instead of taking the write lock. The
+	// check is a superset of the claim query below.
+	var candidate int
+	if err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE target_server_id=? AND kind<>'update-node' AND action_json IS NOT NULL AND expires_at>? AND cancel_requested=0 AND (state=? OR (state=? AND lease_expires_at IS NOT NULL AND lease_expires_at<=?)))`,
+		string(serverID), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), FormatPersistedTime(now)).Scan(&candidate); err != nil {
+		return JobLease{}, false, err
+	}
+	if candidate == 0 {
+		return JobLease{}, false, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return JobLease{}, false, err
@@ -635,4 +646,27 @@ func newLeaseToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+// ExpireStaleEnrollmentJobs fails enrollment jobs whose authorization window
+// has passed without a node completing it, so they stop showing as pending.
+func (s *Store) ExpireStaleEnrollmentJobs(ctx context.Context, now time.Time) (int, error) {
+	jobs, err := s.ListJobsByKind(ctx, "enrollment")
+	if err != nil {
+		return 0, err
+	}
+	expired := 0
+	for _, job := range jobs {
+		if (job.State != contracts.JobQueued && job.State != contracts.JobRunning) || job.ExpiresAt.After(now) {
+			continue
+		}
+		if _, err := s.TransitionJob(ctx, job.ID, job.Revision, contracts.JobFailed, 100, &contracts.Error{Code: "expired", Message: "the join command expired before the server connected; create a new one", Retryable: true}, now); err != nil {
+			if errors.Is(err, ErrJobRevisionConflict) {
+				continue
+			}
+			return expired, err
+		}
+		expired++
+	}
+	return expired, nil
 }

@@ -19,6 +19,8 @@ export type PreviewServer = {
   name: string;
   countryCode?: string;
   address?: string;
+  duplicateOf?: string;
+  duplicateOfName?: string;
   role: 'standalone' | 'hub' | 'node' | 'cli-only';
   architecture: string;
   platform: string;

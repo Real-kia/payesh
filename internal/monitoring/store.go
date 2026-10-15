@@ -79,12 +79,43 @@ type StoreOptions struct {
 }
 
 type Store struct {
-	db           *sql.DB
+	db *sql.DB
+	// reader is a small pool of query-only connections for dashboard and API
+	// reads. WAL lets them run while db (the single writer) is ingesting, so
+	// open browser tabs never queue behind node writes. In-memory stores use db.
+	reader       *sql.DB
 	path         string
 	maxBytes     int64
 	managedPaths []string
 	observerMu   sync.RWMutex
 	observer     func(context.Context, []contracts.MetricSample) error
+	// stateRefreshedAt throttles RefreshServerStatesForRead (unix nanoseconds).
+	stateRefreshedAt atomic.Int64
+}
+
+const readerConnections = 4
+
+// readDB returns the query-only pool, or the writer when none is open.
+func (s *Store) readDB() *sql.DB {
+	if s.reader != nil {
+		return s.reader
+	}
+	return s.db
+}
+
+func openReader(dsn string) (*sql.DB, error) {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	reader, err := sql.Open("sqlite", dsn+separator+"_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	if err != nil {
+		return nil, err
+	}
+	reader.SetMaxOpenConns(readerConnections)
+	reader.SetMaxIdleConns(readerConnections)
+	reader.SetConnMaxIdleTime(5 * time.Minute)
+	return reader, nil
 }
 
 // SetIngestionObserver registers the bounded post-commit package hook. The
@@ -629,11 +660,15 @@ func OpenStore(ctx context.Context, path string, options StoreOptions) (*Store, 
 		}
 	}
 	dsn := path
+	readerDSN := ""
 	if path == ":memory:" {
 		dsn = fmt.Sprintf("file:payesh-memory-%d?mode=memory&cache=shared&_pragma=busy_timeout(10000)&_txlock=immediate", atomic.AddUint64(&memoryStoreID, 1))
 	} else {
 		if !strings.HasPrefix(path, "file:") {
 			dsn = (&url.URL{Scheme: "file", Path: diskPath}).String()
+		}
+		if diskPath != "" {
+			readerDSN = dsn
 		}
 		if strings.Contains(dsn, "?") {
 			dsn += "&_pragma=busy_timeout(10000)&_txlock=immediate"
@@ -685,10 +720,23 @@ func OpenStore(ctx context.Context, path string, options StoreOptions) (*Store, 
 			return nil, err
 		}
 	}
+	// Readers open only after migration so they never observe a half-built
+	// schema; the writer has already put the database in WAL mode.
+	if readerDSN != "" {
+		reader, err := openReader(readerDSN)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open sqlite readers: %w", err)
+		}
+		store.reader = reader
+	}
 	return store, nil
 }
 
 func (s *Store) Close() error {
+	if s.reader != nil {
+		_ = s.reader.Close()
+	}
 	if s.db != nil {
 		_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	}
@@ -968,11 +1016,41 @@ func (s *Store) RefreshServerStates(ctx context.Context, now time.Time) error {
 	}
 	stale := FormatPersistedTime(now.Add(-serverFreshAfter))
 	disconnected := FormatPersistedTime(now.Add(-serverDisconnectedAfter))
-	_, err := s.db.ExecContext(ctx, `UPDATE servers SET
-connection_state=CASE WHEN connection_state='revoked' THEN 'revoked' WHEN last_heartbeat IS NULL THEN 'never-connected' WHEN last_heartbeat <= ? THEN 'disconnected' ELSE 'connected' END,
-freshness_state=CASE WHEN last_heartbeat IS NULL THEN 'unknown' WHEN last_heartbeat <= ? THEN 'stale' ELSE 'fresh' END,
-freshness_reason=CASE WHEN last_heartbeat IS NULL THEN 'no-heartbeat' WHEN last_heartbeat <= ? THEN 'heartbeat-timeout' ELSE NULL END`, disconnected, stale, stale)
+	// Only rows whose derived state changes are written, so a steady fleet
+	// costs a read instead of rewriting every server row.
+	_, err := s.db.ExecContext(ctx, `WITH derived AS (SELECT id,
+CASE WHEN connection_state='revoked' THEN 'revoked' WHEN last_heartbeat IS NULL THEN 'never-connected' WHEN last_heartbeat <= ?1 THEN 'disconnected' ELSE 'connected' END AS connection_state,
+CASE WHEN last_heartbeat IS NULL THEN 'unknown' WHEN last_heartbeat <= ?2 THEN 'stale' ELSE 'fresh' END AS freshness_state,
+CASE WHEN last_heartbeat IS NULL THEN 'no-heartbeat' WHEN last_heartbeat <= ?2 THEN 'heartbeat-timeout' ELSE NULL END AS freshness_reason
+FROM servers)
+UPDATE servers SET connection_state=derived.connection_state,freshness_state=derived.freshness_state,freshness_reason=derived.freshness_reason
+FROM derived WHERE derived.id=servers.id AND (servers.connection_state IS NOT derived.connection_state OR servers.freshness_state IS NOT derived.freshness_state OR servers.freshness_reason IS NOT derived.freshness_reason)`, disconnected, stale)
 	return err
+}
+
+// readRefreshInterval bounds how often read requests re-derive server state.
+// The thresholds are 45s and 90s, so a 2s lag is invisible, while N open
+// dashboards no longer take the write lock N times per poll.
+const readRefreshInterval = 2 * time.Second
+
+// RefreshServerStatesForRead is RefreshServerStates for API read paths:
+// concurrent callers within readRefreshInterval share one refresh.
+func (s *Store) RefreshServerStatesForRead(ctx context.Context, now time.Time) error {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	last := s.stateRefreshedAt.Load()
+	if last != 0 && now.UnixNano()-last < int64(readRefreshInterval) && now.UnixNano() >= last {
+		return nil
+	}
+	if !s.stateRefreshedAt.CompareAndSwap(last, now.UnixNano()) {
+		return nil
+	}
+	if err := s.RefreshServerStates(ctx, now); err != nil {
+		s.stateRefreshedAt.CompareAndSwap(now.UnixNano(), last)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) UpsertServer(ctx context.Context, server contracts.Server) error {
@@ -1158,7 +1236,7 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if len(serverID) < 16 || len(serverID) > 128 || !isSafeServerID(string(serverID)) {
 		return contracts.Server{}, false, errors.New("server id must be a bounded URL-safe identifier")
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
+	row := s.readDB().QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),`+duplicateOfColumn+` FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
 	server, err := scanServer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Server{}, false, nil
@@ -1216,7 +1294,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 	if err != nil {
 		return ServerPage{}, err
 	}
-	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
+	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),` + duplicateOfColumn + ` FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
 	args := make([]any, 0, len(ids)+4)
 	conditions := []string{}
 	if len(ids) > 0 {
@@ -1236,7 +1314,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 	}
 	query += ` ORDER BY name ASC, id ASC LIMIT ?`
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return ServerPage{}, err
 	}
@@ -1283,12 +1361,25 @@ func decodeServerCursor(value string) (serverCursor, error) {
 
 type scanner interface{ Scan(...any) error }
 
+// duplicateOfColumn finds, for a disconnected server, a connected server
+// that is evidently the same machine: one record's address equals the other's
+// address or connection source. Two connection sources alone are not enough,
+// since different machines behind one NAT share them.
+const duplicateOfColumn = `COALESCE((SELECT b.id||char(31)||b.name FROM servers b LEFT JOIN server_locations bl ON bl.server_id=b.id
+ WHERE servers.connection_state='disconnected' AND b.id<>servers.id AND b.connection_state='connected' AND (
+  (servers.address<>'' AND (b.address=servers.address OR COALESCE(bl.peer_ip,'')=servers.address))
+  OR (COALESCE(server_locations.peer_ip,'')<>'' AND b.address=server_locations.peer_ip))
+ ORDER BY b.last_heartbeat DESC LIMIT 1),'')`
+
 func scanServer(row scanner) (contracts.Server, error) {
 	var server contracts.Server
-	var id, capabilitiesJSON, revision string
+	var id, capabilitiesJSON, revision, duplicate string
 	var heartbeat sql.NullString
-	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision, &server.CountryCode); err != nil {
+	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision, &server.CountryCode, &duplicate); err != nil {
 		return contracts.Server{}, err
+	}
+	if dupID, dupName, ok := strings.Cut(duplicate, "\x1f"); ok {
+		server.DuplicateOf, server.DuplicateOfName = contracts.ServerID(dupID), dupName
 	}
 	server.ID = contracts.ServerID(id)
 	if err := json.Unmarshal([]byte(capabilitiesJSON), &server.Capabilities); err != nil {
@@ -1821,6 +1912,20 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 	return nil
 }
 
+// materializeQueuedRollups retries queued rollup work before a read. The
+// common case (nothing queued) is answered from the reader pool so the read
+// does not wait for the writer.
+func (s *Store) materializeQueuedRollups(ctx context.Context, serverID contracts.ServerID) error {
+	var pending int
+	if err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM rollup_rebuild_queue WHERE server_id=?)`, string(serverID)).Scan(&pending); err != nil {
+		return err
+	}
+	if pending == 0 {
+		return nil
+	}
+	return s.materializeRollups(ctx, serverID, nil)
+}
+
 func (s *Store) queuedRollupTargets(ctx context.Context, serverID contracts.ServerID) ([]rollupTarget, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT bucket_start,bucket_seconds FROM rollup_rebuild_queue WHERE server_id=? ORDER BY bucket_start,bucket_seconds`, string(serverID))
 	if err != nil {
@@ -2225,7 +2330,7 @@ func (s *Store) QueryMetricsWithGapCursor(ctx context.Context, serverID contract
 	}
 	query += ` ORDER BY observed_at ASC, length(sequence) ASC, sequence ASC, collector_epoch ASC LIMIT ?`
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return MetricPage{}, err
 	}
@@ -2282,7 +2387,7 @@ func (s *Store) QueryMetricsWithGapCursor(ctx context.Context, serverID contract
 	}
 	gapQuery += ` ORDER BY collector_epoch, length(from_sequence), from_sequence, to_sequence, reason LIMIT ?`
 	gapArgs = append(gapArgs, limit+1)
-	gapRows, err := s.db.QueryContext(ctx, gapQuery, gapArgs...)
+	gapRows, err := s.readDB().QueryContext(ctx, gapQuery, gapArgs...)
 	if err != nil {
 		return MetricPage{}, err
 	}
@@ -2469,7 +2574,7 @@ func (s *Store) queryTrafficPeriods(ctx context.Context, serverID contracts.Serv
 	}
 	query += ` ORDER BY period_start ASC, scope ASC, direction ASC LIMIT ?`
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return TrafficPage{}, err
 	}
@@ -2944,7 +3049,7 @@ func (s *Store) QueryRollups(ctx context.Context, serverID contracts.ServerID, f
 	// derived rollup write was paused by storage pressure. Retry queued work on
 	// reads so the accepted data becomes visible once headroom returns; a
 	// derived-view failure must not make the durable raw history unavailable.
-	if err := s.materializeRollups(ctx, serverID, nil); err != nil {
+	if err := s.materializeQueuedRollups(ctx, serverID); err != nil {
 		if ctx.Err() != nil {
 			return nil, "", false, ctx.Err()
 		}
@@ -2979,7 +3084,7 @@ func (s *Store) QueryRollups(ctx context.Context, serverID contracts.ServerID, f
 	}
 	query += ` ORDER BY bucket_start ASC, metric ASC LIMIT ?`
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, err
 	}

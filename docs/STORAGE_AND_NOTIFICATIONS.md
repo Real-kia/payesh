@@ -69,3 +69,20 @@ and the current revision. Notification mutations require edit access and
 CSRF. Settings reads include physical live SQLite bytes in `database_bytes`,
 retained recovery bytes in `recovery_snapshot_bytes` (zero when absent), and
 effective cadence. Storage pressure uses the sum of both byte counts.
+
+## Database size accounting and compaction
+
+The storage limit counts the space the database actually uses. Free pages
+inside the file (left by retention) are reused before the file grows, so they
+do not count. Databases created before incremental vacuum became the default
+are compacted once, in the background about a minute after the server starts,
+when they hold a lot of free space and the disk has room for the rewrite.
+Reads keep working meanwhile; nodes buffer new samples until it finishes.
+Repeated cleanup notices are combined into one unread notification.
+
+## Node offline buffer
+
+While a node cannot reach the hub it buffers samples on disk (32 MB at most).
+New samples are appended and acknowledged ones only advance a pointer, so the
+cost per sample stays constant however full the buffer is. When it is full,
+the oldest tenth is replaced by an explicit coverage gap in one step.

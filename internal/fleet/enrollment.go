@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -129,6 +130,14 @@ func (s *EnrollmentService) serveTokenHTTP(w http.ResponseWriter, r *http.Reques
 	// Hold the mutex across IssueEnrollment so concurrent requests cannot both
 	// issue a token before the CA's server reservation becomes visible.
 	enrollment, err := s.Authority.IssueEnrollment(serverID, now)
+	if errors.Is(err, transport.ErrServerAlreadyEnrolled) && s.unusedIdentity(r.Context(), serverID) {
+		// An SSH installation mints the node certificate before it connects.
+		// If that installation failed, the certificate was never used; replace
+		// it so the server can still join with a command.
+		if revokeErr := s.Authority.RevokeServer(serverID); revokeErr == nil {
+			enrollment, err = s.Authority.IssueEnrollment(serverID, now)
+		}
+	}
 	if err != nil {
 		s.issuedMu.Unlock()
 		switch {
@@ -280,4 +289,23 @@ func newEnrollmentJobID() string {
 		return fmt.Sprintf("enrollment-%d", time.Now().UnixNano())
 	}
 	return "enrollment-" + hex.EncodeToString(raw[:])
+}
+
+// unusedIdentity reports whether serverID's certificate can be replaced: the
+// server never connected and no installation is delivering it right now.
+func (s *EnrollmentService) unusedIdentity(ctx context.Context, serverID contracts.ServerID) bool {
+	server, found, err := s.Store.GetServer(ctx, serverID)
+	if err != nil || !found || server.ConnectionState != "never-connected" || server.LastHeartbeat != nil {
+		return false
+	}
+	jobs, err := s.Store.ListJobsByKind(ctx, sshInstallJobKind)
+	if err != nil {
+		return false
+	}
+	for _, job := range jobs {
+		if job.TargetServerID == serverID && (job.State == contracts.JobQueued || job.State == contracts.JobRunning) {
+			return false
+		}
+	}
+	return true
 }

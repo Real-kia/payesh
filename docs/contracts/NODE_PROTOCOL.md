@@ -64,6 +64,20 @@ Jobs carry target identity, expiry, idempotency key, and expected configuration
 revision. Expired or conflicting jobs fail explicitly on reconnect; old commands
 are not silently applied.
 
+## Relay extension
+
+Nodes advertising the `relay` capability receive an optional `relay` object in
+sample acknowledgements: `{"enabled": bool, "port": int, "grants": [...]}`.
+Each grant has a `username`, the hex SHA-256 of its password
+(`password_sha256`), the exact `host:port` `destinations` it may open, and an
+optional `expires_at`. When enabled, the node runs an authenticated HTTP
+CONNECT relay on `port`; a tunnel needs Basic credentials matching a grant and
+a destination that grant names. `enabled: false` stops the relay. An absent
+field means "unchanged", so a transient hub-side lookup failure never stops a
+relay other servers depend on. The hub omits the field for nodes without the
+capability. TLS between a relayed node and the hub runs end to end inside the
+tunnel; the relay never sees plaintext.
+
 ## Sampling policy extension
 
 Nodes advertising the `sampling-policy` capability can receive optional

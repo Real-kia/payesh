@@ -385,6 +385,29 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentTokenRequest' } } } }
       responses: { '201': { description: Pairing token issued, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentToken' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+  /servers/{serverId}/join-script:
+    parameters: [{ $ref: '#/components/parameters/ServerID' }]
+    post:
+      operationId: createJoinScript
+      summary: Create a one-command join served by this hub, optionally through a relay node
+      description: Uses an issued enrollment job and token. With relay_server_id the relay is configured automatically and the returned command fetches everything through it. The script expires with the enrollment.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [job_id, token], properties: { job_id: { type: string, maxLength: 128 }, token: { type: string, minLength: 16, maxLength: 512, writeOnly: true }, relay_server_id: { type: string, minLength: 16, maxLength: 128 }, node_route: { type: string, enum: [auto, proxy, direct], default: auto } } } } } }
+      responses: { '201': { description: Join command, content: { application/json: { schema: { type: object, properties: { command: { type: string }, script_url: { type: string }, expires_at: { type: string, format: date-time }, relay: { type: string } } } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /join-scripts/{scriptId}:
+    get:
+      operationId: getJoinScript
+      summary: Download a one-time node join script (the unguessable id is the capability)
+      security: []
+      parameters: [{ name: scriptId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{48}$' } }]
+      responses: { '200': { description: POSIX shell script, content: { text/x-shellscript: { schema: { type: string } } } }, '404': { description: Unknown or expired } }
+  /relays:
+    get:
+      operationId: listRelays
+      summary: List nodes already acting as relays
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses: { '200': { description: Relays, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: object, properties: { server_id: { type: string }, name: { type: string }, address: { type: string }, port: { type: integer }, connection_state: { type: string }, nodes: { type: integer } } } } } } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
   /servers/{serverId}/traffic:
     parameters: [{ $ref: '#/components/parameters/ServerID' }]
     get:
@@ -1138,6 +1161,8 @@ components:
         id: { type: string, pattern: '^[A-Za-z0-9_-]{16,128}$' }
         name: { type: string, minLength: 1, maxLength: 128 }
         address: { type: string, maxLength: 255 }
+        duplicate_of: { type: string, description: 'Set on a disconnected record that is evidently the same machine as this connected server (shared address or connection source).' }
+        duplicate_of_name: { type: string }
         role: { type: string, enum: [standalone, hub, node, cli-only] }
         architecture: { type: string }
         platform: { type: string }
@@ -1494,7 +1519,7 @@ components:
     SSHInstallRequest:
       type: object
       required: [server_id, host, port, user, idempotency_key]
-      properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, mode: { type: string, enum: [ssh], default: ssh }, host: { type: string, minLength: 1, maxLength: 255 }, port: { type: integer, minimum: 1, maximum: 65535 }, user: { type: string, minLength: 1, maxLength: 128 }, password: { type: string, maxLength: 1048576, writeOnly: true }, private_key: { type: string, maxLength: 1048576, writeOnly: true }, private_key_passphrase: { type: string, maxLength: 4096, writeOnly: true }, sudo_password: { type: string, maxLength: 4096, writeOnly: true }, expected_host_key_fingerprint: { type: string, maxLength: 256 }, role: { type: string, enum: [node, standalone, hub, cli-only], default: node }, listen: { type: string, maxLength: 128 }, start: { type: boolean, default: false }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expires_at: { type: string, format: date-time } }
+      properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, mode: { type: string, enum: [ssh], default: ssh }, host: { type: string, minLength: 1, maxLength: 255 }, port: { type: integer, minimum: 1, maximum: 65535 }, user: { type: string, minLength: 1, maxLength: 128 }, password: { type: string, maxLength: 1048576, writeOnly: true }, private_key: { type: string, maxLength: 1048576, writeOnly: true }, private_key_passphrase: { type: string, maxLength: 4096, writeOnly: true }, sudo_password: { type: string, maxLength: 4096, writeOnly: true }, expected_host_key_fingerprint: { type: string, maxLength: 256 }, role: { type: string, enum: [node, standalone, hub, cli-only], default: node }, listen: { type: string, maxLength: 128 }, start: { type: boolean, default: false }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expires_at: { type: string, format: date-time }, proxy_url: { type: string, maxLength: 2048, writeOnly: true, description: 'http:// (CONNECT) or socks5:// proxy, optionally with credentials, for reaching a server the hub cannot reach directly. Held in memory for this job only.' }, relay_server_id: { type: string, minLength: 16, maxLength: 128, description: 'A connected node that relays the installation and, if needed, the new node''s hub connection. Mutually exclusive with proxy_url.' }, node_route: { type: string, enum: [auto, proxy, direct], default: auto, description: 'With proxy_url or relay_server_id: auto keeps the node direct when it can reach the hub and falls back to the proxy or relay.' } }
     UpdatePreflightRequest:
       type: object
       required: [release, selected_server_ids]

@@ -29,14 +29,14 @@ func (s *Store) QueryTrafficRange(ctx context.Context, id contracts.ServerID, fr
 		return TrafficRange{}, errors.New("choose whole-hour bounds spanning at most 90 days")
 	}
 	var pending int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM rollup_rebuild_queue WHERE server_id=?`, string(id)).Scan(&pending); err != nil {
+	if err := s.readDB().QueryRowContext(ctx, `SELECT count(*) FROM rollup_rebuild_queue WHERE server_id=?`, string(id)).Scan(&pending); err != nil {
 		return TrafficRange{}, err
 	}
 	if pending > 0 {
 		return TrafficRange{}, ErrRollupsPending
 	}
 	result := TrafficRange{From: from.UTC(), To: to.UTC(), RequestedHours: int(to.Sub(from) / time.Hour)}
-	rows, err := s.db.QueryContext(ctx, `SELECT metric,counter_delta FROM metric_rollups WHERE server_id=? AND metric IN ('net.billing.rx_bytes','net.billing.tx_bytes') AND bucket_seconds=3600 AND bucket_start>=? AND bucket_start<? AND coverage='complete' AND counter_delta<>'' ORDER BY metric,bucket_start`, string(id), FormatPersistedTime(from), FormatPersistedTime(to))
+	rows, err := s.readDB().QueryContext(ctx, `SELECT metric,counter_delta FROM metric_rollups WHERE server_id=? AND metric IN ('net.billing.rx_bytes','net.billing.tx_bytes') AND bucket_seconds=3600 AND bucket_start>=? AND bucket_start<? AND coverage='complete' AND counter_delta<>'' ORDER BY metric,bucket_start`, string(id), FormatPersistedTime(from), FormatPersistedTime(to))
 	if err != nil {
 		return result, err
 	}

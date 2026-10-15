@@ -15,8 +15,10 @@
   import PackagesPage from './pages/PackagesPage.svelte';
   import JoinCommandPanel from './components/JoinCommandPanel.svelte';
   import SshCredentialFields from './components/SshCredentialFields.svelte';
+  import InstallRouteFields, { type InstallRoute, type NodeRoute } from './components/InstallRouteFields.svelte';
+  import { relayOptions, rememberRelay } from './lib/relays';
   import CommandPalette, { type Command } from './components/CommandPalette.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type InstallRequest, type RelayInfo, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewServer } from './preview/fixtures';
   import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
   import { PREVIEW_MODE } from './lib/env';
@@ -169,6 +171,10 @@
   let installKey = '';
   let installKeyPassphrase = '';
   let installFingerprint = '';
+  let installRoute: InstallRoute = 'direct';
+  let installProxyUrl = '';
+  let installNodeRoute: NodeRoute = 'auto';
+  let installRelayId = '';
   let installBusy = false;
   let nodeControlPort = '22';
   let nodeControlUser = 'root';
@@ -336,6 +342,40 @@
     });
   }
 
+  // Merging a duplicate deletes the stale record and, when the live record
+  // still has a generated name ("server 12"), gives it the stale record's name.
+  function promptMergeDuplicate(server: PreviewServer) {
+    const live = servers.find((entry) => entry.id === server.duplicateOf);
+    if (!live || deleteServerBusy) return;
+    const rename = /^server \d+$/i.test(live.name) && server.name !== live.name;
+    openConfirmModal({
+      title: `Merge into ${live.name}?`,
+      description: `Delete this stale record (${server.name}) and its old history${rename ? `, and rename ${live.name} to “${server.name}”` : ''}. ${live.name} keeps its data and stays connected.`,
+      tone: 'danger',
+      icon: 'trash',
+      confirmText: 'Merge',
+      cancelText: 'Cancel',
+      action: async () => {
+        deleteServerBusy = true; jobError = '';
+        try {
+          await apiClient.deleteServer(server.id, server.configurationRevision);
+          servers = servers.filter((entry) => entry.id !== server.id);
+          if (rename) {
+            const updated = await apiClient.updateServerLabel(live.id, server.name, live.configurationRevision, operationKey('merge-rename'));
+            servers = servers.map((entry) => entry.id === live.id ? { ...entry, name: updated.name, configurationRevision: updated.configuration_revision } : entry);
+          }
+          navigate('server', live.id);
+          showNotice(rename ? `Merged: ${server.name} now refers to the connected machine.` : `Removed the duplicate record of ${live.name}.`);
+        } catch (error) {
+          jobError = error instanceof Error ? error.message : 'Unable to merge the duplicate.';
+          if (error instanceof ApiError && error.authExpired) authExpired = true;
+        } finally {
+          deleteServerBusy = false;
+        }
+      }
+    });
+  }
+
   function promptCancelInstall() {
     if (!latestJob || !['queued', 'running'].includes(latestJob.state)) {
       if (activeInstall) saveActiveInstall(null);
@@ -447,6 +487,7 @@
     installKey = '';
     installKeyPassphrase = '';
     installFingerprint = '';
+    installRoute = 'direct'; installProxyUrl = ''; installNodeRoute = 'auto'; installRelayId = '';
     jobError = '';
     if (!activeInstall || !['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)) {
       saveActiveInstall(null);
@@ -695,8 +736,30 @@
     saveActiveInstall(activeInstall);
   }
 
+  // Connected nodes with an address can relay for servers the hub cannot
+  // reach; nodes that already relay are listed first.
+  let readyRelays: RelayInfo[] = [];
+  async function loadRelays(): Promise<void> {
+    if (PREVIEW_MODE || sessionState !== 'authenticated') return;
+    try { readyRelays = (await apiClient.listRelays()).items; } catch { /* relays are optional */ }
+  }
+  $: relayCandidates = relayOptions(servers, readyRelays, activePage === 'server' ? selectedServerId : null);
+  $: if (activePage === 'add-server' || activePage === 'server') void loadRelays();
+
+  function installRouteReady(): boolean {
+    if (installRoute === 'proxy') return installProxyUrl.trim() !== '';
+    if (installRoute === 'relay') return installRelayId !== '';
+    return true;
+  }
+
+  function installRouteRequest(): Partial<InstallRequest> {
+    if (installRoute === 'proxy') return { proxy_url: installProxyUrl.trim(), node_route: installNodeRoute };
+    if (installRoute === 'relay') { rememberRelay(installRelayId); return { relay_server_id: installRelayId, node_route: installNodeRoute }; }
+    return {};
+  }
+
   async function createPendingServer(): Promise<void> {
-    if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || createServerBusy) return;
+    if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || !installRouteReady() || createServerBusy) return;
     createServerBusy = true; jobError = '';
     const host = installHost.trim();
     const port = Number(installPort);
@@ -717,12 +780,13 @@
         user,
         ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
+        ...installRouteRequest(),
         role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
       servers = servers.map((entry) => entry.id === server.id ? { ...entry, displayState: 'installing' as DisplayState } : entry);
-      installPassword = ''; installKey = ''; installKeyPassphrase = '';
+      installPassword = ''; installKey = ''; installKeyPassphrase = ''; installProxyUrl = '';
 
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
@@ -892,7 +956,7 @@
   }
 
   async function submitInstall(): Promise<void> {
-    if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || installBusy) return;
+    if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || !installRouteReady() || installBusy) return;
     installBusy = true; jobError = '';
     const host = installHost.trim();
     const port = Number(installPort);
@@ -907,11 +971,12 @@
         user,
         ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
+        ...installRouteRequest(),
         role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
-      installPassword = ''; installKey = ''; installKeyPassphrase = '';
+      installPassword = ''; installKey = ''; installKeyPassphrase = ''; installProxyUrl = '';
 
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
@@ -1094,7 +1159,7 @@
   function emptyApiServer(server: ApiServer): PreviewServer {
     const caps = (server.capabilities && server.capabilities.length > 0) ? server.capabilities : ['metrics', 'traffic'];
     return {
-      id: server.id, name: server.name, countryCode: server.country_code, address: server.address, role: server.role, architecture: server.architecture,
+      id: server.id, name: server.name, countryCode: server.country_code, address: server.address, duplicateOf: server.duplicate_of, duplicateOfName: server.duplicate_of_name, role: server.role, architecture: server.architecture,
       platform: server.platform, capabilities: [...caps], version: server.version ?? '—',
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
@@ -1103,10 +1168,17 @@
     };
   }
 
+  // Windows end on a 5-second boundary so every open tab sends the same query
+  // and the hub answers them from one cached read.
+  const WINDOW_ALIGN_MS = 5000;
+  function alignedWindow(spanMs: number): { from: string; to: string } {
+    const end = Math.floor(Date.now() / WINDOW_ALIGN_MS) * WINDOW_ALIGN_MS;
+    return { from: new Date(end - spanMs).toISOString(), to: new Date(end).toISOString() };
+  }
+
   function rangeWindow(range: ChartRange): { from: string; to: string } {
-    const to = new Date();
     const minutes = range === '15m' ? 15 : range === '1h' ? 60 : 24 * 60;
-    return { from: new Date(to.getTime() - minutes * 60_000).toISOString(), to: to.toISOString() };
+    return alignedWindow(minutes * 60_000);
   }
 
   function metricChart(query: MetricQuery): PreviewChartData {
@@ -1171,9 +1243,8 @@
       const refreshed = await mapWithConcurrency(page.items, 4, controller.signal, async (item, signal) => {
         const existing = servers.find((server) => server.id === item.id);
         const server = { ...emptyApiServer(item), metrics: existing?.metrics ?? emptyApiServer(item).metrics, latestMetricAt: existing?.latestMetricAt, traffic: existing?.traffic ?? emptyApiServer(item).traffic, metricHistory: existing?.metricHistory };
-        const to = new Date();
         try {
-          const query = await apiClient.queryMetrics(item.id, { from: new Date(to.getTime() - 120000).toISOString(), to: to.toISOString(), resolution: 'raw', signal });
+          const query = await apiClient.queryMetrics(item.id, { ...alignedWindow(120_000), resolution: 'raw', signal });
           applyMetric(query, server);
           const chart = metricChart(query);
           const empty = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' as const };
@@ -1202,7 +1273,7 @@
       const [item, query, latestQuery, trafficQuery] = await Promise.all([
         apiClient.getServer(id, { signal: controller.signal }),
         apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '15m' ? 'raw' : range === '1h' ? 'minute' : 'hour', signal: controller.signal }),
-        range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { from: new Date(Date.now() - 120000).toISOString(), to: new Date().toISOString(), resolution: 'raw', signal: controller.signal }),
+        range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { ...alignedWindow(120_000), resolution: 'raw', signal: controller.signal }),
         apiClient.queryTraffic(id, { ...rangeWindow('24h'), signal: controller.signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
       ]);
       if (activePage !== 'server' || selectedServerId !== id || controller.signal.aborted) return;
@@ -1566,10 +1637,10 @@
           <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
           <form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}>
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
-            <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} />
+            <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
             <div class="setup-actions">
               <button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button>
-              <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
+              <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey) || (installRoute === 'proxy' && !installProxyUrl.trim()) || (installRoute === 'relay' && !installRelayId)}>
                 {#if createServerBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Add and install server{/if}
               </button>
             </div>
@@ -1579,7 +1650,7 @@
 
         <div class="or-divider" aria-hidden="true"><span>or</span></div>
 
-        <JoinCommandPanel onCreated={(created) => (servers = [...servers, emptyApiServer(created)])} />
+        <JoinCommandPanel relays={relayCandidates} onCreated={(created) => (servers = [...servers, emptyApiServer(created)])} onRelayUsed={() => void loadRelays()} />
       </section>
 
     {:else if activePage === 'install-progress'}
@@ -1745,6 +1816,13 @@
     {:else if activePage === 'server' && selectedServer}
       <section class="page server-page" aria-labelledby="server-title">
         <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>All servers</span></button>
+        {#if selectedServer.duplicateOf}
+          <div class="duplicate-banner" role="status">
+            <Icon name="copy" size={16} />
+            <p>This is the same machine as <button class="link-button" type="button" on:click={() => navigate('server', selectedServer.duplicateOf)}>{selectedServer.duplicateOfName || 'another server'}</button>, which is connected. This record stopped receiving data after the server was added again, so it raises no outage alerts.</p>
+            {#if myAccount?.permission !== 'read'}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge into {selectedServer.duplicateOfName || 'it'}</button>{/if}
+          </div>
+        {/if}
 
         <div class="page-heading server-heading">
           <div class="server-title">
@@ -1807,15 +1885,18 @@
           <article class="panel server-actions">
             <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
-              <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} />
+              <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
               <div class="setup-actions">
-                <button class="button primary" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey)}>
+                <button class="button primary" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey) || (installRoute === 'proxy' && !installProxyUrl.trim()) || (installRoute === 'relay' && !installRelayId)}>
                   {#if installBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Install Payesh{/if}
                 </button>
               </div>
             </form>
             {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
           </article>
+          {#if selectedServer.connectionState === 'never-connected' && myAccount?.permission !== 'read'}
+            <JoinCommandPanel existing={{ id: selectedServer.id, name: selectedServer.name }} relays={relayCandidates} onRelayUsed={() => void loadRelays()} />
+          {/if}
         {/if}
 
         {#if selectedServer.connectionState === 'connected' && availableTabs.length > 0}

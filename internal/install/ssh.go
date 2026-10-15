@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Real-kia/payesh/internal/netproxy"
 )
 
 var (
@@ -107,6 +109,23 @@ type SSHInstallOptions struct {
 	OnProgress         func(stage string, progress uint8)
 	DownloadArtifacts  func(context.Context, string, string) (ArtifactDownload, error)
 	ReleaseVersion     string
+
+	// Proxy carries the hub's SSH connection (ssh, scp, rsync and the host-key
+	// scan) through an HTTP CONNECT or SOCKS5 proxy or a relay node. When set,
+	// files are uploaded over that SSH connection, so the target needs no
+	// internet access of its own.
+	Proxy *netproxy.Proxy
+	// NodeProxy is written to the node's configuration so its agent reaches
+	// the hub through the same kind of proxy. Empty means a direct connection.
+	NodeProxy string
+	// NodeProxyAuto keeps the node direct when its own hub connection works
+	// and uses NodeProxy only when it does not, so a reachable node does not
+	// depend on the proxy.
+	NodeProxyAuto bool
+	// SelectArtifacts picks the hub's files built for the target's
+	// architecture when they are uploaded over SSH. When nil, the hub's own
+	// artifacts (or the matrix copies, if present) are used.
+	SelectArtifacts func(arch, role string) (map[string]string, error)
 }
 
 type SSHInstallResult struct {
@@ -116,6 +135,9 @@ type SSHInstallResult struct {
 	Installed            []string     `json:"installed"`
 	Enrolled             bool         `json:"enrolled"`
 	MeasurementsVerified bool         `json:"measurements_verified"`
+	// NodeProxied reports whether the node was configured to reach the hub
+	// through NodeProxy.
+	NodeProxied bool `json:"node_proxied"`
 }
 
 type sshInstallError struct {
@@ -154,8 +176,27 @@ func SSHInstallFailureDetail(err error) string {
 	return sshFormatError(stageErr)
 }
 
-func checkEndpointReachable(ctx context.Context, endpoint SSHEndpoint) error {
+func checkEndpointReachable(ctx context.Context, endpoint SSHEndpoint, proxy *netproxy.Proxy) error {
 	addr := net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port))
+	if proxy != nil {
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			dialCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			conn, err := proxy.DialContext(dialCtx, addr)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+			lastErr = err
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+		return fmt.Errorf("could not connect to %s through %s: %w", addr, proxy.Redacted(), lastErr)
+	}
 	d := net.Dialer{Timeout: 4 * time.Second}
 	if endpoint.BindAddress != "" {
 		if laddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(endpoint.BindAddress, "0")); err == nil {
@@ -255,9 +296,18 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	if transport == nil {
 		transport = OpenSSHTransport{}
 	}
-	if _, isLive := transport.(OpenSSHTransport); isLive {
-		if reachErr := checkEndpointReachable(ctx, opts.Endpoint); reachErr != nil {
+	if ost, isLive := transport.(OpenSSHTransport); isLive {
+		if opts.Proxy != nil {
+			ost.Proxy = opts.Proxy
+			transport = ost
+		}
+		if reachErr := checkEndpointReachable(ctx, opts.Endpoint, opts.Proxy); reachErr != nil {
 			return result, sshStage("reachability", reachErr)
+		}
+	}
+	if opts.NodeProxy != "" {
+		if _, err := netproxy.Parse(opts.NodeProxy); err != nil {
+			return result, sshStage("validate target", err)
 		}
 	}
 
@@ -394,13 +444,25 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	artifactsArg := strings.Join(allArtifacts, " ")
 	legacyPaths := map[string]string{}
 	verificationScript := artifactChecksumScript
+	var selected map[string]string
+	if opts.DownloadArtifacts == nil && opts.SelectArtifacts != nil {
+		if archErr != nil {
+			return result, sshStage("detect node architecture", errors.New("could not detect node architecture"))
+		}
+		var selectErr error
+		if selected, selectErr = opts.SelectArtifacts(arch, opts.Role); selectErr != nil {
+			return result, sshStage("select installation files", selectErr)
+		}
+	}
 	if opts.DownloadArtifacts == nil {
 		for _, name := range allArtifacts {
 			path := artifactPaths[name]
 			if name == "payesh-install" {
 				path = opts.InstallerPath
 			}
-			if name != "web-assets" {
+			if selected != nil {
+				path = selected[name]
+			} else if name != "web-assets" {
 				matrixPath := filepath.Join("/usr/share/payesh/matrix", name+"-linux-"+arch)
 				if info, statErr := os.Stat(matrixPath); statErr == nil && !info.IsDir() {
 					path = matrixPath
@@ -438,7 +500,7 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 	if err := stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts); err != nil {
 		return result, sshStage("node configuration staging", err)
 	}
-	if opts.DownloadArtifacts == nil && (opts.Role == "node" || opts.Role == "cli-only") {
+	if opts.DownloadArtifacts == nil && opts.Proxy == nil && (opts.Role == "node" || opts.Role == "cli-only") {
 		writeScriptCmd := fmt.Sprintf("cat << 'EOF' > %s/github_bootstrap.sh\n%s\nEOF\nchmod 700 %s/github_bootstrap.sh",
 			remoteDir, scriptBody, remoteDir)
 
@@ -566,12 +628,30 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 
 		if portCheckCommand != "true" {
 			report("checking node port", 45)
-			checkCtx, cancelCheck := context.WithTimeout(ctx, 15*time.Second)
-			_, checkErr := transport.Run(checkCtx, opts.Endpoint, knownHosts, opts.Auth, portCheckCommand, nil)
-			cancelCheck()
-			if checkErr != nil {
+			runCheck := func(command string) error {
+				checkCtx, cancelCheck := context.WithTimeout(ctx, 20*time.Second)
+				defer cancelCheck()
+				_, checkErr := transport.Run(checkCtx, opts.Endpoint, knownHosts, opts.Auth, command, nil)
+				return checkErr
+			}
+			if opts.NodeProxy != "" && opts.NodeProxyAuto {
+				direct := opts
+				direct.NodeProxy = ""
+				directCommand, _ := nodePortCheckCommand(remoteDir, direct)
+				if runCheck(directCommand) == nil {
+					// The node reaches the hub on its own; keep it independent
+					// of the proxy and rewrite its staged configuration.
+					opts.NodeProxy = ""
+					if err := stageNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, remoteDir, opts); err != nil {
+						return result, sshStage("node configuration staging", err)
+					}
+					portCheckCommand = directCommand
+				}
+			}
+			if err := runCheck(portCheckCommand); err != nil {
 				return result, sshStage("node transport port", ErrSSHNodePortUnavailable)
 			}
+			result.NodeProxied = opts.NodeProxy != ""
 		}
 
 		if _, schemaErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix+shellQuote(remoteDir+"/payesh-install")+" --check-schema", sudoInput); schemaErr != nil {
@@ -910,10 +990,42 @@ func clearSSHAuth(auth *SSHAuth) {
 type OpenSSHTransport struct {
 	ConnectTimeout string
 	ControlPath    string
+	// Proxy routes every OpenSSH command through ProxyCommand, which runs
+	// this executable's ssh-proxy-bridge mode. The proxy URL (with any
+	// password) is passed in the environment, never on a command line.
+	Proxy *netproxy.Proxy
+	// BridgeExecutable overrides the ProxyCommand program; it defaults to
+	// the running executable.
+	BridgeExecutable string
 }
 
-func (OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHostKey, error) {
+// SSHProxyEnv names the environment variable ssh-proxy-bridge reads.
+const SSHProxyEnv = "PAYESH_SSH_PROXY"
+
+func (t OpenSSHTransport) proxyCommand() string {
+	if t.Proxy == nil {
+		return ""
+	}
+	executable := t.BridgeExecutable
+	if executable == "" {
+		executable, _ = os.Executable()
+	}
+	return "ProxyCommand=" + shellQuote(executable) + " ssh-proxy-bridge %h %p"
+}
+
+func (t OpenSSHTransport) proxyEnv() []string {
+	if t.Proxy == nil {
+		return nil
+	}
+	return []string{SSHProxyEnv + "=" + t.Proxy.String()}
+}
+
+func (t OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHostKey, error) {
 	var lastErr error
+	if t.Proxy != nil {
+		// ssh-keyscan cannot use a proxy; only the ssh client strategy can.
+		return t.scanWithClient(ctx, endpoint)
+	}
 
 	// Strategy 1: Standard untyped ssh-keyscan with generous timeout.
 	// OpenSSH's standard ssh-keyscan discovers default host key types without forcing specific algorithm negotiations.
@@ -945,10 +1057,28 @@ func (OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHo
 		}
 	}
 
-	// Strategy 3: Resilient Auto-Solver using native OpenSSH client with StrictHostKeyChecking=accept-new.
-	// OpenSSH client directly negotiates key exchange with the server and records the negotiated host key
-	// into a temporary known_hosts file. This automatically resolves cases where ssh-keyscan is blocked,
-	// filtered, or fails algorithm negotiation, and natively supports bind addresses.
+	keys, clientErr := t.scanWithClient(ctx, endpoint)
+	if clientErr == nil {
+		return keys, nil
+	}
+	if lastErr == nil {
+		lastErr = clientErr
+	}
+	diag := "connection timed out or host unreachable"
+	if lastErr != nil {
+		diag = lastErr.Error()
+		if idx := strings.IndexAny(diag, "\r\n"); idx != -1 {
+			diag = strings.TrimSpace(diag[:idx])
+		}
+	}
+	return nil, fmt.Errorf("host key scan failed for %s:%d (%s)", endpoint.Host, endpoint.Port, diag)
+}
+
+// scanWithClient uses the OpenSSH client with StrictHostKeyChecking=accept-new
+// to record the negotiated host key in a temporary known_hosts file. It works
+// where ssh-keyscan is blocked or fails negotiation, and through a proxy.
+func (t OpenSSHTransport) scanWithClient(ctx context.Context, endpoint SSHEndpoint) ([]SSHHostKey, error) {
+	var lastErr error
 	known, tempErr := os.CreateTemp("", ".payesh-keyscan-")
 	if tempErr == nil {
 		knownPath := known.Name()
@@ -973,9 +1103,15 @@ func (OpenSSHTransport) Scan(ctx context.Context, endpoint SSHEndpoint) ([]SSHHo
 		if endpoint.BindAddress != "" {
 			sshArgs = append(sshArgs, "-b", endpoint.BindAddress)
 		}
+		if proxy := t.proxyCommand(); proxy != "" {
+			sshArgs = append(sshArgs, "-o", proxy)
+		}
 		sshArgs = append(sshArgs, "--", user+"@"+endpoint.Host, "exit")
 
 		cmdSSH := exec.CommandContext(ctx, "ssh", sshArgs...)
+		if env := t.proxyEnv(); env != nil {
+			cmdSSH.Env = append(os.Environ(), env...)
+		}
 		sshOut, sshErr := cmdSSH.CombinedOutput()
 
 		body, readErr := os.ReadFile(knownPath)
@@ -1039,6 +1175,9 @@ func (t OpenSSHTransport) rsyncArgs(endpoint SSHEndpoint, knownHosts, source, de
 	if endpoint.BindAddress != "" {
 		sshCommand += " -b " + endpoint.BindAddress
 	}
+	if proxy := t.proxyCommand(); proxy != "" {
+		sshCommand += " -o " + shellQuote(proxy)
+	}
 	args := []string{"--archive", "--timeout=120", "--rsh=" + sshCommand, "--"}
 	if recursive {
 		source = strings.TrimRight(source, string(filepath.Separator)) + string(filepath.Separator)
@@ -1078,6 +1217,9 @@ func (t OpenSSHTransport) sshArgs(endpoint SSHEndpoint, knownHosts, command stri
 	if endpoint.BindAddress != "" {
 		args = append(args, "-b", endpoint.BindAddress)
 	}
+	if proxy := t.proxyCommand(); proxy != "" {
+		args = append(args, "-o", proxy)
+	}
 	return append(args, "--", endpoint.User+"@"+endpoint.Host, command)
 }
 
@@ -1088,6 +1230,9 @@ func (t OpenSSHTransport) scpArgs(endpoint SSHEndpoint, knownHosts, source, dest
 	}
 	if endpoint.BindAddress != "" {
 		args = append(args, "-o", "BindAddress="+endpoint.BindAddress)
+	}
+	if proxy := t.proxyCommand(); proxy != "" {
+		args = append(args, "-o", proxy)
 	}
 	if recursive {
 		args = append(args, "-r")
@@ -1111,7 +1256,8 @@ func (t OpenSSHTransport) runAuthCommand(ctx context.Context, name string, args 
 			return nil, errors.New("sshpass is unavailable for password authentication")
 		}
 		args = append([]string{"-e", "--", name}, withoutBatchMode(args)...)
-		return runCommand(ctx, "sshpass", args, auth.Password, stdin)
+		env := append(os.Environ(), "SSHPASS="+string(auth.Password))
+		return runCommandEnv(ctx, "sshpass", args, append(env, t.proxyEnv()...), stdin)
 	}
 	// A key file is transient and mode 0600.  A short-lived ssh-agent handles
 	// both unencrypted and encrypted keys without putting a passphrase in argv.
@@ -1137,7 +1283,7 @@ func (t OpenSSHTransport) runAuthCommand(ctx context.Context, name string, args 
 		return nil, err
 	}
 	defer agent.close()
-	return runCommandEnv(ctx, name, args, agent.env, stdin)
+	return runCommandEnv(ctx, name, args, append(agent.env, t.proxyEnv()...), stdin)
 }
 
 func withoutBatchMode(args []string) []string {
@@ -1417,7 +1563,11 @@ func nodePortCheckCommand(remoteDir string, opts SSHInstallOptions) (string, err
 	if len(opts.NodeIdentityJSON) == 0 || len(opts.HubTrustPEM) == 0 {
 		return "", errors.New("node transport port check requires the enrolled identity and hub trust anchor")
 	}
-	return shellQuote(remoteDir+"/payesh-agent") + " --check-transport --transport-url " + shellQuote(endpoint.String()) + " --node-identity-file " + shellQuote(remoteDir+"/node-identity.json") + " --hub-trust-file " + shellQuote(remoteDir+"/hub-ca.pem"), nil
+	command := shellQuote(remoteDir+"/payesh-agent") + " --check-transport --transport-url " + shellQuote(endpoint.String()) + " --node-identity-file " + shellQuote(remoteDir+"/node-identity.json") + " --hub-trust-file " + shellQuote(remoteDir+"/hub-ca.pem")
+	if opts.NodeProxy != "" {
+		command += " --transport-proxy " + shellQuote(strings.TrimSpace(opts.NodeProxy))
+	}
+	return command, nil
 }
 
 func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEndpoint, knownHosts string, auth SSHAuth, remoteDir string, opts SSHInstallOptions) error {
@@ -1441,6 +1591,9 @@ func stageNodeConfig(ctx context.Context, transport SSHTransport, endpoint SSHEn
 	}
 	if opts.TransportURL != "" {
 		envBody := fmt.Sprintf("PAYESH_TRANSPORT_URL=%s\nPAYESH_HUB_TRUST_FILE=/var/lib/payesh/hub-ca.pem\nPAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n", strings.TrimSpace(opts.TransportURL))
+		if opts.NodeProxy != "" {
+			envBody += "PAYESH_TRANSPORT_PROXY=" + strings.TrimSpace(opts.NodeProxy) + "\n"
+		}
 		if err := stageNodeFile(ctx, transport, endpoint, knownHosts, auth, remoteDir+"/payesh.env", 0o640, []byte(envBody)); err != nil {
 			return err
 		}

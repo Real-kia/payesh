@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/Real-kia/payesh/internal/collector"
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/netproxy"
 	"github.com/Real-kia/payesh/internal/privd"
 	"github.com/Real-kia/payesh/internal/transport"
 	"github.com/Real-kia/payesh/internal/version"
@@ -42,6 +44,7 @@ func main() {
 	hubTrustFile := flag.String("hub-trust-file", envOrDefault("PAYESH_HUB_TRUST_FILE", "/var/lib/payesh/hub-ca.pem"), "hub TLS trust-anchor PEM")
 	spoolFile := flag.String("spool-file", envOrDefault("PAYESH_SPOOL_FILE", "/var/lib/payesh/agent.spool"), "bounded offline sample spool")
 	privdSocket := flag.String("privd-socket", os.Getenv("PAYESH_PRIVD_SOCKET"), "optional privileged-helper socket enabling authenticated action execution")
+	transportProxy := flag.String("transport-proxy", os.Getenv("PAYESH_TRANSPORT_PROXY"), "optional http:// or socks5:// proxy for reaching the hub")
 	checkTransport := flag.Bool("check-transport", false, "verify the configured hub TLS node port and exit without collecting metrics")
 	printVersion := flag.Bool("version", false, "print the agent release version and exit")
 	flag.Parse()
@@ -50,6 +53,11 @@ func main() {
 		return
 	}
 
+	hubProxy, err := netproxy.Parse(*transportProxy)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "configure transport proxy:", err)
+		os.Exit(2)
+	}
 	collectorEpoch := contracts.CollectorEpoch(*epoch)
 	if collectorEpoch == "" {
 		collectorEpoch = collector.NewEpoch()
@@ -85,7 +93,7 @@ func main() {
 				os.Exit(1)
 			}
 			bootstrapCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			configuredNodeIdentity, err = transport.BootstrapAgent(bootstrapCtx, strings.TrimSpace(*bootstrapURL), strings.TrimSpace(*bootstrapJob), strings.TrimSpace(*bootstrapToken), trustPEM, nil)
+			configuredNodeIdentity, err = transport.BootstrapAgentVia(bootstrapCtx, hubProxy, strings.TrimSpace(*bootstrapURL), strings.TrimSpace(*bootstrapJob), strings.TrimSpace(*bootstrapToken), trustPEM, nil)
 			cancel()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "bootstrap node identity:", err)
@@ -118,7 +126,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "read hub trust anchor:", err)
 			os.Exit(1)
 		}
-		checker := &transport.AgentClient{URL: configuredTransport.URL, IdentityPath: configuredTransport.IdentityFile, Identity: configuredNodeIdentity, TrustPEM: trustPEM}
+		checker := &transport.AgentClient{URL: configuredTransport.URL, IdentityPath: configuredTransport.IdentityFile, Identity: configuredNodeIdentity, TrustPEM: trustPEM, Proxy: hubProxy}
 		if err = checker.CheckEndpoint(context.Background()); err != nil {
 			fmt.Fprintln(os.Stderr, "hub node transport check failed; check the hub listener, firewall, DNS and TLS trust")
 			os.Exit(1)
@@ -155,7 +163,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, "open sample spool:", err)
 			os.Exit(1)
 		}
-		capabilities := []string{"metrics", "traffic", "sampling-policy", transport.MigrationCapability}
+		capabilities := []string{"metrics", "traffic", "sampling-policy", transport.MigrationCapability, transport.RelayCapability}
+		// The relay costs nothing until the hub makes this node a relay.
+		relay := &netproxy.RelayListener{}
 		var actionHandler func(context.Context, contracts.ActionRequest) contracts.ActionResponse
 		if socket := strings.TrimSpace(*privdSocket); socket != "" {
 			capabilities = append(capabilities, "actions")
@@ -171,6 +181,8 @@ func main() {
 			Hello:          contracts.Hello{Version: version.Value, ProtocolMin: contracts.ProtocolVersion, ProtocolMax: contracts.ProtocolVersion, Architecture: runtime.GOARCH, Platform: runtime.GOOS, Capabilities: capabilities},
 			ActionHandler:  actionHandler,
 			SamplingPolicy: func(seconds int) { hubSampleSeconds.Store(int64(seconds)) },
+			RelayPolicy:    func(policy contracts.RelayPolicy) { applyRelayPolicy(relay, policy) },
+			Proxy:          hubProxy,
 			Logf:           func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
 		}
 		transportBatches = make(chan contracts.SampleBatch, 1)
@@ -289,4 +301,52 @@ func splitCSV(value string) []string {
 		}
 	}
 	return parts
+}
+
+// applyRelayPolicy starts, updates or stops the node's relay. Errors are
+// reported but never stop monitoring; the next acknowledgement retries.
+func applyRelayPolicy(relay *netproxy.RelayListener, policy contracts.RelayPolicy) {
+	port := 0
+	if policy.Enabled && policy.Port > 0 && policy.Port <= 65535 {
+		port = policy.Port
+	}
+	grants := make([]netproxy.Grant, 0, len(policy.Grants))
+	for _, grant := range policy.Grants {
+		converted := netproxy.Grant{Username: grant.Username, PasswordSHA256: grant.PasswordSHA256, Destinations: grant.Destinations}
+		if grant.ExpiresAt != nil {
+			converted.ExpiresAt = *grant.ExpiresAt
+		}
+		grants = append(grants, converted)
+	}
+	before := relay.Port()
+	if err := relay.Apply(port, grants); err != nil {
+		relayLog.report("relay: could not listen on port %d: %v", port, err)
+		return
+	}
+	if after := relay.Port(); after != before {
+		if after == 0 {
+			fmt.Fprintln(os.Stderr, "relay: stopped")
+		} else {
+			fmt.Fprintf(os.Stderr, "relay: listening on port %d\n", after)
+		}
+	}
+}
+
+// relayLog keeps a failing relay from writing one line per acknowledgement.
+var relayLog = &rateLimitedLog{every: 10 * time.Minute}
+
+type rateLimitedLog struct {
+	mu    sync.Mutex
+	every time.Duration
+	last  time.Time
+}
+
+func (l *rateLimitedLog) report(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if time.Since(l.last) < l.every {
+		return
+	}
+	l.last = time.Now()
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }

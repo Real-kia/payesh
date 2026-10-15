@@ -47,6 +47,11 @@ type Server struct {
 	// CountryCode is the hub's best-effort ISO 3166-1 alpha-2 guess for the
 	// server's public address. It is empty until a lookup succeeds.
 	CountryCode string `json:"country_code,omitempty"`
+	// DuplicateOf is set on a disconnected server that is evidently the same
+	// machine as a connected one (an address of one is the other's address
+	// or connection source), typically after reinstalling under a new record.
+	DuplicateOf     ServerID `json:"duplicate_of,omitempty"`
+	DuplicateOfName string   `json:"duplicate_of_name,omitempty"`
 }
 
 type Envelope struct {
@@ -94,7 +99,27 @@ type Acknowledgement struct {
 	Accepted                bool   `json:"accepted"`
 	ThroughSequence         uint64 `json:"through_sequence,string"`
 	Error                   *Error `json:"error,omitempty"`
+	// Relay is sent only to agents advertising the "relay" capability. Nil
+	// means "unchanged"; Enabled=false stops the relay.
+	Relay *RelayPolicy `json:"relay,omitempty"`
 }
+
+// RelayPolicy turns a node into an authenticated CONNECT relay for servers the
+// hub cannot reach directly. Grants carry only password hashes.
+type RelayPolicy struct {
+	Enabled bool         `json:"enabled"`
+	Port    int          `json:"port,omitempty"`
+	Grants  []RelayGrant `json:"grants,omitempty"`
+}
+
+type RelayGrant struct {
+	Username       string     `json:"username"`
+	PasswordSHA256 string     `json:"password_sha256"`
+	Destinations   []string   `json:"destinations"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+}
+
+const MaxRelayGrants = 1024
 
 type Cancellation struct {
 	JobID            string `json:"job_id"`

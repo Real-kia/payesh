@@ -189,10 +189,42 @@ func (s *Store) storageBudget(ctx context.Context) (int64, bool, error) {
 	return s.maxBytes, false, nil
 }
 func (s *Store) budgetUsage(databaseOnly bool) (int64, error) {
+	var total int64
+	var err error
 	if databaseOnly {
-		return s.databaseRecoveryBytes()
+		total, err = s.databaseRecoveryBytes()
+	} else {
+		total, err = s.StorageBytes()
 	}
-	return s.StorageBytes()
+	if err != nil {
+		return 0, err
+	}
+	// Free pages inside the file are reused before the file grows, so they
+	// are not usage. Without this, a database whose auto_vacuum is off never
+	// looks smaller after eviction and history is deleted in a loop.
+	free, err := s.freePageBytes()
+	if err != nil {
+		return total, nil
+	}
+	if free > 0 && free < total {
+		total -= free
+	}
+	return total, nil
+}
+
+// freePageBytes is the space on the SQLite freelist, waiting for reuse.
+func (s *Store) freePageBytes() (int64, error) {
+	if s.path == ":memory:" {
+		return 0, nil
+	}
+	var pageSize, freePages int64
+	if err := s.readDB().QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return 0, err
+	}
+	if err := s.readDB().QueryRow(`PRAGMA freelist_count`).Scan(&freePages); err != nil {
+		return 0, err
+	}
+	return pageSize * freePages, nil
 }
 
 func (s *Store) updateStoragePressure(ctx context.Context, usage int64) error {
@@ -258,8 +290,17 @@ func (s *Store) notifyStorageCleanup(ctx context.Context, removed int64, before,
 	}
 	defer tx.Rollback()
 	message := fmt.Sprintf("Removed %d old history records to control database size. Database usage: %.1f → %.1f MB. Older date ranges may now have missing history.", removed, float64(before)/1000000, float64(after)/1000000)
-	if err := insertStorageNotificationTx(ctx, tx, "storage_cleanup", message, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	// Repeated cleanups update the one unread notice instead of adding a
+	// new entry every few minutes.
+	result, err := tx.ExecContext(ctx, `UPDATE storage_notifications SET message=?,created_at=? WHERE id=(SELECT id FROM storage_notifications WHERE kind='storage_cleanup' AND is_read=0 ORDER BY id DESC LIMIT 1)`, message+" Repeated cleanups are combined here.", FormatPersistedTime(now))
+	if err != nil {
 		return err
+	}
+	if updated, _ := result.RowsAffected(); updated == 0 {
+		if err := insertStorageNotificationTx(ctx, tx, "storage_cleanup", message, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

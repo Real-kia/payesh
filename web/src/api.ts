@@ -49,6 +49,9 @@ export type Server = {
   freshness_reason?: string;
   configuration_revision: string;
   country_code?: string;
+  /** Set on a disconnected record that is evidently the same machine as a connected one. */
+  duplicate_of?: string;
+  duplicate_of_name?: string;
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
@@ -147,6 +150,9 @@ export type SetupRequest = { setup_secret: string; username: string; password: s
 export type EnrollmentRequest = { token: string; idempotency_key: string };
 export type EnrollmentToken = { server_id: string; token: string; expires_at: string };
 export type UpdateRequest = { release: string; selected_server_ids: string[]; idempotency_key: string; expires_at?: string };
+export type RelayInfo = { server_id: string; name: string; address: string; port: number; connection_state: string; nodes: number };
+export type JoinScript = { command: string; script_url: string; expires_at: string; relay?: string };
+
 export type InstallRequest = {
   server_id: string;
   host: string;
@@ -162,6 +168,12 @@ export type InstallRequest = {
   start?: boolean;
   idempotency_key: string;
   expires_at?: string;
+  /** http:// or socks5:// proxy for reaching a server the hub cannot reach directly. */
+  proxy_url?: string;
+  /** How the installed node reaches the hub when a proxy or relay is used (default auto). */
+  node_route?: 'auto' | 'proxy' | 'direct';
+  /** A connected node that relays both the installation and the node's hub connection. */
+  relay_server_id?: string;
 };
 
 /** Run independent reads with a bounded number of active workers. */
@@ -308,6 +320,16 @@ export class ApiClient {
 
   setHTTPSDomain(body: HTTPSSettingsRequest, options: QueryOptions = {}): Promise<HTTPSStatus> {
     return this.request<HTTPSStatus>('/settings/https', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  /** Nodes already acting as relays, most used first. */
+  listRelays(options: QueryOptions = {}): Promise<{ items: RelayInfo[] }> {
+    return this.request<{ items: RelayInfo[] }>('/relays', { signal: options.signal });
+  }
+
+  /** A one-command join served by this hub, optionally through a relay node. */
+  createJoinScript(serverId: string, body: { job_id: string; token: string; relay_server_id?: string; node_route?: 'auto' | 'proxy' | 'direct' }): Promise<JoinScript> {
+    return this.request<JoinScript>(`/servers/${encodeURIComponent(serverId)}/join-script`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) });
   }
 
   getNodeTransportSettings(params: { limit?: number; cursor?: string } = {}): Promise<NodeTransportStatus> {

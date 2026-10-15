@@ -28,6 +28,13 @@ for (const [path, item] of Object.entries(document.paths)) {
     if (!['get', 'post', 'put', 'patch', 'delete'].includes(method)) continue;
     const exempt = (path === '/setup' || path === '/session') && method === 'post';
     if (exempt) continue;
+    if (path === '/join-scripts/{scriptId}' && method === 'get') {
+      const id = operation.parameters?.find((parameter) => parameter.name === 'scriptId');
+      if (operation.security?.length !== 0 || id?.in !== 'path' || id.required !== true || id.schema?.pattern !== '^[a-f0-9]{48}$') {
+        throw new Error('join scripts must require a scoped 192-bit path id');
+      }
+      continue;
+    }
     if (path === '/install-artifacts/{token}/bundle.tar.gz' && method === 'get') {
       const token = operation.parameters?.find((parameter) => parameter.name === 'token');
       if (operation.security?.length !== 0 || token?.in !== 'path' || token.required !== true || token.schema?.pattern !== '^[a-f0-9]{64}$') {
