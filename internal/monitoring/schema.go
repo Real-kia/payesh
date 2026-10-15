@@ -312,4 +312,3 @@ func (s *Store) verifyMigrationBackup(ctx context.Context, version int) (string,
 	snapshot, err := dbschema.CreateMigrationBackup(ctx, s.db, directory, version, limit)
 	return snapshot, cleanup, err
 }
-
