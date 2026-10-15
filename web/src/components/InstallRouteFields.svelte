@@ -44,16 +44,9 @@
     <button type="button" aria-pressed={route === 'proxy'} onclick={() => choose('proxy')}><Icon name="shield" size={13} />Proxy</button>
     <button type="button" aria-pressed={route === 'relay'} onclick={() => choose('relay')}><Icon name="server" size={13} />Relay node</button>
   </div>
-  {#if route === 'direct'}
-    <small>The hub connects to the server's SSH port itself.</small>
-  {:else if route === 'proxy'}
-    <small>Use a proxy that can reach this server. Files are uploaded through it, so the server needs no internet access.</small>
-  {:else}
-    <small>Pick a connected node that can reach this server, usually one in the same data centre. The hub sets up the relay on that node automatically.</small>
-  {/if}
 </fieldset>
 {#if route === 'proxy'}
-  <label class="form-wide">Proxy URL<input bind:value={proxyUrl} type="password" autocomplete="off" placeholder="socks5://user:pass@203.0.113.5:1080 or http://…" required /><small>http:// (CONNECT) or socks5://. Used for this installation only; the hub keeps just its address.</small></label>
+  <label class="form-wide">Proxy URL<input bind:value={proxyUrl} type="password" autocomplete="off" placeholder="socks5://user:pass@host:1080" required /></label>
 {:else if route === 'relay'}
   <label class="form-wide">Relay node
     <select bind:value={relayServerId} required>
@@ -64,27 +57,24 @@
         </optgroup>
       {/if}
       {#if otherRelays.length}
-        <optgroup label={readyRelays.length ? 'Other connected nodes (set up automatically)' : 'Connected nodes (set up automatically)'}>
+        <optgroup label={readyRelays.length ? 'Other nodes' : 'Nodes'}>
           {#each otherRelays as relay (relay.id)}<option value={relay.id}>{label(relay)}</option>{/each}
         </optgroup>
       {/if}
     </select>
-    {#if relays.length === 0}<small>No connected node with a known address is available.</small>{:else}<small>The relay listens on TCP port 9798; the hub must be able to reach it there.</small>{/if}
   </label>
 {/if}
 {#if route !== 'direct'}
-  <label class="form-wide">After installation, the node reaches the hub
+  <label class="form-wide">Node connection
     <select bind:value={nodeRoute}>
-      <option value="auto">Directly when possible, otherwise through the {route === 'relay' ? 'relay' : 'proxy'}</option>
-      <option value="proxy">Always through the {route === 'relay' ? 'relay' : 'proxy'}</option>
-      <option value="direct">Always directly</option>
+      <option value="auto">Auto</option>
+      <option value="proxy">Always via {route === 'relay' ? 'relay' : 'proxy'}</option>
+      <option value="direct">Always direct</option>
     </select>
-    <small>Automatic is tested during installation, so a node that can reach the hub on its own does not depend on the {route === 'relay' ? 'relay' : 'proxy'}.</small>
   </label>
 {/if}
 
 <style>
   .route { min-width: 0; margin: 0; padding: 0; border: 0; }
   .route legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
-  .route small, label small { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
 </style>

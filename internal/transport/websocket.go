@@ -204,7 +204,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				return
 			}
 			connection = opened
-			hub.recordPeer(ctx, connection.ServerID, ws)
+			hub.recordPeer(ctx, connection, ws)
 			if hub.Ports != nil {
 				if err := hub.Ports.Observe(connection.ServerID, localPort(ws)); err != nil {
 					return
@@ -287,6 +287,7 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 				}
 			}
 			ack.SamplingIntervalSeconds = connection.samplingPolicySeconds(ctx)
+			connection.touchRelayUse(ctx, time.Now().UTC())
 			ack.Relay = connection.relayPolicy(ctx)
 			body, _ := json.Marshal(ack)
 			if ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "acknowledgement", Request: envelope.Request, SentAt: time.Now().UTC(), Body: body}) != nil {

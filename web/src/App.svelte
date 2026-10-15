@@ -147,8 +147,6 @@
   let jobError = '';
   let jobBusy = false;
   let jobPollController: AbortController | null = null;
-  let updateRelease = '';
-  let updateBusy = false;
   let updateStatus: UpdateStatus | null = null;
   let updateCheckBusy = false;
   let updateCheckError = '';
@@ -920,17 +918,26 @@
     navigate('overview');
   }
 
-  async function submitUpdate(): Promise<void> {
-    if (!updateRelease.trim() || !servers.length || updateBusy) return;
-    updateBusy = true; jobError = '';
+  // Connected nodes not on the latest release; the API takes 20 per update.
+  $: latestRelease = (updateStatus?.latest ?? '').replace(/^v/, '');
+  $: outdatedNodes = servers.filter((server) => server.role === 'node' && server.connectionState === 'connected' && !!latestRelease && server.version.replace(/^v/, '') !== latestRelease);
+  $: totalNodes = servers.filter((server) => server.role === 'node' && server.connectionState === 'connected').length;
+  let nodesUpdateBusy = false;
+  async function updateAllNodes(): Promise<void> {
+    if (!latestRelease || !outdatedNodes.length || nodesUpdateBusy) return;
+    nodesUpdateBusy = true; updateApplyError = '';
     try {
-      const job = await apiClient.createUpdate({ release: updateRelease.trim(), selected_server_ids: servers.map((server) => server.id), idempotency_key: operationKey('update') });
-      recordJob(job);
+      const ids = outdatedNodes.map((server) => server.id);
+      for (let start = 0; start < ids.length; start += 20) {
+        const job = await apiClient.createUpdate({ release: latestRelease, selected_server_ids: ids.slice(start, start + 20), idempotency_key: operationKey('update-nodes') });
+        recordJob(job);
+      }
+      showNotice(`Update to v${latestRelease} queued for ${ids.length} node${ids.length === 1 ? '' : 's'}.`);
     } catch (error) {
-      jobError = error instanceof Error ? error.message : 'Unable to queue the update.';
+      updateApplyError = error instanceof Error ? error.message : 'Unable to queue the node updates.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
-      updateBusy = false;
+      nodesUpdateBusy = false;
     }
   }
 
@@ -1738,7 +1745,7 @@
                 {:else if settingsSection === 'api'}
                   {#await lazy.ApiAccessSettings() then { default: ApiAccessSettings }}<ApiAccessSettings isOwner={myAccount?.role === 'owner'} currentUser={myAccount?.username ?? ''} canEdit={myAccount?.permission === 'edit'} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'updates'}
-                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
+                  {#await lazy.UpdatesSettings() then { default: UpdatesSettings }}<UpdatesSettings outdatedNodes={outdatedNodes.length} {totalNodes} nodesBusy={nodesUpdateBusy} onUpdateNodes={() => void updateAllNodes()} status={updateStatus} installedVersion={updateStatus?.current ? `v${updateStatus.current}` : hubVersion ? `v${hubVersion}` : 'Unavailable'} checkBusy={updateCheckBusy} checkError={updateCheckError} applyBusy={updateApplyBusy} applyError={updateApplyError} {webUpdate} isOwner={myAccount?.role === 'owner'} {isNewerVersion} onCheck={() => void checkLatestUpdate()} onUpdate={startWebUpdate} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'tls'}
                   {#await lazy.TlsSettings() then { default: TlsSettings }}<TlsSettings readOnly={myAccount?.permission === 'read'} {insecureConnection} onSaved={showSettingsSavedDialog} onConfirm={openConfirmModal} onNotice={showNotice} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {/if}
@@ -1819,8 +1826,8 @@
         {#if selectedServer.duplicateOf}
           <div class="duplicate-banner" role="status">
             <Icon name="copy" size={16} />
-            <p>This is the same machine as <button class="link-button" type="button" on:click={() => navigate('server', selectedServer.duplicateOf)}>{selectedServer.duplicateOfName || 'another server'}</button>, which is connected. This record stopped receiving data after the server was added again, so it raises no outage alerts.</p>
-            {#if myAccount?.permission !== 'read'}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge into {selectedServer.duplicateOfName || 'it'}</button>{/if}
+            <p>Same machine as <button class="link-button" type="button" on:click={() => navigate('server', selectedServer.duplicateOf)}>{selectedServer.duplicateOfName || 'another server'}</button>.</p>
+            {#if myAccount?.permission !== 'read'}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge</button>{/if}
           </div>
         {/if}
 

@@ -465,6 +465,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "installation worker:", workerErr)
 			}
 		})
+		go runHousekeeping(ctx, store, installService)
 	}
 
 	server := &http.Server{
@@ -767,4 +768,34 @@ func certificateSHA256(path string) string {
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return hex.EncodeToString(sum[:])
+}
+
+// runHousekeeping removes what the hub created for joins and relays once it
+// is no longer needed: expired download bundles and join scripts, expired
+// installation credentials, and relay access a node has not used for the
+// configured number of days (Settings > Storage).
+func runHousekeeping(ctx context.Context, store *monitoring.Store, installService *fleet.InstallService) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		now := time.Now().UTC()
+		installService.SweepExpired(now)
+		runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := store.PruneExpiredRelayGrants(runCtx, now); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, "relay cleanup:", err)
+		}
+		if settings, _, err := store.StorageSettings(runCtx); err == nil {
+			if removed, err := store.PruneUnusedRelayGrants(runCtx, now, settings.RelayCleanupDays); err != nil && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "relay cleanup:", err)
+			} else if removed > 0 {
+				fmt.Fprintf(os.Stderr, "relay cleanup: removed %d unused relay credential(s)\n", removed)
+			}
+		}
+		cancel()
+	}
 }

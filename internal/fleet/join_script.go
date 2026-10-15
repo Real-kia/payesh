@@ -454,3 +454,19 @@ func (s *InstallService) RelaysHandler() http.Handler {
 		writeStorageJSON(w, http.StatusOK, map[string]any{"items": relays})
 	})
 }
+
+// SweepExpired forgets expired join scripts and deletes download bundles
+// whose lease has ended, so nothing they created stays on disk.
+func (s *InstallService) SweepExpired(now time.Time) {
+	s.mu.Lock()
+	for key, script := range s.joinScripts {
+		if !script.ExpiresAt.After(now) {
+			script.close()
+			delete(s.joinScripts, key)
+		}
+	}
+	s.mu.Unlock()
+	if s.Downloads != nil {
+		s.Downloads.Sweep()
+	}
+}

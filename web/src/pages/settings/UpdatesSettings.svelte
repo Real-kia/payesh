@@ -4,7 +4,7 @@
   import { PREVIEW_MODE } from '../../lib/env';
   import type { UpdateStatus, WebUpdateState } from '../../api';
 
-  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate }: {
+  let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, nodesBusy = false, onUpdateNodes }: {
     status: UpdateStatus | null;
     installedVersion: string;
     checkBusy: boolean;
@@ -16,6 +16,10 @@
     isNewerVersion: (candidate: string, installed: string) => boolean;
     onCheck: () => void;
     onUpdate: (target: string) => void;
+    outdatedNodes?: number;
+    totalNodes?: number;
+    nodesBusy?: boolean;
+    onUpdateNodes?: () => void;
   } = $props();
 
   const PER_PAGE = 5;
@@ -73,6 +77,12 @@
         <p class="muted">Updating from the browser is not set up on this server yet. Run the command below once; later updates can be done here.</p>
       {/if}
     {/if}
+  {/if}
+  {#if status && !checkBusy && !checkError && totalNodes > 0 && !PREVIEW_MODE}
+    <div class="nodes-row">
+      <span>Nodes <strong>{totalNodes - outdatedNodes}/{totalNodes}</strong> on v{status.latest}</span>
+      {#if outdatedNodes > 0 && isOwner && onUpdateNodes}<button class="button small" type="button" disabled={nodesBusy} onclick={onUpdateNodes}><Icon name="download" size={13} />{nodesBusy ? 'Queuing…' : `Update all nodes (${outdatedNodes})`}</button>{/if}
+    </div>
   {/if}
   {#if checkError}<p class="form-error" role="alert">{checkError}</p>{/if}
   {#if applyError}<p class="form-error" role="alert">{applyError}</p>{/if}
@@ -142,4 +152,5 @@
     .timeline li { grid-template-columns: 12px minmax(0, 1fr); }
     .release-actions { grid-column: 2; }
   }
+  .nodes-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; font-size: 13px; }
 </style>

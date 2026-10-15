@@ -57,6 +57,18 @@ are already set up are listed first as *Ready relays* (with how many servers
 use them), and the last relay you picked is preselected, so later servers only
 need that one choice. `GET /api/v1/relays` lists them.
 
+## Cleanup
+
+Everything created for joins and relays is removed automatically:
+
+- Join scripts expire with their enrollment token; download bundles after
+  30 minutes.
+- Installation credentials expire after two hours.
+- A node's relay access is removed when the node has not connected through
+  the relay for the number of days set in **Settings → Storage → Remove
+  unused relay access after** (default 30, 0 keeps it). The hub refreshes
+  "last used" while the node is connected through the relay.
+
 ## How the new node reaches the hub
 
 *After installation, the node reaches the hub* controls the node's own

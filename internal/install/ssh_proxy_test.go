@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Real-kia/payesh/internal/netproxy"
 )
@@ -219,5 +220,31 @@ func TestProxiedInstallUploadsArchitectureBuilds(t *testing.T) {
 		return nil, os.ErrNotExist
 	}); err == nil || SSHInstallFailureStage(err) != "select installation files" {
 		t.Fatalf("missing build: %v", err)
+	}
+}
+
+func TestDownloadSweepDeletesExpiredBundles(t *testing.T) {
+	root := t.TempDir()
+	paths := map[string]string{"payesh-install": filepath.Join(root, "payesh-install")}
+	_ = os.WriteFile(paths["payesh-install"], []byte("installer"), 0o700)
+	for _, name := range requiredArtifacts("node") {
+		paths[name] = filepath.Join(root, name)
+		_ = os.WriteFile(paths[name], []byte(name), 0o700)
+	}
+	clock := time.Now()
+	registry := &DownloadRegistry{Now: func() time.Time { return clock }}
+	bundle, err := registry.Publish(context.Background(), "https://hub.example.test", "node", paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(registry.leases[strings.Split(strings.TrimPrefix(bundle.URL, "https://hub.example.test/api/v1/install-artifacts/"), "/")[0]].path)
+	registry.Sweep()
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal("a live bundle was deleted")
+	}
+	clock = clock.Add(time.Hour)
+	registry.Sweep()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("expired bundle still on disk: %v", err)
 	}
 }

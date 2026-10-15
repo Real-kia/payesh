@@ -16,13 +16,16 @@ const DefaultDatabaseLimit int64 = 1000000000
 var ErrSettingsConflict = errors.New("storage settings changed; reload and retry")
 
 type StorageSettings struct {
-	MaxDatabaseBytes      int64  `json:"max_database_bytes"`
-	SampleSeconds         int    `json:"sample_seconds"`
-	PressureSampleSeconds int    `json:"pressure_sample_seconds"`
-	AdaptiveSampling      bool   `json:"adaptive_sampling"`
-	NotificationsEnabled  bool   `json:"notifications_enabled"`
-	Revision              int64  `json:"revision,string"`
-	PressureState         string `json:"pressure_state"`
+	MaxDatabaseBytes      int64 `json:"max_database_bytes"`
+	SampleSeconds         int   `json:"sample_seconds"`
+	PressureSampleSeconds int   `json:"pressure_sample_seconds"`
+	AdaptiveSampling      bool  `json:"adaptive_sampling"`
+	NotificationsEnabled  bool  `json:"notifications_enabled"`
+	// RelayCleanupDays removes relay access a node has not used for this many
+	// days (0 keeps it forever).
+	RelayCleanupDays int    `json:"relay_cleanup_days"`
+	Revision         int64  `json:"revision,string"`
+	PressureState    string `json:"pressure_state"`
 }
 type StorageStatus struct {
 	Settings               StorageSettings `json:"settings"`
@@ -39,7 +42,7 @@ type StorageNotification struct {
 }
 
 func DefaultStorageSettings() StorageSettings {
-	return StorageSettings{MaxDatabaseBytes: DefaultDatabaseLimit, SampleSeconds: 15, PressureSampleSeconds: 60, AdaptiveSampling: true, NotificationsEnabled: true, PressureState: "normal"}
+	return StorageSettings{MaxDatabaseBytes: DefaultDatabaseLimit, SampleSeconds: 15, PressureSampleSeconds: 60, AdaptiveSampling: true, NotificationsEnabled: true, RelayCleanupDays: 30, PressureState: "normal"}
 }
 func (p StorageSettings) Validate() error {
 	if p.MaxDatabaseBytes < 128000000 || p.MaxDatabaseBytes > 64000000000 {
@@ -47,6 +50,9 @@ func (p StorageSettings) Validate() error {
 	}
 	if p.SampleSeconds < 5 || p.SampleSeconds > 3600 || p.PressureSampleSeconds < p.SampleSeconds || p.PressureSampleSeconds > 3600 {
 		return errors.New("sampling must be 5–3600 seconds; storage-saving interval must be at least the normal interval")
+	}
+	if p.RelayCleanupDays < 0 || p.RelayCleanupDays > 3650 {
+		return errors.New("relay cleanup must be 0–3650 days")
 	}
 	return nil
 }
@@ -57,7 +63,7 @@ func (s *Store) initStorageSettings(ctx context.Context) error {
 }
 func (s *Store) StorageSettings(ctx context.Context) (StorageSettings, bool, error) {
 	p := DefaultStorageSettings()
-	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.Revision, &p.PressureState)
+	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,relay_cleanup_days,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.RelayCleanupDays, &p.Revision, &p.PressureState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, false, nil
 	}
@@ -80,7 +86,7 @@ func (s *Store) SaveStorageSettings(ctx context.Context, p StorageSettings) erro
 		}
 		p.Revision = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.Revision)
+	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,relay_cleanup_days=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.RelayCleanupDays, p.Revision)
 	if err != nil {
 		return err
 	}

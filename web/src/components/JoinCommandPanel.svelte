@@ -15,7 +15,6 @@
   let source = $state<Source>('github');
   let relayId = $state('');
   let nodeRoute = $state<'auto' | 'proxy' | 'direct'>('auto');
-  let relayName = $state('');
 
   function chooseSource(next: Source) {
     source = next;
@@ -35,7 +34,7 @@
     const serverName = existing?.name ?? name.trim();
     if (!serverName || busy) return;
     if (source === 'relay' && !relayId) { error = 'Choose a relay node.'; return; }
-    busy = true; error = ''; command = ''; expiresAt = ''; copied = false; relayName = '';
+    busy = true; error = ''; command = ''; expiresAt = ''; copied = false;
     if (PREVIEW_MODE) { error = 'Join commands are issued by the hub and are unavailable in the fixture preview.'; busy = false; return; }
     let createdId: string | null = null;
     let createdRevision = '0';
@@ -60,7 +59,6 @@
         const script = await apiClient.createJoinScript(created.id, { job_id: job.id, token: issued.token, ...(source === 'relay' ? { relay_server_id: relayId, node_route: nodeRoute } : {}) });
         command = script.command;
         expiresAt = script.expires_at;
-        relayName = script.relay ?? '';
         if (source === 'relay') { rememberRelay(relayId); onRelayUsed?.(); }
       }
     } catch (cause) {
@@ -96,20 +94,19 @@
         <button type="button" aria-pressed={source === 'hub'} onclick={() => chooseSource('hub')}><Icon name="server" size={13} />This hub</button>
         <button type="button" aria-pressed={source === 'relay'} onclick={() => chooseSource('relay')}><Icon name="shield" size={13} />Relay node</button>
       </div>
-      <small>{source === 'github' ? 'The server downloads the latest release from GitHub.' : source === 'hub' ? 'The server downloads this hub\'s build from the hub. Use it when GitHub is blocked.' : 'For servers the hub cannot reach directly: everything goes through a node in the server\'s network, set up automatically.'}</small>
     </fieldset>
     {#if source === 'relay'}
       <label>Relay node
         <select bind:value={relayId} required>
           <option value="" disabled>Choose a connected node</option>
-          {#each relays as relay (relay.id)}<option value={relay.id}>{relay.name} · {relay.address}{relay.ready ? ' · ready' : ''}</option>{/each}
+          {#each relays as relay (relay.id)}<option value={relay.id}>{relay.name} · {relay.address}</option>{/each}
         </select>
       </label>
-      <label>The node then reaches the hub
+      <label>Node connection
         <select bind:value={nodeRoute}>
-          <option value="auto">Directly when possible, otherwise through the relay</option>
-          <option value="proxy">Always through the relay</option>
-          <option value="direct">Always directly</option>
+          <option value="auto">Auto</option>
+          <option value="proxy">Always via relay</option>
+          <option value="direct">Always direct</option>
         </select>
       </label>
     {/if}
@@ -123,7 +120,6 @@
         <button class="icon-button" type="button" aria-label="Copy join command" title={copied ? 'Copied' : 'Copy command'} onclick={() => void copy()}><Icon name={copied ? 'check' : 'copy'} size={14} /></button>
       </div>
       <p class="muted"><Icon name="clock" size={12} /> Single-use token, valid until {new Date(expiresAt).toLocaleString()}. Treat it like a password.</p>
-      {#if relayName}<p class="muted"><Icon name="shield" size={12} /> Runs through relay {relayName}; the relay is ready.</p>{/if}
     </div>
   {/if}
 </article>
@@ -133,7 +129,6 @@
   .join-form label { display: grid; flex: 1 1 260px; gap: 7px; font-size: 13px; font-weight: 550; }
   .source { flex: 1 1 100%; min-width: 0; margin: 0; padding: 0; border: 0; }
   .source legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
-  .source small { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
   .join-command { display: grid; gap: 10px; margin-top: 16px; animation: rise-in var(--dur) var(--ease-out); }
   .terminal-block { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 14px; border-radius: var(--radius-md); background: var(--term-bg); color: var(--term-ink); }
   .terminal-block code { flex: 1; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }

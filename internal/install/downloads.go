@@ -199,6 +199,19 @@ func (r *DownloadRegistry) Publish(ctx context.Context, baseURL, role string, pa
 	return result, nil
 }
 
+// Sweep deletes bundles whose lease has ended. Publish also sweeps, but a
+// hub that stops publishing must not keep the files.
+func (r *DownloadRegistry) Sweep() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, lease := range r.leases {
+		if !lease.expires.After(r.now()) {
+			os.RemoveAll(filepath.Dir(lease.path))
+			delete(r.leases, key)
+		}
+	}
+}
+
 func writeDownloadFile(tw *tar.Writer, source, name string, mode int64) error {
 	info, err := os.Lstat(source)
 	if err != nil {

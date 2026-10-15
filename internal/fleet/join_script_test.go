@@ -121,3 +121,19 @@ func TestListRelaysShowsConfiguredRelays(t *testing.T) {
 		t.Fatalf("relays = %+v, %v", relays, err)
 	}
 }
+
+func TestSweepExpiredForgetsJoinScripts(t *testing.T) {
+	svc, _, targetID, job := joinFixture(t)
+	ctx := context.Background()
+	if _, err := svc.CreateJoinScript(ctx, targetID, joinScriptRequest{JobID: job.ID, Token: "tok_abcdefghijklmnop"}, "https://dash.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	svc.SweepExpired(time.Now())
+	if len(svc.joinScripts) != 1 {
+		t.Fatal("a live join script was swept")
+	}
+	svc.SweepExpired(time.Now().Add(time.Hour))
+	if len(svc.joinScripts) != 0 {
+		t.Fatal("an expired join script was kept")
+	}
+}

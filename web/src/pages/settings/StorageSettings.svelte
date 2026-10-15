@@ -19,6 +19,7 @@
   let pressureSamplingSeconds = $state(60);
   let adaptiveSampling = $state(true);
   let notificationsEnabled = $state(true);
+  let relayCleanupDays = $state(30);
   let busy = $state(false);
   let refreshBusy = false;
   let error = $state('');
@@ -36,6 +37,7 @@
     pressureSamplingSeconds = status.settings.pressure_sample_seconds;
     adaptiveSampling = status.settings.adaptive_sampling;
     notificationsEnabled = status.settings.notifications_enabled;
+    relayCleanupDays = status.settings.relay_cleanup_days ?? 30;
   }
 
   async function load(): Promise<void> {
@@ -53,7 +55,7 @@
     if (!storageStatus) return;
     busy = true; error = ''; saved = '';
     try {
-      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: notificationsEnabled });
+      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: notificationsEnabled, relay_cleanup_days: relayCleanupDays });
       saved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
       onSaved('Storage & sampling updated', `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${notificationsEnabled ? 'Enabled' : 'Disabled'}\n\nCollection settings take effect on the next sampling cycle.`);
       onNotificationsChanged();
@@ -107,6 +109,7 @@
       <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={busy || !isOwner} /></label>
       <label>Automatic sampling reduction<select bind:value={adaptiveSampling} disabled={busy || !isOwner}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
       <label>Storage notifications<select bind:value={notificationsEnabled} disabled={busy || !isOwner}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
+      <label>Remove unused relay access after (days, 0 = never)<input type="number" min="0" max="3650" step="1" required bind:value={relayCleanupDays} disabled={busy || !isOwner} /></label>
       {#if isOwner}<div class="setup-actions"><button class="button primary" type="submit" disabled={busy || PREVIEW_MODE}>{busy ? 'Saving…' : 'Save settings'}</button></div>{/if}
     </form>
   {:else if busy}

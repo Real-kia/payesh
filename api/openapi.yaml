@@ -1541,6 +1541,7 @@ components:
         pressure_sample_seconds: { type: integer, minimum: 5, maximum: 3600 }
         adaptive_sampling: { type: boolean }
         notifications_enabled: { type: boolean }
+        relay_cleanup_days: { type: integer, minimum: 0, maximum: 3650, default: 30, description: Relay access a node has not used for this many days is removed; 0 keeps it. }
         revision: { $ref: '#/components/schemas/DecimalUint64' }
         pressure_state: { type: string, enum: [normal, warning, saving] }
     StorageStatus:

@@ -181,3 +181,29 @@ FROM relay_nodes r JOIN servers s ON s.id=r.server_id ORDER BY 6 DESC, s.name`)
 	}
 	return relays, rows.Err()
 }
+
+// TouchRelayUse records that serverID connected from ip; when ip belongs to
+// one of its relays, that relay credential is in use.
+func (s *Store) TouchRelayUse(ctx context.Context, serverID contracts.ServerID, ip string, now time.Time) error {
+	if ip == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE relay_grants SET last_used_at=? WHERE target_server_id=? AND expires_at='' AND relay_server_id IN (
+ SELECT s.id FROM servers s LEFT JOIN server_locations l ON l.server_id=s.id WHERE s.address=? OR l.peer_ip=?)`, FormatPersistedTime(now), string(serverID), ip, ip)
+	return err
+}
+
+// PruneUnusedRelayGrants removes permanent node credentials not used through
+// the relay for the given number of days (never-used ones count from their
+// creation). days <= 0 keeps them.
+func (s *Store) PruneUnusedRelayGrants(ctx context.Context, now time.Time, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := FormatPersistedTime(now.Add(-time.Duration(days) * 24 * time.Hour))
+	result, err := s.db.ExecContext(ctx, `DELETE FROM relay_grants WHERE expires_at='' AND (CASE WHEN last_used_at<>'' THEN last_used_at ELSE created_at END) < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

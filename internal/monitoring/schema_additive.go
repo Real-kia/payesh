@@ -73,7 +73,12 @@ var additiveTables = []additiveTable{
 )`},
 }
 
-var additiveColumns = []additiveColumn{}
+var additiveColumns = []additiveColumn{
+	// Days after which relay access a node no longer uses is removed; 0 keeps it.
+	{table: "storage_settings", column: "relay_cleanup_days", ddl: `ALTER TABLE storage_settings ADD COLUMN relay_cleanup_days INTEGER NOT NULL DEFAULT 30`},
+	// When a node was last seen connecting through the relay.
+	{table: "relay_grants", column: "last_used_at", ddl: `ALTER TABLE relay_grants ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`},
+}
 
 var additiveIndexes = []additiveIndex{}
 

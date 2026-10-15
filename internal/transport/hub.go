@@ -57,6 +57,28 @@ type Connection struct {
 	seenJobKeys            map[string]struct{}
 	seenJobOrder           []string
 	leases                 map[string]monitoring.JobLease
+	// peerIP is the node's public source address; relayTouched throttles
+	// marking its relay credential as used.
+	peerIP       string
+	relayTouched time.Time
+}
+
+// touchRelayUse marks this node's relay credential as used when it connects
+// through a relay, at most once an hour.
+func (c *Connection) touchRelayUse(ctx context.Context, now time.Time) {
+	c.stateMu.Lock()
+	ip := c.peerIP
+	due := ip != "" && now.Sub(c.relayTouched) >= time.Hour
+	if due {
+		c.relayTouched = now
+	}
+	c.stateMu.Unlock()
+	if !due {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = c.hub.Store.TouchRelayUse(writeCtx, c.ServerID, ip, now)
 }
 
 func NewHub(ca *CertificateAuthority, store *monitoring.Store) (*Hub, error) {

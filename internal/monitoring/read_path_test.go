@@ -379,3 +379,73 @@ func TestDuplicateServerDetection(t *testing.T) {
 		t.Fatalf("GetServer duplicate = %q %q", single.DuplicateOf, single.DuplicateOfName)
 	}
 }
+
+func TestUnusedRelayAccessIsRemoved(t *testing.T) {
+	store := openDiskStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	relay := testServer()
+	relay.ID, relay.Address, relay.Role = "server-relay-clean-01", "203.0.113.5", "node"
+	if err := store.UpsertServer(ctx, relay); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []contracts.ServerID{"server-via-relay-0001", "server-direct-node-01"} {
+		node := testServer()
+		node.ID, node.Role = id, "node"
+		if err := store.UpsertServer(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	created := now.Add(-40 * 24 * time.Hour)
+	if _, err := store.EnsureRelayNode(ctx, relay.ID, DefaultRelayPort, created); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []contracts.ServerID{"server-via-relay-0001", "server-direct-node-01"} {
+		if err := store.PutRelayGrant(ctx, RelayGrantRecord{RelayServerID: relay.ID, Username: "node-" + string(id), PasswordSHA256: strings.Repeat("a", 64), Destinations: []string{"hub:9797"}, TargetServerID: id}, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One node connects from the relay's address; the other connects directly.
+	if err := store.TouchRelayUse(ctx, "server-via-relay-0001", "203.0.113.5", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TouchRelayUse(ctx, "server-direct-node-01", "198.51.100.77", now); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := store.PruneUnusedRelayGrants(ctx, now, 0); err != nil || removed != 0 {
+		t.Fatalf("days=0 must keep everything: %d %v", removed, err)
+	}
+	removed, err := store.PruneUnusedRelayGrants(ctx, now, 30)
+	if err != nil || removed != 1 {
+		t.Fatalf("removed %d, %v", removed, err)
+	}
+	policy, _ := store.RelayPolicy(ctx, relay.ID, now)
+	if len(policy.Grants) != 1 || policy.Grants[0].Username != "node-server-via-relay-0001" {
+		t.Fatalf("kept grants: %+v", policy.Grants)
+	}
+}
+
+func TestRelayCleanupSettingRoundTrip(t *testing.T) {
+	store, err := OpenStore(context.Background(), filepath.Join(t.TempDir(), "payesh.db"), StoreOptions{MaxBytes: DefaultDatabaseLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	settings, _, err := store.StorageSettings(ctx)
+	if err != nil || settings.RelayCleanupDays != 30 {
+		t.Fatalf("default relay cleanup = %d, %v", settings.RelayCleanupDays, err)
+	}
+	settings.RelayCleanupDays = 7
+	if err := store.SaveStorageSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if again, _, _ := store.StorageSettings(ctx); again.RelayCleanupDays != 7 {
+		t.Fatalf("saved relay cleanup = %d", again.RelayCleanupDays)
+	}
+	again, _, _ := store.StorageSettings(ctx)
+	again.RelayCleanupDays = -1
+	if err := store.SaveStorageSettings(ctx, again); err == nil {
+		t.Fatal("negative days accepted")
+	}
+}

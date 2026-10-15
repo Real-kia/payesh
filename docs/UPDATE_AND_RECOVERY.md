@@ -65,3 +65,9 @@ does not source the unprivileged dashboard's configuration.
 Servers installed before this feature need one `sudo payesh update` to add the
 worker; until then the page shows the command instead of an Update button. After
 login, every user sees a dismissible notice when GitHub has a newer release.
+
+## Updating all nodes
+
+**Settings → Updates** shows how many connected nodes run the latest release
+and offers **Update all nodes**, which queues the signed update for every
+connected node that is behind (in groups of up to 20).
