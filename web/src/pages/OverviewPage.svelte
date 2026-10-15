@@ -4,6 +4,7 @@
   import ServerTable from '../components/ServerTable.svelte';
   import LoadingSkeleton from '../components/LoadingSkeleton.svelte';
   import StatusPill from '../components/StatusPill.svelte';
+  import LiveIndicator from '../components/LiveIndicator.svelte';
   import { formatBytes, percentage } from '../lib/format';
   import { PREVIEW_MODE } from '../lib/env';
   import type { Job } from '../api';
@@ -27,7 +28,9 @@
     onNavigate,
     onRetry,
     onCancelJob,
-    onReloadJob
+    onReloadJob,
+    refreshing = false,
+    updatedAt = null
   }: {
     servers: PreviewServer[];
     loadState: 'ready' | 'loading' | 'empty' | 'error';
@@ -47,6 +50,8 @@
     onRetry: () => void;
     onCancelJob: () => void;
     onReloadJob: () => void;
+    refreshing?: boolean;
+    updatedAt?: number | null;
   } = $props();
 
   const healthy = $derived(servers.filter((server) => server.displayState === 'healthy').length);
@@ -61,8 +66,7 @@
       <h1 id="overview-title" tabindex="-1">Fleet overview</h1>
       <p class="lede">Health, resources and bandwidth across every server.</p>
     </div>
-    <!-- The dot pulses each time fresh fleet data arrives. -->
-    <span class="live-badge">{#key servers}<span class="live-ping"></span>{/key}{PREVIEW_MODE ? 'Fixture preview' : 'Live · refreshes every 15s'}</span>
+    {#if PREVIEW_MODE}<span class="live-badge">Fixture preview</span>{:else}<LiveIndicator {refreshing} {updatedAt} />{/if}
   </div>
 
   {#if loadState === 'loading'}

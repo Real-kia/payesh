@@ -61,6 +61,8 @@ type Connection struct {
 	// marking its relay credential as used.
 	peerIP       string
 	relayTouched time.Time
+	// addressesAt throttles address reports from this connection.
+	addressesAt time.Time
 }
 
 // touchRelayUse marks this node's relay credential as used when it connects

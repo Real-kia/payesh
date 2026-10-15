@@ -52,6 +52,19 @@ type Server struct {
 	// or connection source), typically after reinstalling under a new record.
 	DuplicateOf     ServerID `json:"duplicate_of,omitempty"`
 	DuplicateOfName string   `json:"duplicate_of_name,omitempty"`
+	// Tags are operator-chosen labels used to group and filter servers.
+	Tags []string `json:"tags,omitempty"`
+	// Addresses are every address known for the server: the configured
+	// address, the address it connects from, and the addresses its node
+	// reports on its own interfaces.
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+// NodeAddresses lists the addresses on a node's interfaces. Agents send it
+// only after the hub's acknowledgement asks for it, so older hubs never see
+// the message.
+type NodeAddresses struct {
+	Addresses []string `json:"addresses"`
 }
 
 type Envelope struct {
@@ -102,6 +115,9 @@ type Acknowledgement struct {
 	// Relay is sent only to agents advertising the "relay" capability. Nil
 	// means "unchanged"; Enabled=false stops the relay.
 	Relay *RelayPolicy `json:"relay,omitempty"`
+	// Addresses asks the agent to report its interface addresses. Sent only
+	// to agents advertising the "addresses" capability.
+	Addresses bool `json:"addresses,omitempty"`
 }
 
 // RelayPolicy turns a node into an authenticated CONNECT relay for servers the

@@ -233,6 +233,36 @@ paths:
         '201': { description: Pending server identity, content: { application/json: { schema: { $ref: '#/components/schemas/Server' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /overview:
+    get:
+      operationId: getOverview
+      summary: Current values and a 15-minute series for every visible server in one cached, gzip-capable response
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      responses:
+        '200': { description: Fleet overview, content: { application/json: { schema: { $ref: '#/components/schemas/Overview' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /servers/{serverId}/tags:
+    parameters:
+      - $ref: '#/components/parameters/ServerID'
+    put:
+      operationId: setServerTags
+      summary: Replace a server's tags (at most 16, each 1–32 printable characters, no commas)
+      security:
+        - SessionCookie: []
+          CSRFToken: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFHeader'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ServerTags' } } }
+      responses:
+        '200': { description: Saved tags, normalized, content: { application/json: { schema: { $ref: '#/components/schemas/ServerTags' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /servers/{serverId}:
     parameters:
       - $ref: '#/components/parameters/ServerID'
@@ -1154,6 +1184,49 @@ components:
       properties:
         username: { type: string, minLength: 3, maxLength: 128 }
         password: { type: string, writeOnly: true }
+    ServerTags:
+      type: object
+      required: [tags]
+      additionalProperties: false
+      properties:
+        tags: { type: array, maxItems: 16, items: { type: string, minLength: 1, maxLength: 32 } }
+    OverviewSeries:
+      type: object
+      description: Parallel columns; null marks a missing value.
+      properties:
+        t: { type: array, maxItems: 1000, items: { type: integer, format: int64 } }
+        cpu: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+        memory: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+        swap: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+        disk: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+        rx: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+        tx: { type: array, maxItems: 1000, items: { type: number, nullable: true } }
+    Overview:
+      type: object
+      required: [generated_at, items]
+      properties:
+        generated_at: { type: string, format: date-time }
+        items:
+          type: array
+          maxItems: 10000
+          items:
+            type: object
+            required: [server_id, series]
+            properties:
+              server_id: { type: string }
+              observed_at: { type: string, format: date-time }
+              cpu: { type: number, nullable: true }
+              memory: { type: number, nullable: true }
+              swap: { type: number, nullable: true }
+              disk: { type: number, nullable: true }
+              rx: { type: number, nullable: true, description: Bytes per second }
+              tx: { type: number, nullable: true, description: Bytes per second }
+              series: { $ref: '#/components/schemas/OverviewSeries' }
+              billing:
+                type: object
+                properties:
+                  counted_bytes: { type: string }
+                  allowance_bytes: { type: string }
     Server:
       type: object
       required: [id, name, role, architecture, platform, capabilities, connection_state, freshness_state, configuration_revision]
@@ -1163,6 +1236,8 @@ components:
         address: { type: string, maxLength: 255 }
         duplicate_of: { type: string, description: 'Set on a disconnected record that is evidently the same machine as this connected server (shared address or connection source).' }
         duplicate_of_name: { type: string }
+        tags: { type: array, maxItems: 16, items: { type: string, maxLength: 32 } }
+        addresses: { type: array, maxItems: 34, description: 'Every known address: the configured one, the address the node connects from, and the addresses on its interfaces (public first).', items: { type: string } }
         role: { type: string, enum: [standalone, hub, node, cli-only] }
         architecture: { type: string }
         platform: { type: string }

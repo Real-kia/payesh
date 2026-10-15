@@ -618,6 +618,9 @@ func tokenPermissionCategory(r *http.Request) string {
 		}
 		return TokenCategoryOperations
 	}
+	if path == "/api/v1/overview" {
+		return TokenCategoryMonitoring
+	}
 	if strings.HasPrefix(path, "/api/v1/servers/") {
 		parts := strings.Split(strings.TrimPrefix(path, "/api/v1/servers/"), "/")
 		if len(parts) == 1 || parts[1] == "" {
@@ -635,7 +638,7 @@ func tokenPermissionCategory(r *http.Request) string {
 			return TokenCategoryTraffic
 		case "modules":
 			return TokenCategoryPackages
-		case "enrollment", "enrollment-token", "install", "join-script", "control":
+		case "enrollment", "enrollment-token", "install", "join-script", "control", "tags":
 			return TokenCategoryOperations
 		}
 	}

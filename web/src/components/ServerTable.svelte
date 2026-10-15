@@ -5,7 +5,7 @@
   import StatusPill from './StatusPill.svelte';
   import { formatNetworkRate } from '../network';
   import { formatHeartbeatInTz } from '../timezone';
-  import { clampPercent, currentNetworkRate, displayAddress, metricValue, resourceLevel, roleLabel, stateLabel } from '../lib/format';
+  import { allAddresses, clampPercent, currentNetworkRate, displayAddress, metricValue, resourceLevel, roleLabel, stateLabel } from '../lib/format';
   import type { PreviewServer } from '../preview/fixtures';
 
   let { servers, timezone, onSelect, nameHeading = 'Server & address' }: {
@@ -65,7 +65,7 @@
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
           <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span></strong>
-          <small class="mono">{displayAddress(server)} · {detail(server)}</small>
+          <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if} · {detail(server)}</small>
         </div>
         <div class="col-metric">
           {#if online}
@@ -211,4 +211,5 @@
     .col-metric:nth-child(4), .col-disk { display: none; }
   }
   .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 11.5px; font-weight: 550; }
+  .more-addresses { color: var(--muted); font-weight: 600; }
 </style>

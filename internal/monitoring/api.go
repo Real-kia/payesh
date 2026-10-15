@@ -21,6 +21,8 @@ type API struct {
 	trafficForecast http.Handler
 	// metricCache coalesces identical metric reads from open dashboards.
 	metricCache responseCache
+	// overviewCache does the same for the all-servers overview.
+	overviewCache responseCache
 }
 
 func NewAPI(store *Store, token string) (*API, error) {
@@ -73,6 +75,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/v1/servers" {
 		a.listServers(w, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/overview" {
+		a.serveOverview(w, r)
 		return
 	}
 	const prefix = "/api/v1/servers/"

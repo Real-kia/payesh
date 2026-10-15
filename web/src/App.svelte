@@ -18,12 +18,15 @@
   import InstallRouteFields, { type InstallRoute, type NodeRoute } from './components/InstallRouteFields.svelte';
   import { relayOptions, rememberRelay } from './lib/relays';
   import CommandPalette, { type Command } from './components/CommandPalette.svelte';
-  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type InstallRequest, type RelayInfo, type Server as ApiServer } from './api';
+  import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type InstallRequest, type RelayInfo, type Overview, type Server as ApiServer } from './api';
   import type { DisplayState, PreviewChartData, PreviewServer } from './preview/fixtures';
   import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
   import { PREVIEW_MODE } from './lib/env';
   import { operationKey } from './lib/ops';
-  import { displayAddress, stateLabel, sumNetworkRate } from './lib/format';
+  import { allAddresses, displayAddress, stateLabel, sumNetworkRate } from './lib/format';
+  import TagEditor from './components/TagEditor.svelte';
+  import ServerToolbar from './components/ServerToolbar.svelte';
+  import { filterServers, loadFilter, saveFilter } from './lib/serverFilter';
   import { applyAppearance, loadAppearance, resolveTheme, saveAppearance, type Appearance } from './lib/appearance';
   import type { ConfirmOptions, DialogTone } from './lib/dialogs';
 
@@ -408,7 +411,16 @@
   }
 
   $: selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0];
+  $: fleetTags = [...new Set(servers.flatMap((server) => server.tags ?? []))].sort((a, b) => a.localeCompare(b));
+
+  async function saveServerTags(serverId: string, tags: string[]): Promise<void> {
+    const saved = await apiClient.setServerTags(serverId, tags);
+    servers = servers.map((server) => server.id === serverId ? { ...server, tags: saved.tags } : server);
+  }
   $: displayServers = servers;
+  let serversFilter = loadFilter('servers');
+  $: saveFilter('servers', serversFilter);
+  $: filteredServers = filterServers(displayServers, serversFilter);
   $: hubVersion = servers.find((server) => server.role !== 'node')?.version ?? '';
   $: attentionCount = displayServers.filter((server) => server.displayState !== 'healthy').length;
   const pageTitles: Record<Page, string> = { overview: 'Overview', monitoring: 'Server monitoring', servers: 'Servers', server: 'Server', alerts: 'Alerts', logs: 'Logs', packages: 'Packages', settings: 'Settings', 'add-server': 'Add server', 'install-progress': 'Installation', onboarding: 'Setup' };
@@ -1166,7 +1178,7 @@
   function emptyApiServer(server: ApiServer): PreviewServer {
     const caps = (server.capabilities && server.capabilities.length > 0) ? server.capabilities : ['metrics', 'traffic'];
     return {
-      id: server.id, name: server.name, countryCode: server.country_code, address: server.address, duplicateOf: server.duplicate_of, duplicateOfName: server.duplicate_of_name, role: server.role, architecture: server.architecture,
+      id: server.id, name: server.name, countryCode: server.country_code, address: server.address, duplicateOf: server.duplicate_of, duplicateOfName: server.duplicate_of_name, tags: server.tags ?? [], addresses: server.addresses ?? [], role: server.role, architecture: server.architecture,
       platform: server.platform, capabilities: [...caps], version: server.version ?? '—',
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
@@ -1239,31 +1251,45 @@
   }
 
   let liveRefreshBusy = false;
+  let liveUpdatedAt: number | null = null;
 
+  // One overview request gives every card its numbers and 15-minute series.
+  function applyOverview(overview: Overview): void {
+    const byId = new Map(overview.items.map((item) => [item.server_id, item]));
+    servers = servers.map((server) => {
+      const item = byId.get(server.id);
+      if (!item) return server;
+      const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
+      const ranges = server.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
+      const series = item.series;
+      return {
+        ...server,
+        metrics: { cpu: item.cpu, memory: item.memory, swap: item.swap, disk: item.disk },
+        latestMetricAt: item.observed_at ?? server.latestMetricAt,
+        traffic: item.billing ? { ...server.traffic, countedBytes: item.billing.counted_bytes, allowanceBytes: item.billing.allowance_bytes } : server.traffic,
+        metricHistory: { ranges: { ...ranges, '15m': { timestamps: series.t, cpu: series.cpu, memory: series.memory, swap: series.swap, disk: series.disk, networkRx: series.rx, networkTx: series.tx, coverage: series.t.length ? 'complete' : 'unavailable' } } }
+      };
+    });
+    liveUpdatedAt = Date.now();
+  }
+
+  // Two requests per refresh however many servers: the server list (state)
+  // and the overview (numbers). The hub caches both; nodes are never asked.
   async function refreshMonitoring(): Promise<void> {
     if (liveRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || !['overview', 'monitoring', 'servers'].includes(activePage) || document.hidden) return;
     liveRefreshBusy = true;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const page = await apiClient.listServers({ signal: controller.signal });
-      const refreshed = await mapWithConcurrency(page.items, 4, controller.signal, async (item, signal) => {
-        const existing = servers.find((server) => server.id === item.id);
-        const server = { ...emptyApiServer(item), metrics: existing?.metrics ?? emptyApiServer(item).metrics, latestMetricAt: existing?.latestMetricAt, traffic: existing?.traffic ?? emptyApiServer(item).traffic, metricHistory: existing?.metricHistory };
-        try {
-          const query = await apiClient.queryMetrics(item.id, { ...alignedWindow(120_000), resolution: 'raw', signal });
-          applyMetric(query, server);
-          const chart = metricChart(query);
-          const empty = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' as const };
-          const previous = existing?.metricHistory?.ranges['15m'];
-          server.metricHistory = { ranges: { '15m': previous ? mergeMetricCharts(previous, chart, 15 * 60) : chart, '1h': existing?.metricHistory?.ranges['1h'] ?? empty, '24h': existing?.metricHistory?.ranges['24h'] ?? empty } };
-        } catch (error) {
-          if (error instanceof ApiError && error.authExpired) authExpired = true;
-          server.metricHistory = existing?.metricHistory;
-        }
-        return server;
+      const [page, overview] = await Promise.all([apiClient.listServers({ signal: controller.signal }), apiClient.getOverview({ signal: controller.signal })]);
+      if (controller.signal.aborted) return;
+      const existing = new Map(servers.map((server) => [server.id, server]));
+      servers = page.items.map((item) => {
+        const previous = existing.get(item.id);
+        const fresh = emptyApiServer(item);
+        return previous ? { ...fresh, metrics: previous.metrics, latestMetricAt: previous.latestMetricAt, traffic: previous.traffic, metricHistory: previous.metricHistory } : fresh;
       });
-      if (['overview', 'monitoring', 'servers'].includes(activePage) && !controller.signal.aborted) servers = refreshed;
+      applyOverview(overview);
     } catch (error) { if (error instanceof ApiError && error.authExpired) authExpired = true; }
     finally { window.clearTimeout(timeout); liveRefreshBusy = false; }
   }
@@ -1303,37 +1329,6 @@
       window.clearTimeout(timeout);
       selectedRefreshBusy = false;
     }
-  }
-
-  async function enrichApiServer(server: PreviewServer, signal: AbortSignal): Promise<{ server: PreviewServer; partial: boolean }> {
-    const [detailResult, metricResults, trafficResult] = await Promise.all([
-      apiClient.getServer(server.id, { signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; }),
-      Promise.allSettled((['15m', '1h', '24h'] as ChartRange[]).map((range) => { const window = rangeWindow(range); return apiClient.queryMetrics(server.id, { ...window, resolution: range === '15m' ? 'raw' : range === '1h' ? 'minute' : 'hour', signal }); })),
-      apiClient.queryTraffic(server.id, { ...rangeWindow('24h'), limit: 200, signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
-    ]);
-    const enriched = detailResult ? emptyApiServer(detailResult) : { ...server, capabilities: [...server.capabilities] };
-    let partial = !detailResult;
-    const ranges: Record<ChartRange, PreviewChartData> = { '15m': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' }, '1h': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' }, '24h': { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' } };
-    (['15m', '1h', '24h'] as ChartRange[]).forEach((range, index) => {
-      const result = metricResults[index];
-      if (result.status === 'fulfilled') {
-        ranges[range] = metricChart(result.value);
-        if (range === '15m') applyMetric(result.value, enriched);
-      } else {
-        if (range === '15m') {
-          partial = partial || server.capabilities.includes('metrics');
-        }
-        if (result.reason instanceof ApiError && result.reason.authExpired) authExpired = true;
-      }
-    });
-    if (metricResults.some((result) => result.status === 'fulfilled')) enriched.metricHistory = { ranges };
-    if (trafficResult?.periods[0]) {
-      const period = trafficResult.periods[0];
-      enriched.traffic = { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity };
-    } else if (trafficResult === null) {
-      partial = partial || server.capabilities.includes('traffic');
-    }
-    return { server: enriched, partial };
   }
 
   async function loadPreviewData() {
@@ -1400,10 +1395,12 @@
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
       void loadNotifications();
-      const enriched = await mapWithConcurrency(servers, 4, controller.signal, (server, signal) => enrichApiServer(server, signal));
-      if (!controller.signal.aborted) {
-        servers = enriched.map((result) => result.server);
-        if (enriched.some((result) => result.partial)) partialWarning = 'Some server data could not be loaded; unavailable values are shown explicitly.';
+      try {
+        const overview = await apiClient.getOverview({ signal: controller.signal });
+        if (!controller.signal.aborted) applyOverview(overview);
+      } catch (error) {
+        if (!controller.signal.aborted) partialWarning = 'Live values could not be loaded yet; they refresh automatically.';
+        if (error instanceof ApiError && error.authExpired) throw error;
       }
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -1606,7 +1603,7 @@
         </div>
       </section>
     {:else if activePage === 'monitoring'}
-      <MonitoringPage servers={displayServers} timezone={currentTimezone} download={fleetDownload} upload={fleetUpload} onSelect={selectServer} />
+      <MonitoringPage servers={displayServers} timezone={currentTimezone} download={fleetDownload} upload={fleetUpload} onSelect={selectServer} refreshing={liveRefreshBusy} updatedAt={liveUpdatedAt} />
     {:else if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading">
@@ -1617,7 +1614,12 @@
           {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}><Icon name="plus" size={15} /><span>Add server</span></button>{/if}
         </div>
         {#if servers.length}
-          <ServerTable servers={displayServers} timezone={currentTimezone} onSelect={selectServer} />
+          <ServerToolbar servers={displayServers} bind:state={serversFilter} shown={filteredServers.length} />
+          {#if filteredServers.length}
+            <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} />
+          {:else}
+            <div class="unavailable-panel"><strong>No servers match</strong></div>
+          {/if}
         {:else}
           <div class="state-panel"><div class="state-icon"><Icon name="servers" size={24} /></div><h2>No servers yet</h2><p>Add a Linux server over SSH or with a one-line join command.</p></div>
         {/if}
@@ -1867,7 +1869,8 @@
         </div>
 
         <dl class="server-meta-bar">
-          <div class="meta-item"><dt>Address</dt><dd class="mono">{displayAddress(selectedServer)}</dd></div>
+          <div class="meta-item"><dt>{allAddresses(selectedServer).length > 1 ? 'Addresses' : 'Address'}</dt><dd class="mono address-list">{#each allAddresses(selectedServer).length ? allAddresses(selectedServer) : [displayAddress(selectedServer)] as address (address)}<span>{address}</span>{/each}</dd></div>
+          <div class="meta-item tags-item"><dt>Tags</dt><dd><TagEditor tags={selectedServer.tags ?? []} suggestions={fleetTags} readonly={PREVIEW_MODE || myAccount?.permission === 'read'} onSave={(tags) => saveServerTags(selectedServer.id, tags)} /></dd></div>
           <div class="meta-item"><dt>Role</dt><dd class="capitalize">{selectedServer.role === 'node' ? 'Node' : 'Master'}</dd></div>
           <div class="meta-item"><dt>Connection</dt><dd class="capitalize"><span class={`dot ${selectedServer.connectionState}`}></span>{selectedServer.connectionState.replace('-', ' ')}</dd></div>
           <div class="meta-item"><dt>Freshness</dt><dd class="capitalize">{selectedServer.freshnessState}</dd></div>
@@ -1947,6 +1950,8 @@
     {:else}
       <OverviewPage
         servers={displayServers}
+        refreshing={liveRefreshBusy}
+        updatedAt={liveUpdatedAt}
         loadState={previewState}
         {apiError}
         readOnly={myAccount?.permission === 'read'}
@@ -2209,6 +2214,8 @@
   .meta-item dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 550; }
   .meta-item.note dd { color: var(--warning); }
+  .meta-item dd.address-list { flex-wrap: wrap; gap: 2px 10px; }
+  .meta-item.tags-item { min-width: 0; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
   .dot.connected { background: var(--success); }
   .dot.disconnected { background: var(--danger); }

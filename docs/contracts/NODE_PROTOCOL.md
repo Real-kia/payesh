@@ -88,6 +88,18 @@ field for older nodes, whose strict decoders reject unknown fields. Policy can
 be included on a retryable rejected batch so storage pressure also slows
 future collection while the existing batch remains in the spool.
 
+## Interface addresses extension
+
+Nodes advertising the `addresses` capability receive `"addresses": true` in
+sample acknowledgements. Only then do they send an `addresses` message with
+the body `{"addresses":["198.51.100.7","2001:db8::7"]}`: once per connection
+and again when the list changes, reading interfaces at most every 10 minutes.
+Loopback, link-local and container or VPN bridge interfaces are left out. The
+hub keeps at most 32 valid addresses, public ones first, accepts at most one
+report per minute per connection, and shows them next to the configured
+address and the connection source. Older hubs never ask, so they never see
+the message; older nodes never advertise the capability.
+
 ## Transport port migration extension
 
 The default node channel uses TLS on port 9797, independently of dashboard

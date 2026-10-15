@@ -1014,8 +1014,9 @@ func (s *Store) RefreshServerStates(ctx context.Context, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	stale := FormatPersistedTime(now.Add(-serverFreshAfter))
-	disconnected := FormatPersistedTime(now.Add(-serverDisconnectedAfter))
+	freshAfter, disconnectedAfter := s.livenessWindows(ctx)
+	stale := FormatPersistedTime(now.Add(-freshAfter))
+	disconnected := FormatPersistedTime(now.Add(-disconnectedAfter))
 	// Only rows whose derived state changes are written, so a steady fleet
 	// costs a read instead of rewriting every server row.
 	_, err := s.db.ExecContext(ctx, `WITH derived AS (SELECT id,
@@ -1026,6 +1027,24 @@ FROM servers)
 UPDATE servers SET connection_state=derived.connection_state,freshness_state=derived.freshness_state,freshness_reason=derived.freshness_reason
 FROM derived WHERE derived.id=servers.id AND (servers.connection_state IS NOT derived.connection_state OR servers.freshness_state IS NOT derived.freshness_state OR servers.freshness_reason IS NOT derived.freshness_reason)`, disconnected, stale)
 	return err
+}
+
+// livenessWindows scales the stale and disconnected thresholds with the
+// sampling interval nodes currently use (each sample is a heartbeat): stale
+// after three missed samples, disconnected after six, never below the 45 s
+// and 90 s defaults. Fixed thresholds made every node look stale whenever the
+// interval was 45 s or longer, including the 60 s storage-saving interval.
+func (s *Store) livenessWindows(ctx context.Context) (time.Duration, time.Duration) {
+	fresh, disconnected := serverFreshAfter, serverDisconnectedAfter
+	settings, configured, err := s.StorageSettings(ctx)
+	if err != nil || !configured {
+		return fresh, disconnected
+	}
+	interval := time.Duration(settings.EffectiveSampleSeconds()) * time.Second
+	if interval <= 0 {
+		return fresh, disconnected
+	}
+	return max(fresh, 3*interval), max(disconnected, 6*interval)
 }
 
 // readRefreshInterval bounds how often read requests re-derive server state.
@@ -1236,7 +1255,7 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if len(serverID) < 16 || len(serverID) > 128 || !isSafeServerID(string(serverID)) {
 		return contracts.Server{}, false, errors.New("server id must be a bounded URL-safe identifier")
 	}
-	row := s.readDB().QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),`+duplicateOfColumn+` FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
+	row := s.readDB().QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),`+duplicateOfColumn+`,`+tagsColumn+`,COALESCE(server_locations.peer_ip,''),COALESCE(server_locations.addresses,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
 	server, err := scanServer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Server{}, false, nil
@@ -1294,7 +1313,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 	if err != nil {
 		return ServerPage{}, err
 	}
-	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),` + duplicateOfColumn + ` FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
+	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),` + duplicateOfColumn + `,` + tagsColumn + `,COALESCE(server_locations.peer_ip,''),COALESCE(server_locations.addresses,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
 	args := make([]any, 0, len(ids)+4)
 	conditions := []string{}
 	if len(ids) > 0 {
@@ -1361,6 +1380,9 @@ func decodeServerCursor(value string) (serverCursor, error) {
 
 type scanner interface{ Scan(...any) error }
 
+// tagsColumn lists a server's tags separated by U+001F.
+const tagsColumn = `COALESCE((SELECT group_concat(tag,char(31)) FROM server_tags WHERE server_tags.server_id=servers.id),'')`
+
 // duplicateOfColumn finds, for a disconnected server, a connected server
 // that is evidently the same machine: one record's address equals the other's
 // address or connection source. Two connection sources alone are not enough,
@@ -1373,13 +1395,18 @@ const duplicateOfColumn = `COALESCE((SELECT b.id||char(31)||b.name FROM servers 
 
 func scanServer(row scanner) (contracts.Server, error) {
 	var server contracts.Server
-	var id, capabilitiesJSON, revision, duplicate string
+	var id, capabilitiesJSON, revision, duplicate, tags, peerIP, reported string
 	var heartbeat sql.NullString
-	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision, &server.CountryCode, &duplicate); err != nil {
+	if err := row.Scan(&id, &server.Name, &server.Address, &server.Role, &server.Architecture, &server.Platform, &capabilitiesJSON, &server.Version, &heartbeat, &server.ConnectionState, &server.FreshnessState, &server.FreshnessReason, &revision, &server.CountryCode, &duplicate, &tags, &peerIP, &reported); err != nil {
 		return contracts.Server{}, err
 	}
+	server.Addresses = serverAddresses(server.Address, peerIP, reported)
 	if dupID, dupName, ok := strings.Cut(duplicate, "\x1f"); ok {
 		server.DuplicateOf, server.DuplicateOfName = contracts.ServerID(dupID), dupName
+	}
+	if tags != "" {
+		server.Tags = strings.Split(tags, "\x1f")
+		sort.Strings(server.Tags)
 	}
 	server.ID = contracts.ServerID(id)
 	if err := json.Unmarshal([]byte(capabilitiesJSON), &server.Capabilities); err != nil {

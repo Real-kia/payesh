@@ -116,7 +116,8 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	relay := &netproxy.RelayListener{}
 	defer relay.Apply(0, nil)
 	var relayPolicies atomic.Int32
-	relayClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[relayID], TrustPEM: trust, Spool: newSpool(), Hello: hello(RelayCapability),
+	relayClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[relayID], TrustPEM: trust, Spool: newSpool(), Hello: hello(RelayCapability, AddressesCapability),
+		Addresses: func() []string { return []string{"198.51.100.7", "10.0.0.2"} },
 		RelayPolicy: func(policy contracts.RelayPolicy) {
 			relayPolicies.Add(1)
 			grants := make([]netproxy.Grant, 0, len(policy.Grants))
@@ -137,6 +138,17 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	if relayPolicies.Load() == 0 || relay.Port() != relayPort {
 		t.Fatalf("relay policy not applied: calls=%d port=%d", relayPolicies.Load(), relay.Port())
 	}
+	// The hub asked for and stored the relay node's interface addresses.
+	var reported []string
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if server, ok, err := store.GetServer(ctx, relayID); err == nil && ok && len(server.Addresses) > 0 {
+			reported = server.Addresses
+			break
+		}
+	}
+	if len(reported) < 2 || reported[len(reported)-2] != "198.51.100.7" || reported[len(reported)-1] != "10.0.0.2" {
+		t.Fatalf("reported addresses = %v", reported)
+	}
 
 	// The target can only reach the hub through the relay.
 	proxy, err := netproxy.Parse("http://node-target:node-secret@127.0.0.1:" + strconv.Itoa(relayPort))
@@ -145,12 +157,13 @@ func TestNodeReachesHubThroughRelayNode(t *testing.T) {
 	}
 	var targetPolicies atomic.Int32
 	targetClient := &AgentClient{URL: "wss://" + hubAddr + "/node/v1", Identity: identities[targetID], TrustPEM: trust, Spool: newSpool(), Hello: hello(), Proxy: proxy,
+		Addresses:   func() []string { targetPolicies.Add(100); return nil },
 		RelayPolicy: func(contracts.RelayPolicy) { targetPolicies.Add(1) }}
 	if err := run(targetClient, sample(targetID, 2)); err != nil {
 		t.Fatalf("target agent through relay: %v", err)
 	}
 	if targetPolicies.Load() != 0 {
-		t.Fatal("an agent without the relay capability received a relay policy")
+		t.Fatal("an agent without the relay or addresses capability received a relay policy or an address request")
 	}
 	page, err := store.QueryMetrics(ctx, targetID, now.Add(-time.Minute), now.Add(time.Minute), 10, "")
 	if err != nil {

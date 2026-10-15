@@ -52,6 +52,9 @@ export type Server = {
   /** Set on a disconnected record that is evidently the same machine as a connected one. */
   duplicate_of?: string;
   duplicate_of_name?: string;
+  tags?: string[];
+  /** Configured address, connection source and the node's interface addresses. */
+  addresses?: string[];
 };
 
 export type ServerPage = { items: Server[]; next_cursor?: string };
@@ -150,6 +153,9 @@ export type SetupRequest = { setup_secret: string; username: string; password: s
 export type EnrollmentRequest = { token: string; idempotency_key: string };
 export type EnrollmentToken = { server_id: string; token: string; expires_at: string };
 export type UpdateRequest = { release: string; selected_server_ids: string[]; idempotency_key: string; expires_at?: string };
+export type OverviewSeries = { t: number[]; cpu: Array<number | null>; memory: Array<number | null>; swap: Array<number | null>; disk: Array<number | null>; rx: Array<number | null>; tx: Array<number | null> };
+export type OverviewItem = { server_id: string; observed_at?: string; cpu: number | null; memory: number | null; swap: number | null; disk: number | null; rx: number | null; tx: number | null; series: OverviewSeries; billing?: { counted_bytes: string; allowance_bytes: string } };
+export type Overview = { generated_at: string; items: OverviewItem[] };
 export type RelayInfo = { server_id: string; name: string; address: string; port: number; connection_state: string; nodes: number };
 export type JoinScript = { command: string; script_url: string; expires_at: string; relay?: string };
 
@@ -320,6 +326,15 @@ export class ApiClient {
 
   setHTTPSDomain(body: HTTPSSettingsRequest, options: QueryOptions = {}): Promise<HTTPSStatus> {
     return this.request<HTTPSStatus>('/settings/https', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(body), signal: options.signal });
+  }
+
+  /** Current values and a 15-minute series for every server, in one response. */
+  getOverview(options: QueryOptions = {}): Promise<Overview> {
+    return this.request<Overview>('/overview', { signal: options.signal });
+  }
+
+  setServerTags(serverId: string, tags: string[]): Promise<{ tags: string[] }> {
+    return this.request<{ tags: string[] }>(`/servers/${encodeURIComponent(serverId)}/tags`, { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify({ tags }) });
   }
 
   /** Nodes already acting as relays, most used first. */

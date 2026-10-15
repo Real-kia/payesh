@@ -289,9 +289,23 @@ func serveNodeWebSocket(ctx context.Context, ws *webSocket, hub *Hub, certificat
 			ack.SamplingIntervalSeconds = connection.samplingPolicySeconds(ctx)
 			connection.touchRelayUse(ctx, time.Now().UTC())
 			ack.Relay = connection.relayPolicy(ctx)
+			ack.Addresses = connection.supports(AddressesCapability)
 			body, _ := json.Marshal(ack)
 			if ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "acknowledgement", Request: envelope.Request, SentAt: time.Now().UTC(), Body: body}) != nil {
 				return
+			}
+		case "addresses":
+			if connection == nil || !connection.supports(AddressesCapability) {
+				return
+			}
+			var reported contracts.NodeAddresses
+			if err := decodeBody(envelope.Body, &reported); err != nil || len(reported.Addresses) > 4*monitoring.MaxNodeAddresses {
+				return
+			}
+			if connection.allowAddressReport(time.Now()) {
+				writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_ = hub.Store.RecordServerAddresses(writeCtx, connection.ServerID, reported.Addresses)
+				cancel()
 			}
 		case "action_response":
 			if connection == nil {
@@ -533,6 +547,14 @@ type AgentClient struct {
 	// RelayPolicy receives the hub's relay configuration when the agent
 	// advertises RelayCapability.
 	RelayPolicy func(contracts.RelayPolicy)
+	// Addresses lists the node's interface addresses. It is called only when
+	// the hub asks for them, at most every addressCheckInterval.
+	Addresses func() []string
+	// addressState is per connection: what was last reported and when the
+	// interfaces were last read.
+	addressesSent    bool
+	addressesKey     string
+	addressesChecked time.Time
 	// Proxy, when set, carries the hub connection through an HTTP CONNECT or
 	// SOCKS5 proxy. TLS still runs end to end with the hub.
 	Proxy *netproxy.Proxy
@@ -560,6 +582,30 @@ func (c *Connection) samplingPolicySeconds(ctx context.Context) int {
 		return 0
 	}
 	return c.hub.Store.SamplingSeconds(ctx)
+}
+
+// supports reports whether the agent advertised capability.
+func (c *Connection) supports(capability string) bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	for _, advertised := range c.hello.Capabilities {
+		if advertised == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// allowAddressReport accepts at most one address report per minute per
+// connection, so a misbehaving agent cannot turn it into a write load.
+func (c *Connection) allowAddressReport(now time.Time) bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if !c.addressesAt.IsZero() && now.Sub(c.addressesAt) < time.Minute {
+		return false
+	}
+	c.addressesAt = now
+	return true
 }
 
 // relayPolicy is sent only to agents that understand it; older agents reject
@@ -657,6 +703,7 @@ func (a *AgentClient) session(ctx context.Context, ws *webSocket, batches <-chan
 	incoming := make(chan inboundEnvelope, 16)
 	readErr := make(chan error, 1)
 	go a.readIncoming(ctx, ws, incoming, readErr)
+	a.addressesSent = false
 	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "hello", SentAt: time.Now().UTC(), Body: mustJSON(a.Hello)}); err != nil {
 		return err
 	}
@@ -928,6 +975,10 @@ func BootstrapAgent(ctx context.Context, endpoint, jobID, token string, trustPEM
 // RelayCapability is advertised by agents that can run a relay.
 const RelayCapability = "relay"
 
+// AddressesCapability is advertised by agents that report their interface
+// addresses when the hub asks.
+const AddressesCapability = "addresses"
+
 // dialTLS opens the hub connection directly or through proxy. Certificate
 // checks are identical either way because TLS runs inside the tunnel.
 func dialTLS(ctx context.Context, proxy *netproxy.Proxy, addr string, config *tls.Config) (net.Conn, error) {
@@ -1095,6 +1146,11 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 				if a.RelayPolicy != nil && ack.Relay != nil {
 					a.RelayPolicy(*ack.Relay)
 				}
+				if ack.Addresses {
+					if err := a.reportAddresses(ws, time.Now()); err != nil {
+						return err
+					}
+				}
 				if !ack.Accepted {
 					if ack.Error != nil && ack.Error.Retryable {
 						return errors.New(ack.Error.Code)
@@ -1110,6 +1166,31 @@ func (a *AgentClient) replay(ctx context.Context, ws *webSocket, incoming <-chan
 			break
 		}
 	}
+}
+
+// addressCheckInterval is how often a node re-reads its interfaces.
+const addressCheckInterval = 10 * time.Minute
+
+// reportAddresses sends the node's addresses once per connection and again
+// when they change. Interfaces are read at most every addressCheckInterval.
+func (a *AgentClient) reportAddresses(ws *webSocket, now time.Time) error {
+	if a.Addresses == nil || (a.addressesSent && now.Sub(a.addressesChecked) < addressCheckInterval) {
+		return nil
+	}
+	a.addressesChecked = now
+	addresses := a.Addresses()
+	key := strings.Join(addresses, ",")
+	if a.addressesSent && key == a.addressesKey {
+		return nil
+	}
+	if addresses == nil {
+		addresses = []string{}
+	}
+	if err := ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "addresses", SentAt: now.UTC(), Body: mustJSON(contracts.NodeAddresses{Addresses: addresses})}); err != nil {
+		return err
+	}
+	a.addressesSent, a.addressesKey = true, key
+	return nil
 }
 
 func (a *AgentClient) dial(ctx context.Context) (*webSocket, error) {

@@ -52,6 +52,7 @@ type API struct {
 	joinScript            http.Handler
 	joinScriptDownloads   http.Handler
 	relays                http.Handler
+	tags                  http.Handler
 	enrollment            http.Handler
 	enrollmentToken       http.Handler
 	enrollmentAuthority   *transport.CertificateAuthority
@@ -207,7 +208,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 	if options.NodeTransportSettings != nil {
 		nodeSettingsHandler = sessions.Middleware(options.NodeTransportSettings)
 	}
-	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, joinScript: joinScriptHandler, joinScriptDownloads: joinScriptDownloads, relays: relaysHandler, enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
+	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, joinScript: joinScriptHandler, joinScriptDownloads: joinScriptDownloads, relays: relaysHandler, tags: sessions.Middleware(tagsHandler(store)), enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
 	result.mcp = &mcp.Server{API: http.HandlerFunc(result.serveHTTP), OpenAPI: api.OpenAPI, Version: version.Value}
 	return result, nil
 }
@@ -319,6 +320,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.modules != nil && (trimmedPath == "/api/v1/modules" || (strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.Contains(trimmedPath, "/modules"))) {
 		a.modules.ServeHTTP(w, r)
+		return
+	}
+	if a.tags != nil && strings.HasPrefix(trimmedPath, "/api/v1/servers/") && strings.HasSuffix(trimmedPath, "/tags") {
+		a.tags.ServeHTTP(w, r)
 		return
 	}
 	if a.relays != nil && trimmedPath == "/api/v1/relays" {

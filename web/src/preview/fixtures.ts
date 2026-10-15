@@ -21,6 +21,9 @@ export type PreviewServer = {
   address?: string;
   duplicateOf?: string;
   duplicateOfName?: string;
+  tags?: string[];
+  /** Every known address, including the ones the node reports. */
+  addresses?: string[];
   role: 'standalone' | 'hub' | 'node' | 'cli-only';
   architecture: string;
   platform: string;

@@ -67,8 +67,14 @@ export function sampleAge(server: PreviewServer): string {
   return seconds < 5 ? 'live now' : seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
 }
 
+/** Every known address: the configured one first, then those the node reports. */
+export function allAddresses(server: PreviewServer): string[] {
+  return [...new Set([server.address, ...(server.addresses ?? [])].filter((value): value is string => !!value))];
+}
+
 export function displayAddress(server: PreviewServer): string {
-  if (server.address) return server.address;
+  const first = allAddresses(server)[0];
+  if (first) return first;
   if (!PREVIEW_MODE && (server.role === 'standalone' || server.role === 'hub') && typeof window !== 'undefined') return window.location.hostname;
   return 'Address unavailable';
 }

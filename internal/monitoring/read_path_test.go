@@ -449,3 +449,46 @@ func TestRelayCleanupSettingRoundTrip(t *testing.T) {
 		t.Fatal("negative days accepted")
 	}
 }
+
+func TestLivenessScalesWithSamplingInterval(t *testing.T) {
+	store, err := OpenStore(context.Background(), filepath.Join(t.TempDir(), "payesh.db"), StoreOptions{MaxBytes: DefaultDatabaseLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	heartbeat := now.Add(-55 * time.Second)
+	server := testServer()
+	server.LastHeartbeat = &heartbeat
+	if err := store.UpsertServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		if err := store.RefreshServerStates(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		got, _, _ := store.GetServer(ctx, server.ID)
+		return got.ConnectionState + "/" + got.FreshnessState
+	}
+	// 15 s sampling: 55 s without a sample is stale (defaults unchanged).
+	if got := state(); got != "connected/stale" {
+		t.Fatalf("15s interval: %s", got)
+	}
+	// 60 s sampling: 55 s is just between two samples.
+	settings, _, _ := store.StorageSettings(ctx)
+	settings.SampleSeconds, settings.PressureSampleSeconds = 60, 60
+	if err := store.SaveStorageSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got != "connected/fresh" {
+		t.Fatalf("60s interval: %s", got)
+	}
+	heartbeat = now.Add(-7 * time.Minute)
+	if _, err := store.db.ExecContext(ctx, `UPDATE servers SET last_heartbeat=? WHERE id=?`, FormatPersistedTime(heartbeat), string(server.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got != "disconnected/stale" {
+		t.Fatalf("60s interval, 7 min silent: %s", got)
+	}
+}

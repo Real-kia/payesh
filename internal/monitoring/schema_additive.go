@@ -56,6 +56,13 @@ var additiveTables = []additiveTable{
   updated_at TEXT NOT NULL,
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 )`},
+	// Operator-chosen labels for filtering servers.
+	{name: "server_tags", ddl: `CREATE TABLE IF NOT EXISTS server_tags (
+  server_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (server_id, tag),
+  FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+)`},
 	// Relay credentials. Only the password hash is stored; the plaintext lives
 	// in the target node's configuration (node grants) or in memory for the
 	// length of one installation (install grants).
@@ -77,6 +84,8 @@ var additiveColumns = []additiveColumn{
 	// Days after which relay access a node no longer uses is removed; 0 keeps it.
 	{table: "storage_settings", column: "relay_cleanup_days", ddl: `ALTER TABLE storage_settings ADD COLUMN relay_cleanup_days INTEGER NOT NULL DEFAULT 30`},
 	// When a node was last seen connecting through the relay.
+	// Addresses the node reports on its own interfaces, separated by U+001F.
+	{table: "server_locations", column: "addresses", ddl: `ALTER TABLE server_locations ADD COLUMN addresses TEXT NOT NULL DEFAULT ''`},
 	{table: "relay_grants", column: "last_used_at", ddl: `ALTER TABLE relay_grants ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`},
 }
 
