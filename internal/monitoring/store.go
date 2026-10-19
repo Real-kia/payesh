@@ -793,15 +793,36 @@ func (s *Store) ensureWritable(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.updateStoragePressure(ctx, usage); err != nil {
-		return err
-	}
 	threshold := maxBytes
 	// Begin bounded eviction before the hard ceiling for normal installations.
 	// Tiny test budgets are intentionally treated as hard ceilings so callers
 	// can exercise derived-write pressure without deleting their fixture data.
 	if maxBytes >= 8<<20 {
 		threshold = maxBytes * 9 / 10
+	}
+	if usage >= threshold && maxBytes >= 8<<20 {
+		reclaimed, err := s.checkpointForStorage(ctx)
+		if err != nil {
+			return err
+		}
+		usage, err = s.budgetUsage(databaseOnly)
+		if err != nil {
+			return err
+		}
+		if !reclaimed {
+			if err := s.updateStoragePressure(ctx, usage); err != nil {
+				return err
+			}
+			// History deletion cannot reclaim a reader-pinned WAL. Keep existing
+			// data and let the agent spool new history until the snapshot closes.
+			if usage >= maxBytes {
+				return ErrStoragePressure
+			}
+			return nil
+		}
+	}
+	if err := s.updateStoragePressure(ctx, usage); err != nil {
+		return err
 	}
 	if usage < threshold {
 		return nil
@@ -847,7 +868,9 @@ func (s *Store) evictForStorage(ctx context.Context, maxBytes int64, databaseOnl
 		if usage < maxBytes*85/100 {
 			return nil
 		}
-		cutoff := FormatPersistedTime(time.Now().Add(time.Minute))
+		// Keep the dashboard's live window, including consecutive samples for
+		// traffic rates. A small budget should shorten history, not blank cards.
+		cutoff := FormatPersistedTime(time.Now().Add(-overviewWindow))
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -888,15 +911,14 @@ func (s *Store) evictForStorage(ctx context.Context, maxBytes int64, databaseOnl
 			}
 		}
 		if deleted == 0 {
-			// If detailed samples are already gone, remove the oldest derived
-			// history and logs before giving up. Protected traffic periods are not
-			// part of this fallback.
+			// Once eligible raw history is gone, shorten older summaries and logs.
+			// Recent data and protected traffic periods remain available.
 			for _, table := range []string{"metric_rollups", "log_entries"} {
 				timeColumn := "bucket_start"
 				if table == "log_entries" {
 					timeColumn = "timestamp"
 				}
-				result, execErr := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` ORDER BY `+timeColumn+` ASC, rowid ASC LIMIT ?)`, MaxPageItems)
+				result, execErr := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` WHERE `+timeColumn+` < ? ORDER BY `+timeColumn+` ASC, rowid ASC LIMIT ?)`, cutoff, MaxPageItems)
 				if execErr != nil {
 					_ = tx.Rollback()
 					return execErr
@@ -915,7 +937,11 @@ func (s *Store) evictForStorage(ctx context.Context, maxBytes int64, databaseOnl
 		if deleted == 0 {
 			return nil
 		}
-		_, _ = s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+		if reclaimed, err := s.checkpointForStorage(ctx); err != nil {
+			return err
+		} else if !reclaimed {
+			return ErrStoragePressure
+		}
 		_, _ = s.db.ExecContext(ctx, `PRAGMA incremental_vacuum(256)`)
 	}
 	return nil

@@ -89,7 +89,14 @@ var additiveColumns = []additiveColumn{
 	{table: "relay_grants", column: "last_used_at", ddl: `ALTER TABLE relay_grants ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`},
 }
 
-var additiveIndexes = []additiveIndex{}
+// Storage eviction walks the oldest rows across every server. The scoped
+// read indexes start with server_id and cannot satisfy this global ordering.
+// SQLite includes rowid in these indexes, also covering the eviction tie-break.
+var additiveIndexes = []additiveIndex{
+	{name: "metric_samples_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_samples_retention ON metric_samples(observed_at)`},
+	{name: "metric_rollups_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_rollups_retention ON metric_rollups(bucket_start)`},
+	{name: "log_entries_retention", ddl: `CREATE INDEX IF NOT EXISTS log_entries_retention ON log_entries(timestamp)`},
+}
 
 // applyAdditiveSchema brings any database up to the additive layout in one
 // transaction. It only inspects sqlite_master and table_info when nothing is

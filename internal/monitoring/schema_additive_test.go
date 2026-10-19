@@ -9,6 +9,37 @@ import (
 	"testing"
 )
 
+// A bounded deletion must not sort the entire history while holding the
+// writer connection: that also blocks sessions, heartbeats, and ingestion.
+func TestStorageEvictionSelectsOldestRowsWithoutSortingHistory(t *testing.T) {
+	store := openDiskStore(t)
+	for _, query := range []string{
+		`SELECT rowid FROM metric_samples WHERE observed_at < '2026-01-01T00:00:00.000000000Z' ORDER BY observed_at ASC, rowid ASC LIMIT 200`,
+		`SELECT rowid FROM metric_rollups ORDER BY bucket_start ASC, rowid ASC LIMIT 200`,
+		`SELECT rowid FROM log_entries ORDER BY timestamp ASC, rowid ASC LIMIT 200`,
+	} {
+		rows, err := store.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			if strings.Contains(detail, "USE TEMP B-TREE") {
+				t.Errorf("eviction sorts unbounded history: %s: %s", query, detail)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+	}
+}
+
 // Every entry must stay additive, or an older binary could misread the data.
 func TestAdditiveSchemaEntriesAreAdditive(t *testing.T) {
 	for _, table := range additiveTables {
