@@ -135,7 +135,6 @@ type SSHInstallResult struct {
 	Installed            []string     `json:"installed"`
 	Enrolled             bool         `json:"enrolled"`
 	MeasurementsVerified bool         `json:"measurements_verified"`
-	ServicesVerified     bool         `json:"services_verified"`
 	// NodeProxied reports whether the node was configured to reach the hub
 	// through NodeProxy.
 	NodeProxied bool `json:"node_proxied"`
@@ -241,8 +240,7 @@ func sshFormatError(stageErr *sshInstallError) string {
 
 // InstallOverSSH performs an idempotent remote install using the same
 // payesh-install binary as direct installation.  It fails closed when the
-// caller has not supplied node enrollment and measurement verification callbacks.
-// Independent hubs verify their own services instead of joining this fleet.
+// caller has not supplied enrollment and measurement verification callbacks.
 func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInstallResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -699,32 +697,6 @@ func InstallOverSSH(ctx context.Context, opts SSHInstallOptions) (result SSHInst
 		if err := applyNodeConfig(ctx, transport, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix, sudoInput, remoteDir, opts); err != nil {
 			return result, sshStage("node configuration", err)
 		}
-	}
-	if opts.Role == "hub" || opts.Role == "standalone" {
-		if opts.Start {
-			report("verifying", 95)
-			health := `# payesh-hub-health
-set -eu
-/usr/bin/payesh version >/dev/null
-if [ -d /run/systemd/system ]; then
- systemctl is-active --quiet payesh-agent payesh-server payesh-update
-elif command -v rc-service >/dev/null 2>&1; then
- rc-service payesh-agent status >/dev/null
- rc-service payesh-server status >/dev/null
- rc-service payesh-update status >/dev/null
-else
- echo 'no supported service manager for hub health verification' >&2
- exit 1
-fi
-`
-			if _, healthErr := transport.Run(ctx, opts.Endpoint, knownHosts, opts.Auth, sudoPrefix+"sh -c "+shellQuote(health), sudoInput); healthErr != nil {
-				return result, sshStage("hub service verification", errors.New("installed hub services are not healthy; inspect the target service logs"))
-			}
-			result.ServicesVerified = true
-		}
-		result.Stage = "complete"
-		report("complete", 100)
-		return result, nil
 	}
 	report("enrolling", 85)
 	if opts.Enroll == nil {

@@ -17,7 +17,7 @@
   import PackagesPage from './pages/PackagesPage.svelte';
   import JoinCommandPanel from './components/JoinCommandPanel.svelte';
   import SshCredentialFields from './components/SshCredentialFields.svelte';
-  import { hubDashboardURL } from './lib/hubInstall';
+  import { deleteServersConcurrently } from './lib/bulkDelete';
   import InstallRouteFields, { type InstallRoute, type NodeRoute } from './components/InstallRouteFields.svelte';
   import { relayOptions, rememberRelay } from './lib/relays';
   import CommandPalette, { type Command } from './components/CommandPalette.svelte';
@@ -178,7 +178,6 @@
   let installRoute: InstallRoute = 'direct';
   let installProxyUrl = '';
   let installNodeRoute: NodeRoute = 'auto';
-  let installRole: 'node' | 'hub' = 'node';
   let installRelayId = '';
   let installBusy = false;
   let nodeControlPort = '22';
@@ -501,7 +500,7 @@
     installKey = '';
     installKeyPassphrase = '';
     installFingerprint = '';
-    installRole = 'node'; installRoute = 'direct'; installProxyUrl = ''; installNodeRoute = 'auto'; installRelayId = '';
+    installRoute = 'direct'; installProxyUrl = ''; installNodeRoute = 'auto'; installRelayId = '';
     jobError = '';
     if (!activeInstall || !['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)) {
       saveActiveInstall(null);
@@ -718,11 +717,6 @@
       return;
     }
     if (job.state === 'succeeded') {
-      if (activeInstall.role === 'hub') {
-        const completed = activeInstall; saveActiveInstall(null);
-        void completeSeparateHub(completed);
-        return;
-      }
       const id = activeInstall.serverId;
       saveActiveInstall(null);
       detailTab = 'metrics';
@@ -772,22 +766,9 @@
   }
 
   function installRouteRequest(): Partial<InstallRequest> {
-    const nodeRoute = installRole === 'hub' ? 'direct' : installNodeRoute;
-    if (installRoute === 'proxy') return { proxy_url: installProxyUrl.trim(), node_route: nodeRoute };
-    if (installRoute === 'relay') { rememberRelay(installRelayId); return { relay_server_id: installRelayId, node_route: nodeRoute }; }
+    if (installRoute === 'proxy') return { proxy_url: installProxyUrl.trim(), node_route: installNodeRoute };
+    if (installRoute === 'relay') { rememberRelay(installRelayId); return { relay_server_id: installRelayId, node_route: installNodeRoute }; }
     return {};
-  }
-
-  function completeSeparateHub(completed: InstallProgressData): void {
-    servers = servers.filter((entry) => entry.id !== completed.serverId);
-    const url = hubDashboardURL(completed.host);
-    navigate('servers');
-    openConfirmModal({
-      title: 'Hub installed',
-      description: `Your separate dashboard is ready at ${url}. Its owner credentials are stored on that server in /etc/payesh/owner-credentials.`,
-      tone: 'primary', icon: 'servers', confirmText: 'Open dashboard', cancelText: 'Close',
-      action: () => { window.open(url, '_blank', 'noopener'); }
-    });
   }
 
   async function createPendingServer(): Promise<void> {
@@ -813,7 +794,7 @@
         ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
         ...installRouteRequest(),
-        role: installRole,
+        role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
@@ -823,7 +804,6 @@
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
         serverId: server.id,
-        role: installRole,
         serverName,
         host,
         port,
@@ -1099,15 +1079,22 @@
         const deleted: string[] = [];
         let failure = '';
         try {
-          for (const target of targets) {
-            try {
-              await apiClient.deleteServer(target.id, target.configurationRevision);
-              deleted.push(target.id);
-              if (activeInstall?.serverId === target.id) saveActiveInstall(null);
-            } catch (error) {
-              failure = error instanceof Error ? error.message : 'Unable to delete server.';
-              if (error instanceof ApiError && error.authExpired) { authExpired = true; break; }
-            }
+          const result = await deleteServersConcurrently(targets,
+            (target) => apiClient.deleteServer(target.id, target.configurationRevision), {
+              onDeleted: (target) => {
+                deleted.push(target.id);
+                servers = servers.filter((server) => server.id !== target.id);
+                selectedServerIds = selectedServerIds.filter((id) => id !== target.id);
+                if (activeInstall?.serverId === target.id) saveActiveInstall(null);
+              },
+              isAuthFailure: (error) => {
+                if (error instanceof ApiError && error.authExpired) { authExpired = true; return true; }
+                return false;
+              }
+            });
+          if (result.errors.length) {
+            const error = result.errors[0];
+            failure = error instanceof Error ? error.message : 'Unable to delete server.';
           }
         } finally {
           servers = servers.filter((server) => !deleted.includes(server.id));
@@ -1160,7 +1147,7 @@
         ...(installAuthMethod === 'password' ? { password: installPassword } : { private_key: installKey, ...(installKeyPassphrase ? { private_key_passphrase: installKeyPassphrase } : {}) }),
         expected_host_key_fingerprint: installFingerprint.trim() || undefined,
         ...installRouteRequest(),
-        role: installRole,
+        role: 'node',
         start: true,
         idempotency_key: operationKey('install')
       });
@@ -1169,7 +1156,6 @@
       const timeStr = new Date().toTimeString().slice(0, 8);
       saveActiveInstall({
         serverId,
-        role: installRole,
         serverName,
         host,
         port,
@@ -1824,10 +1810,8 @@
         <article class="panel method">
           <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
           <form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}>
-            <label>Install as<select bind:value={installRole}><option value="node">Node in this fleet</option><option value="hub">Separate hub</option></select></label>
-            {#if installRole === 'hub'}<p class="form-wide muted">Creates an independent dashboard and owner account. It will not join this fleet as a node.</p>{/if}
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
-            <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} nodeConnection={installRole === 'node'} />
+            <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
             <div class="setup-actions">
               <button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button>
               <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey) || (installRoute === 'proxy' && !installProxyUrl.trim()) || (installRoute === 'relay' && !installRelayId)}>
@@ -2073,8 +2057,7 @@
           <article class="panel server-actions">
             <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
-              <label>Install as<select bind:value={installRole}><option value="node">Node in this fleet</option><option value="hub">Separate hub</option></select></label>
-              <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} nodeConnection={installRole === 'node'} />
+              <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
               <div class="setup-actions">
                 <button class="button primary" type="submit" disabled={installBusy || (installAuthMethod === 'password' ? !installPassword : !installKey) || (installRoute === 'proxy' && !installProxyUrl.trim()) || (installRoute === 'relay' && !installRelayId)}>
                   {#if installBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Install Payesh{/if}

@@ -79,13 +79,9 @@ func (s *InstallService) prepareRelay(ctx context.Context, job contracts.Job, re
 	if err != nil {
 		return nil, err
 	}
-	isNode := opts.Role == "" || opts.Role == "node"
-	hubAddr := ""
-	if isNode {
-		hubAddr, err = transportHostPort(opts.TransportURL)
-		if err != nil {
-			return nil, err
-		}
+	hubAddr, err := transportHostPort(opts.TransportURL)
+	if err != nil {
+		return nil, err
 	}
 	now := s.now()
 	_ = s.Store.PruneExpiredRelayGrants(ctx, now)
@@ -105,15 +101,13 @@ func (s *InstallService) prepareRelay(ctx context.Context, job contracts.Job, re
 		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = s.Store.DeleteRelayGrant(cleanup, relayID, installUser)
-		if isNode && (!succeeded || !nodeProxied) {
+		if !succeeded || !nodeProxied {
 			_ = s.Store.DeleteRelayGrant(cleanup, relayID, nodeUser)
 		}
 	}
-	if isNode {
-		if err := s.Store.PutRelayGrant(ctx, monitoring.RelayGrantRecord{RelayServerID: relayID, Username: nodeUser, PasswordSHA256: netproxy.HashPassword(nodePassword), Destinations: []string{hubAddr}, TargetServerID: job.TargetServerID}, now); err != nil {
-			finish(false, false)
-			return nil, fmt.Errorf("configure relay: %w", err)
-		}
+	if err := s.Store.PutRelayGrant(ctx, monitoring.RelayGrantRecord{RelayServerID: relayID, Username: nodeUser, PasswordSHA256: netproxy.HashPassword(nodePassword), Destinations: []string{hubAddr}, TargetServerID: job.TargetServerID}, now); err != nil {
+		finish(false, false)
+		return nil, fmt.Errorf("configure relay: %w", err)
 	}
 	installProxy := &netproxy.Proxy{Scheme: "http", Host: relayAddr, Username: installUser, Password: installPassword}
 	nodeProxy := &netproxy.Proxy{Scheme: "http", Host: relayAddr, Username: nodeUser, Password: nodePassword}
@@ -123,7 +117,7 @@ func (s *InstallService) prepareRelay(ctx context.Context, job contracts.Job, re
 	}
 	opts.Proxy = installProxy
 	opts.NodeProxy, opts.NodeProxyAuto = "", false
-	if isNode && nodeRoute != "direct" {
+	if nodeRoute != "direct" {
 		opts.NodeProxy, opts.NodeProxyAuto = nodeProxy.String(), nodeRoute != "proxy"
 	}
 	opts.DownloadArtifacts = nil

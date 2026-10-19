@@ -4,7 +4,6 @@
 
   export type InstallProgressData = {
     serverId: string;
-    role?: 'node' | 'hub';
     serverName: string;
     host: string;
     port: number;
@@ -78,7 +77,7 @@
       </div>
       <h2 class="install-heading">
         {#if isRunning}
-          Installing Payesh {install.role === 'hub' ? 'Hub' : 'Agent'}…
+          Installing Payesh Agent…
         {:else if isSucceeded}
           Server Installed & Active
         {:else if isFailed}

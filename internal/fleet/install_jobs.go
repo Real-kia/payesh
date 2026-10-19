@@ -248,19 +248,10 @@ func (s *InstallService) Enqueue(ctx context.Context, request installRequest) (c
 		expires = request.ExpiresAt.UTC()
 	}
 	serverID := contracts.ServerID(request.ServerID)
-	target, found, err := s.Store.GetServer(ctx, serverID)
-	if err != nil {
+	if _, found, err := s.Store.GetServer(ctx, serverID); err != nil {
 		return contracts.Job{}, fmt.Errorf("installation target lookup: %w", err)
 	} else if !found {
 		return contracts.Job{}, errors.New("installation target not found")
-	}
-	if request.Role == "hub" || request.Role == "standalone" {
-		if err := s.Store.RequireServerAuthority(ctx, serverID); err != nil {
-			return contracts.Job{}, err
-		}
-		if target.Role != "node" || target.LastHeartbeat != nil {
-			return contracts.Job{}, errors.New("a separate hub installation requires a new, never-connected server record")
-		}
 	}
 	existing, storedHash, existingFound, err := s.Store.GetJobByOperation(ctx, sshInstallJobKind, serverID, request.IdempotencyKey)
 	if err != nil {
@@ -356,10 +347,10 @@ func (s *InstallService) optionsFor(request installRequest) install.SSHInstallOp
 	}
 	serverID := contracts.ServerID(request.ServerID)
 	var nodeIdentityJSON []byte
-	// Only managed nodes receive an identity from this hub, and only while it
-	// owns the server. Independent hubs create their own local identity.
+	// Never mint a node identity for a server this hub no longer owns; without an
+	// identity the installation cannot complete, which fails closed.
 	owned := s.Store == nil || serverID == "" || s.Store.RequireServerAuthority(context.Background(), serverID) == nil
-	if s.Authority != nil && serverID != "" && owned && (request.Role == "" || request.Role == "node") {
+	if s.Authority != nil && serverID != "" && owned {
 		identity, err := s.Authority.IssueNodeIdentity(serverID, s.now())
 		if err == nil {
 			nodeIdentityJSON, _ = json.Marshal(identity)
@@ -512,12 +503,6 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (outcome contra
 		}
 	}
 	defer clearInstallAuth(&opts.Auth)
-	if opts.Role == "hub" || opts.Role == "standalone" {
-		if err := s.Store.RequireServerAuthority(ctx, job.TargetServerID); err != nil {
-			clearInstallAuth(&opts.Auth)
-			return s.fail(ctx, currentJob, "server_authority_unavailable", "hub installation target is no longer owned by this hub", false)
-		}
-	}
 	result, execErr := s.Executor.Install(ctx, opts)
 	nodeProxied = result.NodeProxied
 	if ctx.Err() != nil && (errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded)) {
@@ -555,20 +540,7 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (outcome contra
 	progressMu.Lock()
 	latest := currentJob
 	progressMu.Unlock()
-	var completed contracts.Job
-	if opts.Role == "hub" || opts.Role == "standalone" {
-		if s.Authority != nil {
-			if revokeErr := s.Authority.RevokeServer(job.TargetServerID); revokeErr != nil {
-				return s.fail(ctx, latest, "hub_cleanup_failed", "hub installed, but the unused deployment identity could not be revoked", true)
-			}
-		}
-		completed, err = s.Store.CompleteHubInstallation(ctx, id, latest.Revision, job.TargetServerID, s.now())
-		if err != nil {
-			return s.fail(ctx, latest, "hub_cleanup_failed", "hub installed, but its temporary deployment record could not be removed; inspect it before retrying", true)
-		}
-	} else {
-		completed, err = s.Store.TransitionJob(ctx, id, latest.Revision, contracts.JobSucceeded, 100, nil, s.now())
-	}
+	completed, err := s.Store.TransitionJob(ctx, id, latest.Revision, contracts.JobSucceeded, 100, nil, s.now())
 	if err == nil {
 		s.clearPending(id)
 	}

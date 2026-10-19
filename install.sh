@@ -9,9 +9,6 @@
 # to payesh-install, which creates the services and starts them.
 #
 # Options (flags, or the matching environment variable):
-#   --proxy-url URL    fetch installation files through an HTTP(S)/SOCKS proxy
-#   --relay-ssh HOST   fetch through a temporary SSH SOCKS tunnel (user@host)
-#   --relay-ssh-port N relay SSH port (default 22)
 #   --role ROLE        standalone (default), hub, node, or cli-only   PAYESH_ROLE
 #   --version X.Y.Z    release to install (default: latest)          PAYESH_VERSION
 #   --release-mode MODE production (default) or unsigned preview     PAYESH_RELEASE_MODE
@@ -51,10 +48,6 @@ VERSION="${PAYESH_VERSION:-latest}"
 LISTEN="${PAYESH_LISTEN:-}"
 DOMAIN="${PAYESH_DOMAIN:-}"
 EMAIL="${PAYESH_EMAIL:-}"
-INSTALL_PROXY="${PAYESH_INSTALL_PROXY:-}"
-RELAY_SSH="${PAYESH_RELAY_SSH:-}"
-RELAY_SSH_PORT="${PAYESH_RELAY_SSH_PORT:-22}"
-RELAY_CONTROL=""
 CHECK_ONLY=0
 CONVERT_FROM=""
 TRANSPORT_URL=""
@@ -100,9 +93,6 @@ while [ $# -gt 0 ]; do
 	--transport-url) TRANSPORT_URL="${2:?--transport-url needs a value}"; shift 2 ;;
 	--node-identity-file) NODE_IDENTITY_FILE="${2:?--node-identity-file needs a value}"; shift 2 ;;
 	--hub-ca-file) HUB_CA_FILE="${2:?--hub-ca-file needs a value}"; shift 2 ;;
-	--proxy-url) INSTALL_PROXY="${2:?--proxy-url needs a value}"; shift 2 ;;
-	--relay-ssh) RELAY_SSH="${2:?--relay-ssh needs a value}"; shift 2 ;;
-	--relay-ssh-port) RELAY_SSH_PORT="${2:?--relay-ssh-port needs a value}"; shift 2 ;;
 	--join-url) JOIN_URL="${2:?--join-url needs a value}"; shift 2 ;;
 	--join-job) JOIN_JOB="${2:?--join-job needs a value}"; shift 2 ;;
 	--join-token) JOIN_TOKEN="${2:?--join-token needs a value}"; shift 2 ;;
@@ -111,24 +101,12 @@ while [ $# -gt 0 ]; do
 	--remove-data) REMOVE_DATA=1; shift ;;
 	--remove-installer) REMOVE_INSTALLER=1; shift ;;
 	-h | --help)
-		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--proxy-url URL | --relay-ssh user@host [--relay-ssh-port PORT]] [--version X.Y.Z] [--release-mode production|preview] [--release-public-key PATH --release-key-id ID] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]] [--join-url wss://HOST:PORT/node/v1 --join-job ID --join-token TOKEN [--join-ca-sha256 HEX]]"
+		echo "usage: install.sh [--role standalone|hub|node|cli-only] [--version X.Y.Z] [--release-mode production|preview] [--release-public-key PATH --release-key-id ID] [--listen ADDR] [--domain NAME] [--email ADDR] [--check] [--convert-from hub|standalone --transport-url URL --node-identity-file PATH --hub-ca-file PATH] [--uninstall [--remove-data] [--remove-installer]] [--join-url wss://HOST:PORT/node/v1 --join-job ID --join-token TOKEN [--join-ca-sha256 HEX]]"
 		exit 0
 		;;
 	*) die "unknown option: $1 (see --help)" ;;
 	esac
 done
-
-if [ -n "$INSTALL_PROXY" ] && [ -n "$RELAY_SSH" ]; then
- die "choose either --proxy-url or --relay-ssh, not both"
-fi
-if [ -n "$INSTALL_PROXY" ]; then
- case "$INSTALL_PROXY" in http://?*|https://?*|socks5://?*|socks5h://?*) ;; *) die "proxy URL must use http, https, socks5 or socks5h" ;; esac
-fi
-if [ -n "$RELAY_SSH" ]; then
- printf '%s\n' "$RELAY_SSH" | LC_ALL=C grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.:@%-]*$' || die "relay SSH target must be a host or user@host"
- case "$RELAY_SSH_PORT" in ''|*[!0-9]*) die "relay SSH port must be between 1 and 65535" ;; esac
- [ "$RELAY_SSH_PORT" -ge 1 ] && [ "$RELAY_SSH_PORT" -le 65535 ] || die "relay SSH port must be between 1 and 65535"
-fi
 
 if [ -n "$CONVERT_FROM" ]; then
 	[ "$ROLE" = node ] || die "conversion target must be node"
@@ -302,31 +280,8 @@ download() {
 }
 
 WORK="$(mktemp -d /tmp/payesh-install.XXXXXX)"
-cleanup() {
- if [ -n "$RELAY_CONTROL" ]; then
-  ssh -S "$RELAY_CONTROL" -O exit -p "$RELAY_SSH_PORT" "$RELAY_SSH" >/dev/null 2>&1 || true
- fi
- rm -rf "$WORK"
-}
-trap cleanup EXIT
+trap 'rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM
-if [ -n "$RELAY_SSH" ]; then
- command -v ssh >/dev/null 2>&1 || die "SSH relay installation requires the ssh client"
- [ "$HAVE_CURL" = 1 ] || die "SSH relay installation requires curl for SOCKS support"
- RELAY_CONTROL="$WORK/relay.sock"
- relay_local_port="$((20000 + $$ % 40000))"
- ssh -M -S "$RELAY_CONTROL" -f -N -D "127.0.0.1:$relay_local_port" -o ExitOnForwardFailure=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -p "$RELAY_SSH_PORT" "$RELAY_SSH" || die "could not open SSH relay; check SSH access and TCP forwarding on the relay"
- INSTALL_PROXY="socks5h://127.0.0.1:$relay_local_port"
- say "Downloading installation files through the SSH relay"
-fi
-if [ -n "$INSTALL_PROXY" ]; then
- if [ "$HAVE_CURL" != 1 ]; then
-  case "$INSTALL_PROXY" in socks5*) die "SOCKS installation requires curl" ;; esac
- fi
- # Explicit routing applies to every download, including redirected assets.
- export http_proxy="$INSTALL_PROXY" https_proxy="$INSTALL_PROXY" HTTP_PROXY="$INSTALL_PROXY" HTTPS_PROXY="$INSTALL_PROXY" all_proxy="$INSTALL_PROXY" ALL_PROXY="$INSTALL_PROXY"
- export no_proxy= NO_PROXY=
-fi
 ARTIFACTS="$WORK/artifacts"
 mkdir -p "$WORK/archives" "$ARTIFACTS"
 
