@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Real-kia/payesh/api"
 	"github.com/Real-kia/payesh/internal/alerts"
@@ -389,20 +391,40 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
+	started := time.Now()
+	var lookupTime, revokeTime, deleteTime time.Duration
+	var failure error
+	defer func() {
+		message := ""
+		if failure != nil {
+			message = failure.Error()
+		}
+		log.Printf("server-delete: server=%s duration_ms=%d lookup_ms=%d revocation_ms=%d deletion_ms=%d error=%q", id, time.Since(started).Milliseconds(), lookupTime.Milliseconds(), revokeTime.Milliseconds(), deleteTime.Milliseconds(), message)
+	}()
 	if a.enrollmentAuthority != nil {
+		stepStarted := time.Now()
 		server, found, lookupErr := a.store.GetServer(r.Context(), contracts.ServerID(id))
+		lookupTime = time.Since(stepStarted)
 		if lookupErr != nil {
+			failure = lookupErr
 			writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not inspect server", true)
 			return
 		}
 		if found && server.Role == "node" && server.ConfigurationRevision == request.ExpectedRevision {
-			if err := a.enrollmentAuthority.RevokeServer(contracts.ServerID(id)); err != nil {
+			stepStarted = time.Now()
+			revokeErr := a.enrollmentAuthority.RevokeServer(contracts.ServerID(id))
+			revokeTime = time.Since(stepStarted)
+			if revokeErr != nil {
+				failure = revokeErr
 				writeFleetError(w, http.StatusServiceUnavailable, "revocation_failed", "could not revoke node identity", true)
 				return
 			}
 		}
 	}
+	stepStarted := time.Now()
 	err := a.store.DeleteServer(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
+	deleteTime = time.Since(stepStarted)
+	failure = err
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)

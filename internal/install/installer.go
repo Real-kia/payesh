@@ -633,7 +633,7 @@ func installArtifact(source, destination string) error {
 	if info.IsDir() && filepath.Base(destination) != "web-assets" {
 		return fmt.Errorf("artifact source is a directory")
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
 	tmp, err := os.MkdirTemp(filepath.Dir(destination), ".payesh-stage-")
@@ -699,6 +699,12 @@ func copyFile(source, destination string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// Creation permissions are masked by the caller's umask. Services run
+	// under their own account and must be able to read or execute artifacts.
+	if err := out.Chmod(mode); err != nil {
+		_ = out.Close()
+		return err
+	}
 	if _, err = io.Copy(out, in); err != nil {
 		_ = out.Close()
 		return err
@@ -721,7 +727,7 @@ func copyTree(source, destination string) error {
 		}
 		target := filepath.Join(destination, rel)
 		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return ensureDir(target, 0o755)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("unsupported non-regular web asset %s", rel)

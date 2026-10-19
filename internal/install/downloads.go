@@ -289,7 +289,9 @@ func artifactDownloadScript(dir, role, version, arch string, download ArtifactDo
 	}
 	script := "set -eu\ncd " + shellQuote(dir) + `
 fetch() {
- if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 120 --retry 1 "$1" -o "$2"
+ if command -v curl >/dev/null 2>&1; then
+  if curl -fsSL --connect-timeout 10 --max-time "${3:-120}" --retry 1 "$1" -o "$2"; then return 0
+  else status=$?; printf 'payesh-download-error=%s-curl:%s\n' "${4:-release}" "$status" >&2; return "$status"; fi
  elif command -v wget >/dev/null 2>&1; then wget -q -T 60 -t 2 -O "$2" "$1"
  else echo 'curl or wget is required' >&2; return 1; fi
 }
@@ -312,7 +314,7 @@ source=hub
 			script += "if [ \"$github_ok\" = 1 ]; then source=github; fi\n"
 		}
 	}
-	script += "if [ \"$source\" = hub ]; then\n fetch " + shellQuote(download.URL) + " bundle.download\n [ \"$(checksum bundle.download)\" = " + shellQuote(download.SHA256) + " ] || { echo 'Hub bundle checksum mismatch' >&2; exit 1; }\n tar -xzf bundle.download\nfi\n"
+	script += "if [ \"$source\" = hub ]; then\n fetch " + shellQuote(download.URL) + " bundle.download 900 hub\n [ \"$(checksum bundle.download)\" = " + shellQuote(download.SHA256) + " ] || { echo 'Hub bundle checksum mismatch' >&2; exit 1; }\n tar -xzf bundle.download\nfi\n"
 	for _, name := range names {
 		if name != "web-assets" {
 			script += "[ \"$(checksum " + shellQuote(name) + ")\" = " + shellQuote(download.Digests[name]) + " ] || exit 1\nchmod 700 " + shellQuote(name) + "\n"
@@ -320,4 +322,31 @@ source=hub
 	}
 	script += "rm -f -- *.download *.tmp\nprintf 'download_source=%s\\n' \"$source\"\n"
 	return script, nil
+}
+
+// Only fixed status descriptions reach job records, never download URLs or tokens.
+func artifactDownloadFailure(output []byte) error {
+	if strings.Contains(string(output), "Hub bundle checksum mismatch") {
+		return errors.New("hub installation bundle checksum mismatch; files were not executed")
+	}
+	lines := strings.Split(string(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		code, found := strings.CutPrefix(strings.TrimSpace(lines[i]), "payesh-download-error=hub-curl:")
+		if !found {
+			continue
+		}
+		switch code {
+		case "28":
+			return errors.New("installation file download timed out; check the node connection or use a relay")
+		case "5", "6", "7":
+			return errors.New("node could not resolve or connect to the download source; check DNS or use a relay")
+		case "35", "60":
+			return errors.New("node could not establish trusted HTTPS to the download source; check its clock and CA certificates")
+		case "22":
+			return errors.New("download source rejected the request; retry with a fresh installation job")
+		default:
+			return errors.New("node could not download verified installation files from the hub")
+		}
+	}
+	return errors.New("node could not download verified installation files from the hub")
 }

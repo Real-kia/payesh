@@ -289,3 +289,60 @@ func TestSSHCandidateSchemaRefusalPrecedesInstallerPreflightAndActivation(t *tes
 		}
 	}
 }
+
+type hubHealthTransport struct {
+	githubCapableTransport
+	healthErr error
+	checks    int
+}
+
+func (r *hubHealthTransport) Run(ctx context.Context, ep SSHEndpoint, hosts string, auth SSHAuth, command string, stdin []byte) ([]byte, error) {
+	if strings.Contains(command, "# payesh-hub-health") {
+		r.checks++
+		return nil, r.healthErr
+	}
+	return r.githubCapableTransport.Run(ctx, ep, hosts, auth, command, stdin)
+}
+
+func TestSeparateHubCompletesOnlyAfterItsServicesAreVerified(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		name := "healthy"
+		if failed {
+			name = "failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			paths := map[string]string{}
+			for _, name := range append([]string{"payesh-install"}, requiredArtifacts("hub")...) {
+				path := filepath.Join(root, name)
+				if name == "web-assets" {
+					if err := os.Mkdir(path, 0755); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(path, []byte(name), 0755); err != nil {
+					t.Fatal(err)
+				}
+				paths[name] = path
+			}
+			key := testHostKey("hub.example.test", 22, 30)
+			remote := &hubHealthTransport{githubCapableTransport: githubCapableTransport{fakeSSHTransport: fakeSSHTransport{keys: []SSHHostKey{key}, preflight: Preflight{Role: "hub", Supported: true, Artifacts: requiredArtifacts("hub")}}}}
+			if failed {
+				remote.healthErr = errors.New("service inactive")
+			}
+			result, err := InstallOverSSH(t.Context(), SSHInstallOptions{Endpoint: SSHEndpoint{Host: "hub.example.test", Port: 22, User: "root"}, ExpectedHostKeyFingerprint: key.Fingerprint, Auth: SSHAuth{PrivateKey: []byte("fixture")}, InstallerPath: paths["payesh-install"], Artifacts: paths, Role: "hub", Start: true, Transport: remote, VerifyArtifact: acceptArtifact,
+				Enroll:             func(context.Context) error { t.Fatal("independent hub enrolled as a node"); return nil },
+				VerifyMeasurements: func(context.Context) error { t.Fatal("independent hub waited for parent telemetry"); return nil },
+			})
+			if remote.checks != 1 || result.Enrolled || result.MeasurementsVerified {
+				t.Fatalf("wrong hub verification: %+v %v checks=%d", result, err, remote.checks)
+			}
+			if failed {
+				if err == nil || SSHInstallFailureStage(err) != "hub service verification" || result.ServicesVerified {
+					t.Fatalf("unhealthy hub succeeded: %+v %v", result, err)
+				}
+			} else if err != nil || !result.ServicesVerified || result.Stage != "complete" {
+				t.Fatalf("hub failed: %+v %v", result, err)
+			}
+		})
+	}
+}

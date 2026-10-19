@@ -601,3 +601,30 @@ func TestInstallReadableOlderDatabaseDoesNotRunMigrations(t *testing.T) {
 		t.Fatal("installer ran database migrations")
 	}
 }
+
+func TestCopyArtifactRestoresServiceReadablePermissions(t *testing.T) {
+	dir := t.TempDir()
+	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(source, []byte("verified artifact"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []os.FileMode{0755, 0644} {
+		if err := os.WriteFile(destination, []byte("old artifact"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(destination, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := copyFile(source, destination, mode); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(destination)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("installed artifact mode: %v %v", info, err)
+		}
+		data, err := os.ReadFile(destination)
+		if err != nil || string(data) != "verified artifact" {
+			t.Fatalf("artifact content: %s %v", data, err)
+		}
+	}
+}

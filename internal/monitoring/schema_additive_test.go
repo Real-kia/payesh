@@ -157,3 +157,32 @@ func mustExec(t *testing.T, store *Store, statement string) {
 		t.Fatalf("%s: %v", statement, err)
 	}
 }
+
+func TestServerDeletionCascadesUseIndexes(t *testing.T) {
+	store := openDiskStore(t)
+	for _, query := range []string{
+		`DELETE FROM servers WHERE id='server-not-present'`,
+		`DELETE FROM alert_rules WHERE id='rule-not-present'`,
+	} {
+		rows, err := store.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(detail, "SCAN ") {
+				t.Errorf("deletion scans unrelated history: %s: %s", query, detail)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		rows.Close()
+	}
+}

@@ -32,6 +32,63 @@ refuses any destination a credential does not name, so it is not an open
 proxy. Deleting a server deletes its relay credential; deleting the relay node
 stops the relay.
 
+## Installing a separate hub from the dashboard
+
+In **Add a server → Install over SSH**, choose **Install as → Separate hub**,
+then choose a direct connection, proxy, or relay node. The originating hub
+uploads the installer, server, agent, CLI, privilege helper, and web assets for
+the target architecture through the selected SSH route. The target needs no
+GitHub access.
+
+This creates an independent dashboard and owner account. Completion checks the
+new hub's services instead of waiting for it to enroll as a node. The dashboard
+opens on port `8787`; owner credentials are stored on the new server in
+`/etc/payesh/owner-credentials`. The temporary deployment record is removed from
+the originating fleet after success. Existing connected nodes cannot be
+replaced by a separate hub installation through this form.
+
+## Bootstrapping a hub from a terminal
+
+The shell installer can use an HTTP(S) or SOCKS proxy:
+
+```sh
+sudo sh install.sh --role hub --proxy-url socks5h://127.0.0.1:1080
+```
+
+It can also open a temporary SOCKS tunnel through an SSH server:
+
+```sh
+sudo sh install.sh --role hub --relay-ssh operator@relay.example.test --relay-ssh-port 22
+```
+
+Use the SSH identity or agent available to the account running the installer.
+The relay must permit TCP forwarding and reach GitHub. Existing SSH host-key
+verification remains enabled. The tunnel listens only on loopback, carries
+installation downloads with remote DNS resolution, and closes when the
+installer exits, including after a failed download. Normal release verification
+options still apply; the transport does not change trust policy.
+
+If the target cannot download `install.sh` itself, copy it from a trusted
+machine or retrieve it through the SSH relay first:
+
+```sh
+ssh operator@relay.example.test 'curl -fsSL https://raw.githubusercontent.com/Real-kia/payesh/master/install.sh' > install.sh
+```
+
+`--proxy-url` and `--relay-ssh` are mutually exclusive. A terminal SSH tunnel uses
+that server's SSH forwarding, rather than a managed Payesh CONNECT credential.
+The tunnel is temporary; it does not configure the new hub's future outbound
+network route.
+
+## Node download size and slow connections
+
+Node bundles contain the agent, CLI/update worker, privilege helper, and
+one-time installer. They exclude the dashboard server and web assets. Release
+binaries omit debug symbols to reduce transfer and installed size. The exact
+size depends on release and architecture. Hub bundle downloads have a fifteen
+minute transfer window so a working slow link is not cut off after two minutes;
+checksums are still verified before extraction and execution.
+
 ## Joining with one command
 
 When you would rather not give the hub SSH access, **Add a server → Run one

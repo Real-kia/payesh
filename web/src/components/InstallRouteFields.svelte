@@ -15,13 +15,15 @@
     proxyUrl = $bindable(),
     nodeRoute = $bindable(),
     relayServerId = $bindable(),
-    relays
+    relays,
+    nodeConnection = true
   }: {
     route: InstallRoute;
     proxyUrl: string;
     nodeRoute: NodeRoute;
     relayServerId: string;
     relays: RelayOption[];
+    nodeConnection?: boolean;
   } = $props();
 
   function choose(next: InstallRoute) {
@@ -64,7 +66,7 @@
     </select>
   </label>
 {/if}
-{#if route !== 'direct'}
+{#if route !== 'direct' && nodeConnection}
   <label class="form-wide">Node connection
     <select bind:value={nodeRoute}>
       <option value="auto">Auto</option>

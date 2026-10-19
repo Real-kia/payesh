@@ -321,7 +321,7 @@ func nodeVersion(root, release string) (string, error) {
 }
 
 func build(root, packagePath, output, arch, version, node string) error {
-	ldflags := "-buildid= -X github.com/Real-kia/payesh/internal/version.Value=" + version
+	ldflags := "-s -w -buildid= -X github.com/Real-kia/payesh/internal/version.Value=" + version
 	if node != "" {
 		ldflags += " -X github.com/Real-kia/payesh/internal/version.Node=" + node
 	}

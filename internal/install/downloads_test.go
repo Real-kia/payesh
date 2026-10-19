@@ -118,6 +118,14 @@ func TestNodeDownloadsHubBundleOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer download.Close()
+	// Simulate a link whose bundle needs more than the old two-minute budget.
+	curl, _ := exec.LookPath("curl")
+	tools := t.TempDir()
+	shim := "#!/bin/sh\nprevious=\nfor arg do\n if [ \"$previous\" = --max-time ] && [ \"$arg\" -lt 900 ]; then exit 28; fi\n previous=$arg\ndone\nexec " + shellQuote(curl) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(shim), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
 	dest := t.TempDir()
 	script, err := artifactDownloadScript(dest, "node", "dev", "amd64", download)
 	if err != nil {
@@ -241,5 +249,21 @@ func TestNodeFallsBackForAnyGitHubAcquisitionFailure(t *testing.T) {
 				t.Fatalf("fallback %v: %s", err, output)
 			}
 		})
+	}
+}
+
+func TestDownloadFailureReportsLastSafeReasonWithoutLeakingOutput(t *testing.T) {
+	for code, want := range map[string]string{"28": "timed out", "6": "DNS", "7": "connect", "60": "CA certificates", "22": "fresh installation job"} {
+		err := artifactDownloadFailure([]byte("private-token-in-url\npayesh-download-error=hub-curl:22\npayesh-download-error=hub-curl:" + code + "\n"))
+		if !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "private-token") {
+			t.Fatalf("unsafe or unhelpful error: %v", err)
+		}
+	}
+}
+
+func TestHubChecksumFailureIsNotMisreportedAsEarlierGitHubTimeout(t *testing.T) {
+	err := artifactDownloadFailure([]byte("payesh-download-error=release-curl:28\nHub bundle checksum mismatch\n"))
+	if !strings.Contains(err.Error(), "checksum mismatch") || strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("wrong failure reason: %v", err)
 	}
 }

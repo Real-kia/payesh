@@ -96,6 +96,11 @@ var additiveIndexes = []additiveIndex{
 	{name: "metric_samples_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_samples_retention ON metric_samples(observed_at)`},
 	{name: "metric_rollups_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_rollups_retention ON metric_rollups(bucket_start)`},
 	{name: "log_entries_retention", ddl: `CREATE INDEX IF NOT EXISTS log_entries_retention ON log_entries(timestamp)`},
+	// Cascades must locate only the deleted server's rows, including rule history.
+	{name: "alert_history_server", ddl: `CREATE INDEX IF NOT EXISTS alert_history_server ON alert_history(server_id)`},
+	{name: "alert_history_alert", ddl: `CREATE INDEX IF NOT EXISTS alert_history_alert ON alert_history(alert_id)`},
+	{name: "server_authority_transitions_server", ddl: `CREATE INDEX IF NOT EXISTS server_authority_transitions_server ON server_authority_transitions(server_id)`},
+	{name: "relay_grants_target", ddl: `CREATE INDEX IF NOT EXISTS relay_grants_target ON relay_grants(target_server_id)`},
 }
 
 // applyAdditiveSchema brings any database up to the additive layout in one

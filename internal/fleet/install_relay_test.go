@@ -11,6 +11,7 @@ import (
 	"github.com/Real-kia/payesh/internal/install"
 	"github.com/Real-kia/payesh/internal/monitoring"
 	"github.com/Real-kia/payesh/internal/netproxy"
+	"github.com/Real-kia/payesh/internal/transport"
 )
 
 func relayFixture(t *testing.T) (*InstallService, *monitoring.Store, contracts.ServerID, contracts.ServerID) {
@@ -185,5 +186,71 @@ func TestRelayNodeCredentialRemovedWhenNodeIsDirect(t *testing.T) {
 	}
 	if direct.NodeProxy != "" || direct.Proxy == nil {
 		t.Fatalf("direct node route: proxy=%v nodeProxy=%q", direct.Proxy, direct.NodeProxy)
+	}
+}
+
+func TestSeparateHubRelayDoesNotIssuePersistentNodeGrant(t *testing.T) {
+	svc, store, relayID, targetID := relayFixture(t)
+	svc.relayReady = func(context.Context, *netproxy.Proxy, string) error { return nil }
+	opts := install.SSHInstallOptions{Role: "hub", Endpoint: install.SSHEndpoint{Host: "192.0.2.10", Port: 22, User: "root"}}
+	finish, err := svc.prepareRelay(t.Context(), contracts.Job{ID: "hub-install-test", TargetServerID: targetID}, relayID, "auto", &opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := store.RelayPolicy(t.Context(), relayID, time.Now().UTC())
+	if err != nil || len(policy.Grants) != 1 || opts.NodeProxy != "" {
+		t.Fatalf("hub got node credentials: %+v %v", policy, err)
+	}
+	if !strings.HasPrefix(policy.Grants[0].Username, "install-") {
+		t.Fatalf("unexpected grant: %+v", policy.Grants[0])
+	}
+	finish(true, false)
+	policy, err = store.RelayPolicy(t.Context(), relayID, time.Now().UTC())
+	if err != nil || len(policy.Grants) != 0 {
+		t.Fatalf("hub installation left relay access: %+v %v", policy, err)
+	}
+}
+
+func TestSeparateHubDoesNotReserveNodeIdentityOrReplaceConnectedNode(t *testing.T) {
+	svc, _, connectedID, targetID := relayFixture(t)
+	ca, err := transport.NewCertificateAuthority(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Authority = ca
+	opts := svc.optionsFor(installRequest{ServerID: string(targetID), Role: "hub"})
+	if len(opts.NodeIdentityJSON) != 0 {
+		t.Fatal("hub received node identity")
+	}
+	if _, err := ca.IssueEnrollment(targetID, time.Now().UTC()); err != nil {
+		t.Fatalf("hub reserved a node identity: %v", err)
+	}
+	svc.Executor = SSHInstallerFunc(func(context.Context, install.SSHInstallOptions) (install.SSHInstallResult, error) {
+		return install.SSHInstallResult{}, nil
+	})
+	_, err = svc.Enqueue(t.Context(), installRequest{ServerID: string(connectedID), Host: "hub.example.test", Port: 22, User: "root", Password: "fixture", Role: "hub", IdempotencyKey: "separate-hub-role-guard"})
+	if err == nil || !strings.Contains(err.Error(), "never-connected") {
+		t.Fatalf("connected node can be overwritten: %v", err)
+	}
+}
+
+func TestSeparateHubCompletionDoesNotNeedBrowserCleanup(t *testing.T) {
+	svc, store, _, targetID := relayFixture(t)
+	svc.Executor = SSHInstallerFunc(func(_ context.Context, opts install.SSHInstallOptions) (install.SSHInstallResult, error) {
+		if opts.Role != "hub" || len(opts.NodeIdentityJSON) != 0 {
+			t.Fatalf("wrong independent hub options: role=%s identity=%v", opts.Role, len(opts.NodeIdentityJSON) > 0)
+		}
+		return install.SSHInstallResult{Stage: "complete", ServicesVerified: true, Preflight: install.Preflight{Architecture: "amd64"}}, nil
+	})
+	job, err := svc.Enqueue(t.Context(), installRequest{ServerID: string(targetID), Host: "hub.example.test", Port: 22, User: "root", Password: "fixture", Role: "hub", Start: true, IdempotencyKey: "hub-install-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err = svc.RunOnce(t.Context(), job.ID)
+	if err != nil || job.State != contracts.JobSucceeded {
+		t.Fatalf("hub failed: %+v %v", job, err)
+	}
+	if _, found, err := store.GetServer(t.Context(), targetID); err != nil || found {
+		t.Fatalf("hub left Pending placeholder: found=%v err=%v", found, err)
 	}
 }

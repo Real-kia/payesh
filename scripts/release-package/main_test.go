@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/elf"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +111,32 @@ func TestNodeVersionFileDefaultsAndBounds(t *testing.T) {
 		if (err != nil) != tc.fails || got != tc.want {
 			t.Fatalf("%q: got %q err=%v", tc.content, got, err)
 		}
+	}
+}
+
+func TestReleaseBuildOmitsDebugSymbolsButRetainsRuntimeStackMetadata(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/compact\ngo 1.26.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"compact release\")}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "compact")
+	if err := build(root, ".", output, "amd64", "1.2.3", "1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := elf.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binary.Close()
+	for _, name := range []string{".debug_info", ".symtab"} {
+		if binary.Section(name) != nil {
+			t.Errorf("release retains %s", name)
+		}
+	}
+	if binary.Section(".gopclntab") == nil {
+		t.Fatal("release lost runtime stack metadata")
 	}
 }
