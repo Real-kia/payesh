@@ -106,7 +106,9 @@
       {#if zoneOpen}
         <div id="timezone-options" class="tz-options" role="listbox" aria-label="Time zones">
           {#each filteredZones as tz, index (tz)}
-            <button type="button" id={`timezone-option-${index}`} role="option" aria-selected={tz === timezone} onclick={() => { onTimezone(tz); zoneOpen = false; zoneQuery = ''; }}>{tz}</button>
+            <!-- Keep the input focused until click selects the option. Safari
+                 can blur it without focusing the button, closing the list first. -->
+            <button type="button" id={`timezone-option-${index}`} role="option" aria-selected={tz === timezone} onpointerdown={(event) => event.preventDefault()} onclick={() => selectZone(tz)}>{tz}</button>
           {:else}<span class="muted tz-empty">No matching time zones</span>{/each}
         </div>
       {/if}

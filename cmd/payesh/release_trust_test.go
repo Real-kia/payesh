@@ -193,7 +193,7 @@ func TestPreparedCandidateRejectsIncompatibleSchemaBeforeActualWorkerPrepare(t *
 			}, CandidatePreflight: func(ctx context.Context, target string) error {
 				_, err := prepareProductionRelease(ctx, client, "", target, "1.0.0", policy, dbpath)
 				return err
-			}, Prepare: func(context.Context) error {
+			}, Install: func(context.Context, string, webupdate.InstallationScope) error {
 				prepared = true
 				return fmt.Errorf("unexpected snapshot/service boundary")
 			}})

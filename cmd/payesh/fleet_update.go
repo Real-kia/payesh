@@ -30,7 +30,8 @@ func runFleetUpdateWithRecovery(ctx context.Context, dir string, req webupdate.R
 // Production uses only root-owned installation paths and authenticated release data.
 type fleetUpdateHooks struct {
 	Scope              func() (webupdate.InstallationScope, error)
-	Prepare            func(context.Context) error
+	Install            func(context.Context, string, webupdate.InstallationScope) error
+	Health             func(context.Context, string) error
 	CandidatePreflight func(context.Context, string) error
 }
 
@@ -101,17 +102,6 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 	if rolledBack {
 		return webupdate.CompleteFleetRollback(dir, req)
 	}
-	rollback := func(cause error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		restoreCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if err := txn.Rollback(restoreCtx); err != nil {
-			return webupdate.InstallationRollbackError(cause, err)
-		}
-		return webupdate.InstallationRollbackError(cause, nil)
-	}
 	install := func(ctx context.Context, target string) error {
 		policy, err := checkTrust()
 		if err != nil {
@@ -130,23 +120,23 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		if policy.mode == "production" {
 			if hooks.CandidatePreflight != nil {
 				if err := hooks.CandidatePreflight(ctx, target); err != nil {
-					return err
+					return &webupdate.StageError{Stage: "preflight", Err: err}
 				}
 			} else {
 				preparedRelease, err = prepareProductionRelease(ctx, &http.Client{Timeout: 15 * time.Second}, os.Getenv("GITHUB_TOKEN"), target, version.Value, policy, "/var/lib/payesh/payesh.db")
 				if err != nil {
-					return err
+					return &webupdate.StageError{Stage: "preflight", Err: err}
 				}
 			}
 		} else {
 			if hooks.CandidatePreflight != nil {
 				if err := hooks.CandidatePreflight(ctx, target); err != nil {
-					return err
+					return &webupdate.StageError{Stage: "preflight", Err: err}
 				}
 			} else {
 				previewScript, err = fetchInstaller(ctx, &http.Client{Timeout: 15 * time.Second}, os.Getenv("GITHUB_TOKEN"), target)
 				if err != nil {
-					return err
+					return &webupdate.StageError{Stage: "preflight", Err: err}
 				}
 			}
 		}
@@ -158,23 +148,24 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		if !req.Deadline.After(time.Now().UTC()) {
 			return errors.New("fleet update authorization expired during candidate preflight")
 		}
-		prepare := hooks.Prepare
-		if prepare == nil {
-			prepare = txn.Prepare
+		if scope.Role == "cli-only" {
+			return errors.New("CLI role cannot receive fleet activation")
 		}
-		if err := prepare(ctx); err != nil {
-			return err
-		}
-		if err := txn.MarkActivating(); err != nil {
-			return rollback(err)
+		// New updates use the authenticated installer directly. Only legacy
+		// interrupted transactions above invoke snapshot recovery.
+		if hooks.Install != nil {
+			if err := hooks.Install(ctx, target, scope); err != nil {
+				return &webupdate.StageError{Stage: "installation", Err: err}
+			}
+			return nil
 		}
 		if policy.mode == "production" {
 			if err := runPreparedReleaseInstaller(ctx, target, policy, preparedRelease, "--role", scope.Role, "--version", target); err != nil {
-				return rollback(err)
+				return &webupdate.StageError{Stage: "installation", Err: err}
 			}
 		} else {
 			if err := executeReleaseInstaller(ctx, previewScript, policy, "--role", scope.Role, "--version", target); err != nil {
-				return rollback(err)
+				return &webupdate.StageError{Stage: "installation", Err: err}
 			}
 		}
 		return nil
@@ -183,6 +174,12 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		if _, err := checkTrust(); err != nil {
 			return err
 		}
+		if hooks.Health != nil {
+			if err := hooks.Health(ctx, target); err != nil {
+				return &webupdate.StageError{Stage: "health", Err: err}
+			}
+			return nil
+		}
 		init := "openrc"
 		if info, err := os.Stat("/run/systemd/system"); err == nil && info.IsDir() {
 			init = "systemd"
@@ -190,13 +187,7 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 		if err := verifyFleetReleaseHealth(ctx, target, webupdate.InstallationScopePath, init, func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		}); err != nil {
-			if phase, _ := txn.Phase(); phase == "activating" {
-				return rollback(err)
-			}
-			return err
-		}
-		if phase, err := txn.Phase(); err == nil && phase == "activating" {
-			return txn.Commit()
+			return &webupdate.StageError{Stage: "health", Err: err}
 		}
 		return nil
 	}

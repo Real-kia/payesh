@@ -65,10 +65,10 @@
     if (tz === currentTimezone) return;
     const oldTz = currentTimezone;
     currentTimezone = tz;
-    saveTimezone(tz);
+    const persisted = saveTimezone(tz);
     showSettingsSavedDialog(
       'Timezone updated',
-      `Active timezone changed from "${oldTz}" to "${tz}".\n\nAll dashboard charts, event logs, alerts, and time displays now reflect your local time (${formatTimeInTz(new Date(), tz, true)} · ${formatDateTimeInTz(new Date(), tz)}).`
+      `Active timezone changed from "${oldTz}" to "${tz}".\n\nAll dashboard charts, event logs, alerts, and time displays now reflect your local time (${formatTimeInTz(new Date(), tz, true)} · ${formatDateTimeInTz(new Date(), tz)}).${persisted ? '' : '\n\nBrowser storage is unavailable. This selection applies to this tab but may reset when you reload.'}`
     );
   }
 

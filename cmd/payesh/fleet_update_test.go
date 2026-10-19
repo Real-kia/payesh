@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,6 +15,84 @@ import (
 
 	"github.com/Real-kia/payesh/internal/webupdate"
 )
+
+func TestFleetUpdateInstallsWithoutCreatingRollbackSnapshot(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(t.TempDir(), "release.pub")
+	if err := os.WriteFile(key, pub, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAYESH_RELEASE_MODE", "production")
+	t.Setenv("PAYESH_RELEASE_PUBLIC_KEY", key)
+	t.Setenv("PAYESH_RELEASE_KEY_ID", "test-release")
+	for _, failureStage := range []string{"", "installation", "health"} {
+		t.Run(fmt.Sprint("stage=", failureStage), func(t *testing.T) {
+			dir := t.TempDir()
+			req := webupdate.Request{JobID: "no-snapshot-update", Version: "999.0.0", Deadline: time.Now().Add(time.Minute)}
+			if err := webupdate.SubmitFleet(dir, req, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			installs, checks := 0, 0
+			cause := errors.New("installer exited with status 7")
+			done, err := runFleetUpdateWithHooks(t.Context(), dir, req,
+				func(context.Context, webupdate.InstallationTransaction) (bool, error) { return false, nil },
+				func(webupdate.InstallationTransaction) (string, error) { return "", os.ErrNotExist },
+				fleetUpdateHooks{
+					Scope: func() (webupdate.InstallationScope, error) {
+						return webupdate.InstallationScope{Role: "hub", Init: "systemd"}, nil
+					},
+					CandidatePreflight: func(context.Context, string) error { return nil },
+					Install: func(context.Context, string, webupdate.InstallationScope) error {
+						installs++
+						if failureStage == "installation" {
+							return cause
+						}
+						return nil
+					},
+					Health: func(context.Context, string) error {
+						checks++
+						if failureStage == "health" {
+							return cause
+						}
+						return nil
+					},
+				})
+			if installs != 1 || done != (failureStage == "") || (failureStage != "" && !errors.Is(err, cause)) || (failureStage == "" && err != nil) {
+				t.Fatalf("done=%v err=%v installs=%d", done, err, installs)
+			}
+			if (failureStage != "installation" && checks != 1) || (failureStage == "installation" && checks != 0) {
+				t.Fatalf("health calls=%d", checks)
+			}
+			status, readErr := webupdate.FleetResult(dir, req.JobID)
+			if readErr != nil || status.Rollback != "" {
+				t.Fatalf("unexpected rollback result: %+v %v", status, readErr)
+			}
+			if failureStage != "" && (!strings.Contains(status.Message, failureStage) || !strings.Contains(status.Message, req.JobID)) {
+				t.Fatalf("unhelpful failure: %s", status.Message)
+			}
+			if _, err := os.Stat(filepath.Join(dir, webupdate.RequestFile)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("terminal update retained request: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerFailureLogIncludesJobTargetAndCause(t *testing.T) {
+	var log bytes.Buffer
+	logFleetUpdateFailure(&log, webupdate.Request{JobID: "update-log-test", Version: "1.2.3"}, errors.New("download failed\nnetwork timeout"))
+	got := log.String()
+	for _, want := range []string{"update-log-test", "1.2.3", "download failed", "network timeout"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log misses %q: %s", want, got)
+		}
+	}
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("error injected additional log lines: %q", got)
+	}
+}
 
 func TestFleetWorkerRejectsPreviewAndMissingAnchorDurably(t *testing.T) {
 	for _, mode := range []string{"preview", "production"} {
@@ -258,9 +337,12 @@ func TestFleetCandidateSchemaRefusalPrecedesSnapshotAndServiceStop(t *testing.T)
 		func(webupdate.InstallationTransaction) (string, error) { return "", os.ErrNotExist },
 		fleetUpdateHooks{Scope: func() (webupdate.InstallationScope, error) {
 			return webupdate.InstallationScope{Role: "hub", Init: "openrc"}, nil
-		}, CandidatePreflight: func(context.Context, string) error { checked = true; return refusal }, Prepare: func(context.Context) error { prepared = true; return errors.New("unexpected snapshot boundary") }})
+		}, CandidatePreflight: func(context.Context, string) error { checked = true; return refusal }, Install: func(context.Context, string, webupdate.InstallationScope) error {
+			prepared = true
+			return errors.New("unexpected installation boundary")
+		}})
 	if done || !errors.Is(err, refusal) || !checked || prepared {
-		t.Fatalf("candidate refusal reached snapshot/service boundary: checked=%v prepared=%v done=%v err=%v", checked, prepared, done, err)
+		t.Fatalf("candidate refusal reached installation/service boundary: checked=%v prepared=%v done=%v err=%v", checked, prepared, done, err)
 	}
 	result, err := webupdate.FleetResult(dir, req.JobID)
 	if err != nil || result.State != webupdate.StateFailed {
@@ -288,8 +370,11 @@ func TestFleetAuthorizationExpiryDuringCandidatePreflightNeverPrepares(t *testin
 	checked, prepared := false, false
 	_, err = runFleetUpdateWithHooks(t.Context(), dir, req, func(context.Context, webupdate.InstallationTransaction) (bool, error) { return false, nil }, func(webupdate.InstallationTransaction) (string, error) { return "", os.ErrNotExist }, fleetUpdateHooks{Scope: func() (webupdate.InstallationScope, error) {
 		return webupdate.InstallationScope{Role: "hub", Init: "openrc"}, nil
-	}, CandidatePreflight: func(ctx context.Context, _ string) error { checked = true; <-ctx.Done(); return nil }, Prepare: func(context.Context) error { prepared = true; return errors.New("expired snapshot boundary") }})
+	}, CandidatePreflight: func(ctx context.Context, _ string) error { checked = true; <-ctx.Done(); return nil }, Install: func(context.Context, string, webupdate.InstallationScope) error {
+		prepared = true
+		return errors.New("expired installation boundary")
+	}})
 	if !checked || prepared || err == nil {
-		t.Fatalf("expired preflight crossed snapshot boundary: checked=%v prepared=%v err=%v", checked, prepared, err)
+		t.Fatalf("expired preflight crossed installation boundary: checked=%v prepared=%v err=%v", checked, prepared, err)
 	}
 }

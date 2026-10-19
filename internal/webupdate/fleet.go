@@ -122,7 +122,7 @@ func CompleteFleetRollback(dir string, req Request) (bool, error) {
 func finishFleet(dir string, req Request, state string, failure error) (bool, error) {
 	message := ""
 	if failure != nil {
-		message = "fleet update failed; inspect the root worker log"
+		message = failureMessage(req, failure)
 	}
 	result := Status{State: state, JobID: req.JobID, Target: req.Version, Message: message, UpdatedAt: time.Now().UTC()}
 	if errors.Is(failure, ErrInstallationRestored) {
@@ -239,6 +239,9 @@ func ExecuteLocal(ctx context.Context, dir, installedVersion string, execution u
 		return err
 	}
 	if result.State != StateSucceeded {
+		if result.Message != "" {
+			return errors.New(result.Message)
+		}
 		return errors.New("local core update failed; inspect the root worker log")
 	}
 	if result.Target != execution.Release {

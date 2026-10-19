@@ -36,14 +36,20 @@ export function getAvailableTimezones(): string[] {
   return COMMON_TIMEZONES;
 }
 
+let tabTimezone: string | undefined;
+
 export function getSavedTimezone(): string {
   if (typeof window === 'undefined') return DEFAULT_TIMEZONE;
-  return window.localStorage.getItem('payesh-timezone') || DEFAULT_TIMEZONE;
+  if (tabTimezone !== undefined) return tabTimezone;
+  try { return window.localStorage.getItem('payesh-timezone') || DEFAULT_TIMEZONE; }
+  catch { return DEFAULT_TIMEZONE; }
 }
 
-export function saveTimezone(tz: string): void {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem('payesh-timezone', tz);
+export function saveTimezone(tz: string): boolean {
+  tabTimezone = tz;
+  if (typeof window === 'undefined') return false;
+  try { window.localStorage.setItem('payesh-timezone', tz); return true; }
+  catch { return false; }
 }
 
 export function formatTimeInTz(dateOrTimestamp: Date | string | number, tz: string, withSeconds = true): string {

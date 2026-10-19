@@ -75,10 +75,13 @@ URLs are informational until an authenticated transport fetches the exact
 manifest. Installers must not treat a checksum delivered beside an untrusted
 bootstrap script as independent authentication.
 
-Artifacts stage in a versioned release directory and activate atomically. Keep
-the previous compatible release until health verification succeeds; rollback
-must not cross an incompatible database schema. Record verification and
-activation in the audit log.
+Artifacts stage in a versioned release directory and activate atomically. Fleet
+updates run the authenticated installer without creating a rollback snapshot of
+the database or installation. Existing interrupted snapshot transactions are
+recovered before a new update starts. Database migration safeguards still apply.
+The worker verifies the installed version and required services after installation.
+Failures identify the failed step and job ID in the dashboard; the detailed cause
+is logged by the `payesh-update` service (`journalctl -u payesh-update` on systemd).
 
 ## Production bootstrap and updates
 

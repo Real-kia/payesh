@@ -123,7 +123,7 @@ func updateWorker(ctx context.Context, args []string) error {
 		if found {
 			done, err := runFleetUpdate(ctx, *dir, req)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "update-worker:", err)
+				logFleetUpdateFailure(os.Stderr, req, err)
 			}
 			if done || errors.Is(err, webupdate.ErrInstallationRestored) {
 				// Exit so the service manager restarts the active on-disk binary,
@@ -137,6 +137,10 @@ func updateWorker(ctx context.Context, args []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func logFleetUpdateFailure(w io.Writer, req webupdate.Request, err error) {
+	fmt.Fprintf(w, "update-worker: job=%s target=%s error=%q\n", req.JobID, req.Version, err)
 }
 
 func runReleaseInstaller(ctx context.Context, target, token string, args ...string) error {
