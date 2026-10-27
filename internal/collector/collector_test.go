@@ -150,3 +150,22 @@ func TestMissingLoadAndMemoryFieldsAreExplicitlyUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCPUStatDetectsCores(t *testing.T) {
+	stat := "cpu  100 20 30 400 50 1 2 0 0 0\n" +
+		"cpu0 25 5 8 100 12 0 1 0 0 0\n" +
+		"cpu1 25 5 7 100 13 0 0 0 0 0\n" +
+		"cpu2 25 5 8 100 12 1 0 0 0 0\n" +
+		"cpu3 25 5 7 100 13 0 1 0 0 0\n" +
+		"intr 12345 0 0 0\n"
+	counters, cores, err := parseCPUStat([]byte(stat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cores != 4 {
+		t.Fatalf("expected 4 cores, got %d", cores)
+	}
+	if counters.user != 100 || counters.idle != 400 {
+		t.Fatalf("unexpected cpu counters: %+v", counters)
+	}
+}

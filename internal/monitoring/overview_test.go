@@ -15,10 +15,10 @@ import (
 
 func overviewSample(sequence uint64, observed time.Time, cpu float64, rx, swapUsed string) contracts.NodeMetricSample {
 	return contracts.NodeMetricSample{ServerID: "server-local-0001", CollectorEpoch: "epoch-local-0001", Sequence: sequence, ObservedAt: observed,
-		Values:   map[string]float64{"cpu.utilization": cpu, "memory.used_percent": 40, "disk.root.used_percent": 12.3456},
-		Counters: map[string]string{"net.billing.rx_bytes": rx, "net.billing.tx_bytes": rx, "memory.swap_used_bytes": swapUsed, "memory.swap_total_bytes": "1000"},
-		Validity: map[string]string{"cpu.utilization": "valid", "memory.used_percent": "valid", "disk.root.used_percent": "valid", "net.billing.rx_bytes": "valid", "net.billing.tx_bytes": "valid", "memory.swap_used_bytes": "valid", "memory.swap_total_bytes": "valid"},
-		Units:    map[string]string{"cpu.utilization": "percent", "memory.used_percent": "percent", "disk.root.used_percent": "percent", "net.billing.rx_bytes": "bytes", "net.billing.tx_bytes": "bytes", "memory.swap_used_bytes": "bytes", "memory.swap_total_bytes": "bytes"}}
+		Values:   map[string]float64{"cpu.utilization": cpu, "cpu.cores": 4, "memory.used_percent": 40, "disk.root.used_percent": 12.3456},
+		Counters: map[string]string{"net.billing.rx_bytes": rx, "net.billing.tx_bytes": rx, "memory.swap_used_bytes": swapUsed, "memory.swap_total_bytes": "1000", "memory.total_bytes": "16000000000", "memory.used_bytes": "6400000000", "disk.root.total_bytes": "250000000000", "disk.root.used_bytes": "30864000000"},
+		Validity: map[string]string{"cpu.utilization": "valid", "cpu.cores": "valid", "memory.used_percent": "valid", "disk.root.used_percent": "valid", "net.billing.rx_bytes": "valid", "net.billing.tx_bytes": "valid", "memory.swap_used_bytes": "valid", "memory.swap_total_bytes": "valid", "memory.total_bytes": "valid", "memory.used_bytes": "valid", "disk.root.total_bytes": "valid", "disk.root.used_bytes": "valid"},
+		Units:    map[string]string{"cpu.utilization": "percent", "cpu.cores": "count", "memory.used_percent": "percent", "disk.root.used_percent": "percent", "net.billing.rx_bytes": "bytes", "net.billing.tx_bytes": "bytes", "memory.swap_used_bytes": "bytes", "memory.swap_total_bytes": "bytes", "memory.total_bytes": "bytes", "memory.used_bytes": "bytes", "disk.root.total_bytes": "bytes", "disk.root.used_bytes": "bytes"}}
 }
 
 func TestOverviewComputesCurrentValuesRatesAndSwap(t *testing.T) {
@@ -46,6 +46,15 @@ func TestOverviewComputesCurrentValuesRatesAndSwap(t *testing.T) {
 	item := overview.Items[0]
 	if *item.CPU != 20 || *item.Memory != 40 || *item.Disk != 12.35 || *item.Swap != 25 {
 		t.Fatalf("current values cpu=%v mem=%v disk=%v swap=%v", *item.CPU, *item.Memory, *item.Disk, *item.Swap)
+	}
+	if item.CPUCores == nil || *item.CPUCores != 4 {
+		t.Fatalf("cpu cores = %v, expected 4", item.CPUCores)
+	}
+	if item.DiskTotal == nil || *item.DiskTotal != "250000000000" || item.DiskUsed == nil || *item.DiskUsed != "30864000000" {
+		t.Fatalf("disk capacity total=%v used=%v", item.DiskTotal, item.DiskUsed)
+	}
+	if item.MemTotal == nil || *item.MemTotal != "16000000000" {
+		t.Fatalf("memory total = %v", item.MemTotal)
 	}
 	if item.RX == nil || *item.RX != 1000 { // 15000 bytes over 15 s
 		t.Fatalf("rx rate = %v", item.RX)

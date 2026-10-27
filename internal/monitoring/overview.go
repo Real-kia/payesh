@@ -41,9 +41,16 @@ type OverviewItem struct {
 	ServerID   contracts.ServerID `json:"server_id"`
 	ObservedAt *time.Time         `json:"observed_at,omitempty"`
 	CPU        *float64           `json:"cpu"`
+	CPUCores   *int               `json:"cpu_cores,omitempty"`
 	Memory     *float64           `json:"memory"`
+	MemTotal   *string            `json:"memory_total_bytes,omitempty"`
+	MemUsed    *string            `json:"memory_used_bytes,omitempty"`
 	Swap       *float64           `json:"swap"`
+	SwapTotal  *string            `json:"swap_total_bytes,omitempty"`
+	SwapUsed   *string            `json:"swap_used_bytes,omitempty"`
 	Disk       *float64           `json:"disk"`
+	DiskTotal  *string            `json:"disk_total_bytes,omitempty"`
+	DiskUsed   *string            `json:"disk_used_bytes,omitempty"`
 	// RX and TX are bytes per second between the last two samples.
 	RX     *float64       `json:"rx"`
 	TX     *float64       `json:"tx"`
@@ -72,6 +79,11 @@ type overviewRow struct {
 	swapUsed     sql.NullString
 	swapTotal    sql.NullString
 	rx, tx       sql.NullString
+	cpuCores     sql.NullFloat64
+	memTotal     sql.NullString
+	memUsed      sql.NullString
+	diskTotal    sql.NullString
+	diskUsed     sql.NullString
 }
 
 // QueryOverview builds the overview for ids (all servers when empty).
@@ -82,7 +94,10 @@ func (s *Store) QueryOverview(ctx context.Context, now time.Time, ids []string) 
  COALESCE(json_extract(values_json,'$."disk.root.used_percent"'),json_extract(values_json,'$."disk.used_percent"'),json_extract(values_json,'$.disk')),
  COALESCE(json_extract(values_json,'$."memory.swap_used_percent"'),json_extract(values_json,'$."swap.used_percent"')),
  json_extract(counters_json,'$."memory.swap_used_bytes"'),json_extract(counters_json,'$."memory.swap_total_bytes"'),
- json_extract(counters_json,'$."net.billing.rx_bytes"'),json_extract(counters_json,'$."net.billing.tx_bytes"')
+ json_extract(counters_json,'$."net.billing.rx_bytes"'),json_extract(counters_json,'$."net.billing.tx_bytes"'),
+ json_extract(values_json,'$."cpu.cores"'),
+ json_extract(counters_json,'$."memory.total_bytes"'),json_extract(counters_json,'$."memory.used_bytes"'),
+ json_extract(counters_json,'$."disk.root.total_bytes"'),json_extract(counters_json,'$."disk.root.used_bytes"')
 FROM metric_samples WHERE observed_at>=?`
 	args := []any{FormatPersistedTime(now.Add(-overviewWindow))}
 	if len(ids) > 0 {
@@ -102,7 +117,7 @@ FROM metric_samples WHERE observed_at>=?`
 	for rows.Next() {
 		var row overviewRow
 		var sequence, observed string
-		if err := rows.Scan(&row.server, &row.epoch, &sequence, &observed, &row.cpu, &row.memory, &row.disk, &row.swapPc, &row.swapUsed, &row.swapTotal, &row.rx, &row.tx); err != nil {
+		if err := rows.Scan(&row.server, &row.epoch, &sequence, &observed, &row.cpu, &row.memory, &row.disk, &row.swapPc, &row.swapUsed, &row.swapTotal, &row.rx, &row.tx, &row.cpuCores, &row.memTotal, &row.memUsed, &row.diskTotal, &row.diskUsed); err != nil {
 			return Overview{}, err
 		}
 		if row.sequence, err = strconv.ParseUint(sequence, 10, 64); err != nil {
@@ -155,6 +170,37 @@ func buildOverviewItem(id string, rows []overviewRow) OverviewItem {
 		item.ObservedAt = &observed
 		item.CPU, item.Memory, item.Disk, item.Swap = series.CPU[n-1], series.Memory[n-1], series.Disk[n-1], series.Swap[n-1]
 		item.RX, item.TX = series.RX[n-1], series.TX[n-1]
+		for i := n - 1; i >= 0; i-- {
+			r := rows[i]
+			if item.CPUCores == nil && r.cpuCores.Valid && r.cpuCores.Float64 > 0 {
+				cores := int(r.cpuCores.Float64)
+				item.CPUCores = &cores
+			}
+			if item.MemTotal == nil && r.memTotal.Valid && r.memTotal.String != "" {
+				val := r.memTotal.String
+				item.MemTotal = &val
+			}
+			if item.MemUsed == nil && r.memUsed.Valid && r.memUsed.String != "" {
+				val := r.memUsed.String
+				item.MemUsed = &val
+			}
+			if item.SwapTotal == nil && r.swapTotal.Valid && r.swapTotal.String != "" {
+				val := r.swapTotal.String
+				item.SwapTotal = &val
+			}
+			if item.SwapUsed == nil && r.swapUsed.Valid && r.swapUsed.String != "" {
+				val := r.swapUsed.String
+				item.SwapUsed = &val
+			}
+			if item.DiskTotal == nil && r.diskTotal.Valid && r.diskTotal.String != "" {
+				val := r.diskTotal.String
+				item.DiskTotal = &val
+			}
+			if item.DiskUsed == nil && r.diskUsed.Valid && r.diskUsed.String != "" {
+				val := r.diskUsed.String
+				item.DiskUsed = &val
+			}
+		}
 	}
 	return item
 }

@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -167,8 +168,13 @@ func (c *Collector) Collect(ctx context.Context, observedAt time.Time) (contract
 	validity := make(map[string]string)
 
 	if raw, err := readRootFile(ctx, c.Root, "proc/stat"); err == nil {
-		cpu, parseErr := parseCPUStat(raw)
+		cpu, cores, parseErr := parseCPUStat(raw)
 		if parseErr == nil {
+			if cores > 0 {
+				values["cpu.cores"] = float64(cores)
+				units["cpu.cores"] = "count"
+				validity["cpu.cores"] = "valid"
+			}
 			if c.hasPrev {
 				previousTotal, previousOK := c.previous.total()
 				currentTotal, currentOK := cpu.total()
@@ -290,23 +296,48 @@ func readRootFile(ctx context.Context, root, relative string) ([]byte, error) {
 	return data, nil
 }
 
-func parseCPUStat(data []byte) (cpuCounters, error) {
+func parseCPUStat(data []byte) (cpuCounters, int, error) {
+	var (
+		aggregate cpuCounters
+		found     bool
+		cores     int
+	)
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 9 || fields[0] != "cpu" {
+		if len(fields) == 0 {
 			continue
 		}
-		values := make([]uint64, 8)
-		for i := range values {
-			parsed, err := strconv.ParseUint(fields[i+1], 10, 64)
-			if err != nil {
-				return cpuCounters{}, fmt.Errorf("parse cpu counter %q: %w", fields[i+1], err)
+		if fields[0] == "cpu" && len(fields) >= 9 {
+			values := make([]uint64, 8)
+			for i := range values {
+				parsed, err := strconv.ParseUint(fields[i+1], 10, 64)
+				if err != nil {
+					return cpuCounters{}, 0, fmt.Errorf("parse cpu counter %q: %w", fields[i+1], err)
+				}
+				values[i] = parsed
 			}
-			values[i] = parsed
+			aggregate = cpuCounters{user: values[0], nice: values[1], system: values[2], idle: values[3], iowait: values[4], irq: values[5], softIRQ: values[6], steal: values[7]}
+			found = true
+		} else if strings.HasPrefix(fields[0], "cpu") && len(fields[0]) > 3 {
+			isCore := true
+			for _, ch := range fields[0][3:] {
+				if ch < '0' || ch > '9' {
+					isCore = false
+					break
+				}
+			}
+			if isCore {
+				cores++
+			}
 		}
-		return cpuCounters{user: values[0], nice: values[1], system: values[2], idle: values[3], iowait: values[4], irq: values[5], softIRQ: values[6], steal: values[7]}, nil
 	}
-	return cpuCounters{}, errors.New("aggregate cpu line not found")
+	if !found {
+		return cpuCounters{}, 0, errors.New("aggregate cpu line not found")
+	}
+	if cores == 0 {
+		cores = runtime.NumCPU()
+	}
+	return aggregate, cores, nil
 }
 
 func (c cpuCounters) total() (uint64, bool) {

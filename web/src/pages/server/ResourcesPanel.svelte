@@ -3,7 +3,7 @@
   import Sparkline from '../../Sparkline.svelte';
   import CircleChart from '../../CircleChart.svelte';
   import ChartPreview from '../../ChartPreview.svelte';
-  import { metricValue, resourceLevel, sampleAge } from '../../lib/format';
+  import { formatBytes, metricValue, resourceLevel, sampleAge } from '../../lib/format';
   import type { PreviewChartData, PreviewChartRange, PreviewServer } from '../../preview/fixtures';
 
   let { server, chartData, range = $bindable(), timezone, theme }: {
@@ -52,7 +52,16 @@
     {@const value = server.metrics[card.key]}
     <article class={`metric-card ${resourceLevel(value)}`} class:purple={card.tone === 'purple'} class:blue={card.tone === 'blue'} style:--i={index}>
       <div class="card-top">
-        <span class="metric-title"><Icon name={card.icon} size={14} />{card.label}</span>
+        <span class="metric-title">
+          <Icon name={card.icon} size={14} />{card.label}
+          {#if card.key === 'cpu' && server.capacity?.cpuCores}
+            <span class="metric-sub">{server.capacity.cpuCores} {server.capacity.cpuCores === 1 ? 'core' : 'cores'}</span>
+          {:else if card.key === 'memory' && server.capacity?.memoryTotalBytes}
+            <span class="metric-sub">{formatBytes(server.capacity.memoryUsedBytes ?? '')} / {formatBytes(server.capacity.memoryTotalBytes)}</span>
+          {:else if card.key === 'swap' && server.capacity?.swapTotalBytes}
+            <span class="metric-sub">{formatBytes(server.capacity.swapUsedBytes ?? '')} / {formatBytes(server.capacity.swapTotalBytes)}</span>
+          {/if}
+        </span>
         <strong class="metric-big tabular">{metricValue(value)}</strong>
       </div>
       {#if values.length > 1}
@@ -60,22 +69,42 @@
       {:else}
         <div class="sparkline-unavailable">{values.some((point) => point !== null) ? 'Collecting history' : 'Awaiting samples'}</div>
       {/if}
-      <div class="metric-footer"><span>{sampleAge(server)}</span><span>avg {average(values)} · {range}</span></div>
+      <div class="metric-footer">
+        <span>{sampleAge(server)}</span>
+        <span>
+          {#if card.key === 'cpu' && server.capacity?.cpuCores}
+            {server.capacity.cpuCores} {server.capacity.cpuCores === 1 ? 'core' : 'cores'} ·
+          {:else if card.key === 'memory' && server.capacity?.memoryTotalBytes}
+            {formatBytes(server.capacity.memoryUsedBytes ?? '')} of {formatBytes(server.capacity.memoryTotalBytes)} ·
+          {:else if card.key === 'swap' && server.capacity?.swapTotalBytes}
+            {formatBytes(server.capacity.swapUsedBytes ?? '')} of {formatBytes(server.capacity.swapTotalBytes)} ·
+          {/if}
+          avg {average(values)} · {range}
+        </span>
+      </div>
     </article>
   {/each}
   <article class={`metric-card disk ${resourceLevel(disk)}`} style:--i={2}>
     <div class="card-top">
-      <span class="metric-title"><Icon name="hard-drive" size={14} />Disk</span>
+      <span class="metric-title">
+        <Icon name="hard-drive" size={14} />Disk
+        {#if server.capacity?.diskTotalBytes}
+          <span class="metric-sub">{formatBytes(server.capacity.diskUsedBytes ?? '')} / {formatBytes(server.capacity.diskTotalBytes)}</span>
+        {/if}
+      </span>
       <strong class="metric-big tabular">{metricValue(disk)}</strong>
     </div>
     <div class="disk-ring"><CircleChart value={disk} size={62} strokeWidth={9} label="Used" color="var(--blue)" /></div>
-    <div class="metric-footer"><span>{sampleAge(server)}</span><span>{disk !== null ? `${(100 - disk).toFixed(0)}% free` : `Window: ${range}`}</span></div>
+    <div class="metric-footer">
+      <span>{sampleAge(server)}</span>
+      <span>{server.capacity?.diskTotalBytes ? `${formatBytes(server.capacity.diskAvailableBytes ?? '')} free of ${formatBytes(server.capacity.diskTotalBytes)}` : (disk !== null ? `${(100 - disk).toFixed(0)}% free` : `Window: ${range}`)}</span>
+    </div>
   </article>
 </div>
 
 <article class="panel chart-panel">
   <div class="panel-heading">
-      <div><h2>CPU utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div>
+      <div><h2>CPU utilization</h2><span class="muted">{#if server.capacity?.cpuCores}{server.capacity.cpuCores} {server.capacity.cpuCores === 1 ? 'core' : 'cores'} · {/if}Scale 0–100% · {timezone}</span></div>
     <div class="segmented" role="group" aria-label="Chart time range">
       {#each [['15m', '15 min'], ['1h', '1 hour'], ['24h', '24 hours']] as [id, label] (id)}
         <button type="button" aria-pressed={range === id} onclick={() => (range = id as PreviewChartRange)}>{label}</button>
@@ -91,6 +120,7 @@
       <ChartPreview data={chartData} {range} {timezone} metric="cpu" label="CPU history over the selected time range" />
     {/key}
     <div class="highlights">
+      {#if server.capacity?.cpuCores}<span>Cores <strong class="tabular">{server.capacity.cpuCores}</strong></span>{/if}
       <span>CPU range <strong class="tabular">{seriesRange(chartData.cpu)}</strong></span>
     </div>
   {:else}
@@ -99,30 +129,46 @@
 </article>
 
 <article class="panel chart-panel">
-  <div class="panel-heading"><div><h2>Memory utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div></div>
+  <div class="panel-heading"><div><h2>Memory utilization</h2><span class="muted">{#if server.capacity?.memoryTotalBytes}{formatBytes(server.capacity.memoryUsedBytes ?? '')} used of {formatBytes(server.capacity.memoryTotalBytes)} · {/if}Scale 0–100% · {timezone}</span></div></div>
   {#if chartData && chartData.coverage !== 'unavailable'}
     <ChartPreview data={chartData} {range} {timezone} metric="memory" label="Memory history over the selected time range" />
-    <div class="highlights"><span>Memory range <strong class="tabular">{seriesRange(chartData.memory)}</strong></span></div>
+    <div class="highlights">
+      {#if server.capacity?.memoryTotalBytes}
+        <span>Total <strong class="tabular">{formatBytes(server.capacity.memoryTotalBytes)}</strong></span>
+        <span>Used <strong class="tabular">{formatBytes(server.capacity.memoryUsedBytes ?? '')}</strong></span>
+        {#if server.capacity.memoryAvailableBytes}<span>Available <strong class="tabular">{formatBytes(server.capacity.memoryAvailableBytes)}</strong></span>{/if}
+      {/if}
+      <span>Memory range <strong class="tabular">{seriesRange(chartData.memory)}</strong></span>
+    </div>
   {:else}<div class="unavailable-panel"><strong>Memory history unavailable</strong><span>No telemetry samples have been recorded yet for this range.</span></div>{/if}
 </article>
 
 {#if hasSwap}
 <article class="panel chart-panel">
-  <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">Scale 0–100% · {timezone}</span></div></div>
+  <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">{#if server.capacity?.swapTotalBytes}{formatBytes(server.capacity.swapUsedBytes ?? '')} used of {formatBytes(server.capacity.swapTotalBytes)} · {/if}Scale 0–100% · {timezone}</span></div></div>
   {#if chartData && chartData.coverage !== 'unavailable' && hasSamples(chartData.swap)}
     <ChartPreview data={chartData} {range} {timezone} metric="swap" label="Swap history over the selected time range" />
-    <div class="highlights"><span>Swap range <strong class="tabular">{seriesRange(chartData.swap)}</strong></span></div>
+    <div class="highlights">
+      {#if server.capacity?.swapTotalBytes}
+        <span>Total <strong class="tabular">{formatBytes(server.capacity.swapTotalBytes)}</strong></span>
+        <span>Used <strong class="tabular">{formatBytes(server.capacity.swapUsedBytes ?? '')}</strong></span>
+      {/if}
+      <span>Swap range <strong class="tabular">{seriesRange(chartData.swap)}</strong></span>
+    </div>
   {:else}<div class="unavailable-panel"><strong>Swap history unavailable</strong><span>This node may not expose swap telemetry.</span></div>{/if}
 </article>
 {/if}
 
 <article class="panel disk-panel">
-  <div class="panel-heading"><div><h2>Disk storage</h2><span class="muted">Root filesystem</span></div></div>
+  <div class="panel-heading"><div><h2>Disk storage</h2><span class="muted">Root filesystem{#if server.capacity?.diskTotalBytes} · {formatBytes(server.capacity.diskTotalBytes)} total{/if}</span></div></div>
   <div class="disk-layout">
-    <CircleChart value={disk} size={128} strokeWidth={10} label="Used" color="var(--blue)" sublabel={disk !== null ? `${(100 - disk).toFixed(1)}% free` : ''} />
+    <CircleChart value={disk} size={128} strokeWidth={10} label="Used" color="var(--blue)" sublabel={server.capacity?.diskTotalBytes ? `${formatBytes(server.capacity.diskUsedBytes ?? '')} / ${formatBytes(server.capacity.diskTotalBytes)}` : (disk !== null ? `${(100 - disk).toFixed(1)}% free` : '')} />
     <div class="disk-stats">
-      <div class="stat"><span>Used space</span><strong class="tabular">{disk !== null ? `${disk.toFixed(1)}%` : '—'}</strong></div>
-      <div class="stat"><span>Available space</span><strong class="tabular">{disk !== null ? `${(100 - disk).toFixed(1)}%` : '—'}</strong></div>
+      {#if server.capacity?.diskTotalBytes}
+        <div class="stat"><span>Total space</span><strong class="tabular">{formatBytes(server.capacity.diskTotalBytes)}</strong></div>
+      {/if}
+      <div class="stat"><span>Used space</span><strong class="tabular">{server.capacity?.diskUsedBytes ? `${formatBytes(server.capacity.diskUsedBytes)} (${disk !== null ? `${disk.toFixed(1)}%` : ''})` : (disk !== null ? `${disk.toFixed(1)}%` : '—')}</strong></div>
+      <div class="stat"><span>Available space</span><strong class="tabular">{server.capacity?.diskAvailableBytes ? `${formatBytes(server.capacity.diskAvailableBytes)} (${disk !== null ? `${(100 - disk).toFixed(1)}%` : ''})` : (disk !== null ? `${(100 - disk).toFixed(1)}%` : '—')}</strong></div>
       <div class={`stat health ${resourceLevel(disk)}`}><span>Health</span><strong>{disk === null ? '—' : disk >= 90 ? 'Critical' : disk >= 75 ? 'Warning' : 'Healthy'}</strong></div>
     </div>
   </div>
@@ -147,7 +193,8 @@
   .metric-card.warning { --metric: var(--warning); }
   .metric-card.critical { --metric: var(--danger); }
   .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-  .metric-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+  .metric-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; flex-wrap: wrap; }
+  .metric-sub { font-size: 11px; font-weight: 500; color: var(--ink); padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-muted); }
   .metric-big { color: var(--metric); font-size: 24px; font-weight: 700; letter-spacing: -0.03em; }
   .sparkline, .sparkline-unavailable, .disk-ring { height: 50px; margin: 12px 0 10px; }
   .sparkline-unavailable { display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--muted); font-size: 12px; }
@@ -160,7 +207,7 @@
   .highlights strong { color: var(--ink); }
 
   .disk-layout { display: flex; flex-wrap: wrap; align-items: center; gap: 28px; padding: 4px; }
-  .disk-stats { display: grid; flex: 1; grid-template-columns: repeat(3, minmax(110px, 1fr)); gap: 12px; }
+  .disk-stats { display: grid; flex: 1; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
   .stat { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); }
   .stat span { color: var(--muted); font-size: 12px; }
   .stat strong { font-size: 16px; font-weight: 650; }

@@ -422,7 +422,7 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	stepStarted := time.Now()
-	err := a.store.DeleteServer(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
+	err := a.store.DeleteServerAsync(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
 	deleteTime = time.Since(stepStarted)
 	failure = err
 	switch {

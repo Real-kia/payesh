@@ -1216,9 +1216,16 @@ components:
               server_id: { type: string }
               observed_at: { type: string, format: date-time }
               cpu: { type: number, nullable: true }
+              cpu_cores: { type: integer, nullable: true, description: CPU core count }
               memory: { type: number, nullable: true }
+              memory_total_bytes: { type: string, nullable: true }
+              memory_used_bytes: { type: string, nullable: true }
               swap: { type: number, nullable: true }
+              swap_total_bytes: { type: string, nullable: true }
+              swap_used_bytes: { type: string, nullable: true }
               disk: { type: number, nullable: true }
+              disk_total_bytes: { type: string, nullable: true }
+              disk_used_bytes: { type: string, nullable: true }
               rx: { type: number, nullable: true, description: Bytes per second }
               tx: { type: number, nullable: true, description: Bytes per second }
               series: { $ref: '#/components/schemas/OverviewSeries' }

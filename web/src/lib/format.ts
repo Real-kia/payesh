@@ -2,10 +2,11 @@ import type { DisplayState, PreviewServer } from '../preview/fixtures';
 // Explicit extension so node's unit tests can load this module directly.
 import { PREVIEW_MODE } from './env.ts';
 
-/** Formats a decimal byte count kept as a string (uint64-safe) in SI units. */
-export function formatBytes(value: string): string {
+/** Formats a decimal byte count kept as a string, number, or bigint in SI units. */
+export function formatBytes(value: string | number | bigint | null | undefined): string {
+  if (value == null || value === '') return '—';
   try {
-    const bytes = BigInt(value);
+    const bytes = typeof value === 'bigint' ? value : typeof value === 'number' ? BigInt(Math.round(value)) : BigInt(value);
     const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
     let scaled = Number(bytes);
     let unit = 0;

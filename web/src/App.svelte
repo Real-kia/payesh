@@ -22,11 +22,11 @@
   import { relayOptions, rememberRelay } from './lib/relays';
   import CommandPalette, { type Command } from './components/CommandPalette.svelte';
   import { ApiError, apiClient, mapWithConcurrency, type Account, type UpdateStatus, type UpdateProgress, type AlertState, type AlertRule, type Job, type MetricQuery, type StorageNotification, type Module, type InstallRequest, type RelayInfo, type Overview, type Server as ApiServer } from './api';
-  import type { DisplayState, PreviewChartData, PreviewServer } from './preview/fixtures';
+  import type { DisplayState, PreviewChartData, PreviewServer, ServerCapacity } from './preview/fixtures';
   import { getSavedTimezone, saveTimezone, formatTimeInTz, formatDateTimeInTz } from './timezone';
   import { PREVIEW_MODE } from './lib/env';
   import { operationKey } from './lib/ops';
-  import { allAddresses, displayAddress, nodeVersionOf, stateLabel, sumNetworkRate } from './lib/format';
+  import { allAddresses, displayAddress, formatBytes, nodeVersionOf, stateLabel, sumNetworkRate } from './lib/format';
   import TagEditor from './components/TagEditor.svelte';
   import ServerToolbar from './components/ServerToolbar.svelte';
   import { filterServers, loadFilter, saveFilter } from './lib/serverFilter';
@@ -257,6 +257,24 @@
 
   const ACTIVE_INSTALL_STORAGE_KEY = 'payesh_active_install';
 
+  const LAST_INSTALL_STORAGE_KEY = 'payesh_last_install_result';
+  type LastInstallResult = { state: 'failed' | 'cancelled'; message: string; at: number };
+  let lastInstallResults: Record<string, LastInstallResult> = {};
+  try { lastInstallResults = JSON.parse(window.localStorage.getItem(LAST_INSTALL_STORAGE_KEY) ?? '{}') ?? {}; } catch { lastInstallResults = {}; }
+  function rememberInstallResult(serverId: string, result: LastInstallResult | null) {
+    const next = { ...lastInstallResults };
+    if (result) next[serverId] = result; else delete next[serverId];
+    lastInstallResults = next;
+    try { window.localStorage.setItem(LAST_INSTALL_STORAGE_KEY, JSON.stringify(next)); } catch { /* non-critical */ }
+  }
+
+  // The hub stores the address typed when the server was added; reuse it as the SSH host.
+  let sshHostPrefilledFor = '';
+  function sshHostCandidate(server: { address?: string } | undefined): string {
+    const value = (server?.address ?? '').trim();
+    return /^[A-Za-z0-9.:\-\[\]]+$/.test(value) && /[.:]/.test(value) ? value : '';
+  }
+
   function saveActiveInstall(data: InstallProgressData | null) {
     activeInstall = data;
     if (typeof window === 'undefined') return;
@@ -414,6 +432,11 @@
   }
 
   $: selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0];
+  $: if (activePage === 'server' && selectedServer && selectedServer.id !== sshHostPrefilledFor) {
+    sshHostPrefilledFor = selectedServer.id;
+    // Always follow the server being viewed: a host typed for another server must not carry over.
+    installHost = sshHostCandidate(selectedServer);
+  }
   $: fleetTags = [...new Set(servers.flatMap((server) => server.tags ?? []))].sort((a, b) => a.localeCompare(b));
 
   async function saveServerTags(serverId: string, tags: string[]): Promise<void> {
@@ -702,6 +725,7 @@
       activeInstall.currentStage = 'failed';
       activeInstall.simulatedProgress = job.progress;
       const errMsg = job.error?.message || 'Error occurred during SSH installation.';
+      rememberInstallResult(activeInstall.serverId, { state: 'failed', message: errMsg, at: Date.now() });
       if (!activeInstall.logs.some((l) => l.text.includes(errMsg))) {
         activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: `Installation failed: ${errMsg}`, level: 'error' }];
       }
@@ -710,6 +734,7 @@
     }
     if (job.state === 'cancelled') {
       activeInstall.currentStage = 'cancelled';
+      rememberInstallResult(activeInstall.serverId, { state: 'cancelled', message: 'The installation was cancelled before it finished.', at: Date.now() });
       if (!activeInstall.logs.some((l) => l.text.includes('Installation cancelled'))) {
         activeInstall.logs = [...activeInstall.logs, { time: nowStr, text: 'Installation cancelled by user.', level: 'warn' }];
       }
@@ -718,6 +743,7 @@
     }
     if (job.state === 'succeeded') {
       const id = activeInstall.serverId;
+      rememberInstallResult(id, null);
       saveActiveInstall(null);
       detailTab = 'metrics';
       navigate('server', id);
@@ -1133,6 +1159,7 @@
   async function submitInstall(): Promise<void> {
     if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || !installRouteReady() || installBusy) return;
     installBusy = true; jobError = '';
+    rememberInstallResult(selectedServer.id, null);
     const host = installHost.trim();
     const port = Number(installPort);
     const user = installUser.trim();
@@ -1339,7 +1366,9 @@
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
       configurationRevision: server.configuration_revision, displayState: displayState(server),
-      metrics: { cpu: null, memory: null, swap: null, disk: null }, traffic: { scope: 'monthly', from: '', to: '', timezone: 'UTC', allowanceBytes: '0', direction: 'combined', countedBytes: '0', continuity: 'uncertain' }
+      metrics: { cpu: null, memory: null, swap: null, disk: null },
+      capacity: { cpuCores: null, memoryTotalBytes: null, memoryUsedBytes: null, swapTotalBytes: null, swapUsedBytes: null, diskTotalBytes: null, diskUsedBytes: null },
+      traffic: { scope: 'monthly', from: '', to: '', timezone: 'UTC', allowanceBytes: '0', direction: 'combined', countedBytes: '0', continuity: 'uncertain' }
     };
   }
 
@@ -1390,6 +1419,38 @@
     server.latestMetricAt = latest.observed_at;
     const read = (names: string[]) => names.map((name) => latest.values[name]).find((value) => typeof value === 'number' && Number.isFinite(value)) ?? null;
     server.metrics = { cpu: read(['cpu', 'cpu.utilization']), memory: read(['memory', 'memory.used_percent', 'memory.utilization']), swap: read(['memory.swap_used_percent', 'swap.used_percent', 'swap']), disk: read(['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent']) };
+
+    const samplesSorted = [...query.samples].sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
+    const readCounter = (names: string[]) => {
+      for (const sample of samplesSorted) {
+        for (const name of names) {
+          const val = sample.counters?.[name];
+          if (typeof val === 'string' && val.length > 0) return val;
+        }
+      }
+      return null;
+    };
+    const readValueAcross = (names: string[]) => {
+      for (const sample of samplesSorted) {
+        for (const name of names) {
+          const val = sample.values?.[name];
+          if (typeof val === 'number' && Number.isFinite(val) && val > 0) return val;
+        }
+      }
+      return null;
+    };
+    const cores = readValueAcross(['cpu.cores', 'cpu_cores', 'cores']);
+    server.capacity = {
+      cpuCores: cores !== null ? Math.round(cores) : (server.capacity?.cpuCores ?? null),
+      memoryTotalBytes: readCounter(['memory.total_bytes']) ?? server.capacity?.memoryTotalBytes ?? null,
+      memoryUsedBytes: readCounter(['memory.used_bytes']) ?? server.capacity?.memoryUsedBytes ?? null,
+      memoryAvailableBytes: readCounter(['memory.available_bytes']) ?? server.capacity?.memoryAvailableBytes ?? null,
+      swapTotalBytes: readCounter(['memory.swap_total_bytes']) ?? server.capacity?.swapTotalBytes ?? null,
+      swapUsedBytes: readCounter(['memory.swap_used_bytes']) ?? server.capacity?.swapUsedBytes ?? null,
+      diskTotalBytes: readCounter(['disk.root.total_bytes']) ?? server.capacity?.diskTotalBytes ?? null,
+      diskUsedBytes: readCounter(['disk.root.used_bytes']) ?? server.capacity?.diskUsedBytes ?? null,
+      diskAvailableBytes: readCounter(['disk.root.free_bytes']) ?? server.capacity?.diskAvailableBytes ?? null
+    };
   }
 
   function mergeMetricCharts(previous: PreviewChartData, next: PreviewChartData, seconds: number): PreviewChartData {
@@ -1418,9 +1479,21 @@
       const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
       const ranges = server.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
       const series = item.series;
+      const capacity: ServerCapacity = {
+        cpuCores: item.cpu_cores ?? server.capacity?.cpuCores ?? null,
+        memoryTotalBytes: item.memory_total_bytes ?? server.capacity?.memoryTotalBytes ?? null,
+        memoryUsedBytes: item.memory_used_bytes ?? server.capacity?.memoryUsedBytes ?? null,
+        memoryAvailableBytes: (item.memory_total_bytes && item.memory_used_bytes && BigInt(item.memory_total_bytes) >= BigInt(item.memory_used_bytes)) ? String(BigInt(item.memory_total_bytes) - BigInt(item.memory_used_bytes)) : (server.capacity?.memoryAvailableBytes ?? null),
+        swapTotalBytes: item.swap_total_bytes ?? server.capacity?.swapTotalBytes ?? null,
+        swapUsedBytes: item.swap_used_bytes ?? server.capacity?.swapUsedBytes ?? null,
+        diskTotalBytes: item.disk_total_bytes ?? server.capacity?.diskTotalBytes ?? null,
+        diskUsedBytes: item.disk_used_bytes ?? server.capacity?.diskUsedBytes ?? null,
+        diskAvailableBytes: (item.disk_total_bytes && item.disk_used_bytes && BigInt(item.disk_total_bytes) >= BigInt(item.disk_used_bytes)) ? String(BigInt(item.disk_total_bytes) - BigInt(item.disk_used_bytes)) : (server.capacity?.diskAvailableBytes ?? null)
+      };
       return {
         ...server,
         metrics: { cpu: item.cpu, memory: item.memory, swap: item.swap, disk: item.disk },
+        capacity,
         latestMetricAt: item.observed_at ?? server.latestMetricAt,
         traffic: item.billing ? { ...server.traffic, countedBytes: item.billing.counted_bytes, allowanceBytes: item.billing.allowance_bytes } : server.traffic,
         metricHistory: { ranges: { ...ranges, '15m': { timestamps: series.t, cpu: series.cpu, memory: series.memory, swap: series.swap, disk: series.disk, networkRx: series.rx, networkTx: series.tx, coverage: series.t.length ? 'complete' : 'unavailable' } } }
@@ -1469,7 +1542,7 @@
       if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && item.connection_state === 'connected') saveActiveInstall(null);
       servers = servers.map((previous) => {
         if (previous.id !== id) return previous;
-        const updated = { ...previous, ...emptyApiServer(item), metrics: previous.metrics, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory };
+        const updated = { ...previous, ...emptyApiServer(item), metrics: previous.metrics, capacity: previous.capacity, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory };
         applyMetric(latestQuery ?? query, updated);
         const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
         const ranges = updated.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
@@ -2015,7 +2088,11 @@
                 {/if}
                 <StatusPill state={selectedServer.displayState} label={stateLabel(selectedServer.displayState)} />
               </div>
-              <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.role === 'node' ? nodeVersionOf(selectedServer) : selectedServer.version}</p>
+              {#if selectedServer.connectionState === 'never-connected' && selectedServer.platform === 'unknown'}
+                <p class="lede">Not installed yet · details appear once the agent connects</p>
+              {:else}
+                <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.role === 'node' ? nodeVersionOf(selectedServer) : selectedServer.version}</p>
+              {/if}
               {#if renameError}<p class="form-error" role="alert">{renameError}</p>{/if}
             </div>
           </div>
@@ -2035,10 +2112,21 @@
           <div class="meta-item tags-item"><dt>Tags</dt><dd><TagEditor tags={selectedServer.tags ?? []} suggestions={fleetTags} readonly={PREVIEW_MODE || myAccount?.permission === 'read'} onSave={(tags) => saveServerTags(selectedServer.id, tags)} /></dd></div>
           <div class="meta-item"><dt>Role</dt><dd class="capitalize">{selectedServer.role === 'node' ? 'Node' : 'Master'}</dd></div>
           <div class="meta-item"><dt>Connection</dt><dd class="capitalize"><span class={`dot ${selectedServer.connectionState}`}></span>{selectedServer.connectionState.replace('-', ' ')}</dd></div>
-          <div class="meta-item"><dt>Freshness</dt><dd class="capitalize">{selectedServer.freshnessState}</dd></div>
-          <div class="meta-item"><dt>Revision</dt><dd class="mono">rev {selectedServer.configurationRevision}</dd></div>
+          {#if selectedServer.capacity?.cpuCores}
+            <div class="meta-item"><dt>CPU</dt><dd>{selectedServer.capacity.cpuCores} {selectedServer.capacity.cpuCores === 1 ? 'core' : 'cores'}</dd></div>
+          {/if}
+          {#if selectedServer.capacity?.memoryTotalBytes}
+            <div class="meta-item"><dt>RAM</dt><dd>{formatBytes(selectedServer.capacity.memoryTotalBytes)}</dd></div>
+          {/if}
+          {#if selectedServer.capacity?.diskTotalBytes}
+            <div class="meta-item"><dt>Disk</dt><dd>{formatBytes(selectedServer.capacity.diskTotalBytes)}</dd></div>
+          {/if}
+          {#if selectedServer.connectionState !== 'never-connected'}
+            <div class="meta-item"><dt>Freshness</dt><dd class="capitalize">{selectedServer.freshnessState}</dd></div>
+            <div class="meta-item"><dt>Revision</dt><dd class="mono">rev {selectedServer.configurationRevision}</dd></div>
+          {/if}
           {#if selectedServer.freshnessReason}
-            <div class="meta-item note"><dt>Note</dt><dd>{selectedServer.freshnessReason}</dd></div>
+            <div class="meta-item note"><dt>Note</dt><dd>{selectedServer.freshnessReason === 'no-heartbeat' ? 'No data received yet' : selectedServer.freshnessReason}</dd></div>
           {/if}
         </dl>
 
@@ -2054,6 +2142,20 @@
           />
           {:catch}{@render chunkFailed()}{/await}
         {:else if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState !== 'connected'}
+          {#if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState === 'never-connected' && !(activeInstall && activeInstall.serverId === selectedServer.id)}
+            {@const lastInstall = lastInstallResults[selectedServer.id]}
+            <article class="panel setup-hint" class:failed={!!lastInstall} role="status">
+              {#if lastInstall}
+                <h2>{lastInstall.state === 'failed' ? 'The last install attempt failed' : 'The last install attempt was cancelled'}</h2>
+                <p>{lastInstall.message}</p>
+                <p class="muted">Check the SSH details below and try again.</p>
+              {:else}
+                <h2>Waiting for the agent to install</h2>
+                <p>This server was added to Payesh, but nothing is installed on it yet, so it has not reported anything. The address above is only the one you entered.</p>
+                <p class="muted">Enter the SSH password or key below and press <strong>Install Payesh</strong>, or run the join command on the server yourself.</p>
+              {/if}
+            </article>
+          {/if}
           <article class="panel server-actions">
             <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
@@ -2382,6 +2484,10 @@
   .meta-item dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 550; }
   .meta-item.note dd { color: var(--warning); }
+  .setup-hint { padding: 14px 18px; border-left: 3px solid var(--warn, #e0b060); }
+  .setup-hint.failed { border-left-color: var(--danger, #e5646a); }
+  .setup-hint h2 { margin: 0 0 6px; font-size: 1rem; }
+  .setup-hint p { margin: 0 0 4px; }
   .meta-item dd.address-list { flex-wrap: wrap; gap: 2px 10px; }
   .meta-item.tags-item { min-width: 0; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }

@@ -91,6 +91,9 @@ type Store struct {
 	observer     func(context.Context, []contracts.MetricSample) error
 	// stateRefreshedAt throttles RefreshServerStatesForRead (unix nanoseconds).
 	stateRefreshedAt atomic.Int64
+	// deleting holds servers whose history is still being purged in the
+	// background. They are hidden from reads so a delete feels instant.
+	deleting sync.Map
 }
 
 const readerConnections = 4
@@ -1289,6 +1292,9 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if err != nil {
 		return contracts.Server{}, false, err
 	}
+	if s.isDeleting(string(serverID)) {
+		return contracts.Server{}, false, nil
+	}
 	return server, true, nil
 }
 
@@ -1349,6 +1355,14 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 			args = append(args, id)
 		}
 		conditions = append(conditions, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if hidden := s.deletingIDs(); len(hidden) > 0 {
+		placeholders := make([]string, len(hidden))
+		for i, id := range hidden {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		conditions = append(conditions, "id NOT IN ("+strings.Join(placeholders, ",")+")")
 	}
 	if decoded.Name != "" {
 		conditions = append(conditions, `(name > ? OR (name = ? AND id > ?))`)
