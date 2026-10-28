@@ -83,3 +83,23 @@ test('node update helpers format time and failures', () => {
   assert.equal(failureMessage({ message: 'node core update failed' }, 'failed'), 'node core update failed');
   assert.equal(failureMessage(undefined, 'cancelled'), 'The update was cancelled.');
 });
+
+import { relayOptions, preferredRelay } from '../src/lib/relays.ts';
+
+test('relay options prioritize active ready relays on top', () => {
+  const servers = [
+    { id: 's1', name: 'Server 1', address: '1.1.1.1', role: 'node', connectionState: 'connected' },
+    { id: 's2', name: 'Server 2', address: '2.2.2.2', role: 'node', connectionState: 'connected' },
+    { id: 's3', name: 'Server 3', address: '3.3.3.3', role: 'node', connectionState: 'connected' }
+  ];
+  const relays = [
+    { server_id: 's2', name: 'Server 2', address: '2.2.2.2', port: 9798, connection_state: 'connected', nodes: 3 }
+  ];
+  const options = relayOptions(servers, relays);
+  assert.equal(options.length, 3);
+  assert.equal(options[0].id, 's2');
+  assert.equal(options[0].ready, true);
+  assert.equal(options[0].nodes, 3);
+  assert.equal(options[1].ready, false);
+  assert.equal(preferredRelay(options), 's2');
+});

@@ -357,6 +357,12 @@ func (h *Hub) handleRevocation(serverID contracts.ServerID, certificateFingerpri
 	}
 	h.mu.Unlock()
 	if markRevoked {
+		server, found, err := h.Store.GetServer(context.Background(), serverID)
+		if err == nil && found && (server.ConnectionState == "never-connected" || server.LastHeartbeat == nil) {
+			markRevoked = false
+		}
+	}
+	if markRevoked {
 		// The durable state is updated even when the channel was already gone;
 		// the dashboard must not present a revoked identity as merely
 		// heartbeat-stale.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/nodehub"
 	"github.com/Real-kia/payesh/internal/transport"
 )
 
@@ -25,6 +26,9 @@ func TestJoinTokenReplacesUnusedInstallIdentity(t *testing.T) {
 	defer store.Close()
 	ca, err := transport.NewCertificateAuthority(now)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodehub.NewHub(ca, store); err != nil {
 		t.Fatal(err)
 	}
 	svc, err := NewEnrollmentService(store, ca)
@@ -52,6 +56,13 @@ func TestJoinTokenReplacesUnusedInstallIdentity(t *testing.T) {
 	add("server-failed-install-01", "never-connected")
 	if code := issue("server-failed-install-01", "k1"); code != http.StatusCreated {
 		t.Fatalf("never-connected server with an unused certificate: status %d", code)
+	}
+	rechecked, found, err := store.GetServer(ctx, "server-failed-install-01")
+	if err != nil || !found {
+		t.Fatalf("get server err=%v found=%v", err, found)
+	}
+	if rechecked.ConnectionState != "never-connected" {
+		t.Fatalf("reissued unused certificate turned server into state %q, want never-connected", rechecked.ConnectionState)
 	}
 
 	add("server-live-node-000001", "connected")

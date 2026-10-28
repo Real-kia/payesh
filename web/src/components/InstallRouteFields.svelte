@@ -34,6 +34,7 @@
 
   let readyRelays = $derived(relays.filter((relay) => relay.ready));
   let otherRelays = $derived(relays.filter((relay) => !relay.ready));
+  let selectedRelay = $derived(relays.find((relay) => relay.id === relayServerId));
   const label = (relay: RelayOption) => `${relay.name} · ${relay.address}${relay.countryCode ? ` · ${relay.countryCode}` : ''}`;
 </script>
 
@@ -48,12 +49,21 @@
 {#if route === 'proxy'}
   <label class="form-wide">Proxy URL<input bind:value={proxyUrl} type="password" autocomplete="off" placeholder="socks5://user:pass@host:1080" required /></label>
 {:else if route === 'relay'}
+  {#if selectedRelay?.ready}
+    <div class="relay-active-banner form-wide" role="status">
+      <span class="relay-active-icon"><Icon name="shield" size={15} /></span>
+      <div>
+        <strong>{selectedRelay.name} is already operating as an active relay</strong>
+        <span class="muted">Currently forwarding traffic for {selectedRelay.nodes} node{selectedRelay.nodes === 1 ? '' : 's'}. It will be used immediately without additional configuration.</span>
+      </div>
+    </div>
+  {/if}
   <label class="form-wide">Relay node
     <select bind:value={relayServerId} required>
       <option value="" disabled>Choose a connected node</option>
       {#if readyRelays.length}
-        <optgroup label="Ready relays">
-          {#each readyRelays as relay (relay.id)}<option value={relay.id}>{label(relay)}{relay.nodes ? ` · ${relay.nodes} node${relay.nodes === 1 ? '' : 's'}` : ''}</option>{/each}
+        <optgroup label="Active relay nodes (ready)">
+          {#each readyRelays as relay (relay.id)}<option value={relay.id}>{label(relay)} · [Active relay{relay.nodes ? ` · ${relay.nodes} node${relay.nodes === 1 ? '' : 's'}` : ''}]</option>{/each}
         </optgroup>
       {/if}
       {#if otherRelays.length}
@@ -77,4 +87,30 @@
 <style>
   .route { min-width: 0; margin: 0; padding: 0; border: 0; }
   .route legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
+  .relay-active-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+    border: 1px solid var(--accent);
+    color: var(--ink);
+    font-size: 13px;
+    animation: rise-in var(--dur, 0.2s) var(--ease-out, ease-out);
+  }
+  .relay-active-banner strong { display: block; font-size: 13.5px; color: var(--accent); margin-bottom: 2px; }
+  .relay-active-banner .muted { font-size: 12px; line-height: 1.4; color: var(--muted); }
+  .relay-active-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--accent-bg);
+    color: var(--accent);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
 </style>

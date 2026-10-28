@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../Icon.svelte';
+  import LoadingModal from './LoadingModal.svelte';
   import { apiClient, type Server } from '../api';
   import { operationKey } from '../lib/ops';
   import { PREVIEW_MODE } from '../lib/env';
@@ -16,13 +17,25 @@
   let relayId = $state('');
   let nodeRoute = $state<'auto' | 'proxy' | 'direct'>('auto');
 
+  let readyRelays = $derived(relays.filter((relay) => relay.ready));
+  let otherRelays = $derived(relays.filter((relay) => !relay.ready));
+  let selectedRelay = $derived(relays.find((relay) => relay.id === relayId));
+  const label = (relay: RelayOption) => `${relay.name} · ${relay.address}${relay.countryCode ? ` · ${relay.countryCode}` : ''}`;
+
   function chooseSource(next: Source) {
+    if (source === next) return;
     source = next;
+    command = '';
+    expiresAt = '';
+    error = '';
     if (next === 'relay' && !relayId) relayId = preferredRelay(relays);
   }
 
   let name = $state('');
   let busy = $state(false);
+  let loadingOpen = $state(false);
+  let loadingTitle = $state('');
+  let loadingMessage = $state('');
   let error = $state('');
   let command = $state('');
   let expiresAt = $state('');
@@ -35,7 +48,18 @@
     if (!serverName || busy) return;
     if (source === 'relay' && !relayId) { error = 'Choose a relay node.'; return; }
     busy = true; error = ''; command = ''; expiresAt = ''; copied = false;
-    if (PREVIEW_MODE) { error = 'Join commands are issued by the hub and are unavailable in the fixture preview.'; busy = false; return; }
+    loadingOpen = true;
+    if (source === 'relay') {
+      loadingTitle = 'Preparing relay join…';
+      loadingMessage = 'Connecting to relay node, verifying network proxy, and generating command. This may take 15–30 seconds…';
+    } else if (source === 'hub') {
+      loadingTitle = 'Generating join command…';
+      loadingMessage = 'Preparing download bundles and generating one-time command…';
+    } else {
+      loadingTitle = 'Generating join command…';
+      loadingMessage = 'Creating single-use enrollment token and join command…';
+    }
+    if (PREVIEW_MODE) { error = 'Join commands are issued by the hub and are unavailable in the fixture preview.'; busy = false; loadingOpen = false; return; }
     let createdId: string | null = null;
     let createdRevision = '0';
     try {
@@ -68,6 +92,7 @@
       error = cause instanceof Error ? cause.message : 'Unable to create the join command.';
     } finally {
       busy = false;
+      loadingOpen = false;
     }
   }
 
@@ -96,10 +121,32 @@
       </div>
     </fieldset>
     {#if source === 'relay'}
+      {#if selectedRelay?.ready}
+        <div class="relay-active-banner" role="status">
+          <span class="relay-active-icon"><Icon name="shield" size={15} /></span>
+          <div>
+            <strong>{selectedRelay.name} is already operating as an active relay</strong>
+            <span class="muted">Currently forwarding for {selectedRelay.nodes} node{selectedRelay.nodes === 1 ? '' : 's'}. It will be used immediately without additional relay configuration.</span>
+          </div>
+        </div>
+      {/if}
       <label>Relay node
         <select bind:value={relayId} required>
           <option value="" disabled>Choose a connected node</option>
-          {#each relays as relay (relay.id)}<option value={relay.id}>{relay.name} · {relay.address}</option>{/each}
+          {#if readyRelays.length}
+            <optgroup label="Active relay nodes (ready)">
+              {#each readyRelays as relay (relay.id)}
+                <option value={relay.id}>{label(relay)} · [Active relay{relay.nodes ? ` · ${relay.nodes} node${relay.nodes === 1 ? '' : 's'}` : ''}]</option>
+              {/each}
+            </optgroup>
+          {/if}
+          {#if otherRelays.length}
+            <optgroup label={readyRelays.length ? 'Other connected nodes' : 'Connected nodes'}>
+              {#each otherRelays as relay (relay.id)}
+                <option value={relay.id}>{label(relay)}</option>
+              {/each}
+            </optgroup>
+          {/if}
         </select>
       </label>
       <label>Node connection
@@ -122,6 +169,7 @@
       <p class="muted"><Icon name="clock" size={12} /> Single-use token, valid until {new Date(expiresAt).toLocaleString()}. Treat it like a password.</p>
     </div>
   {/if}
+  <LoadingModal open={loadingOpen} title={loadingTitle} message={loadingMessage} />
 </article>
 
 <style>
@@ -129,6 +177,33 @@
   .join-form label { display: grid; flex: 1 1 260px; gap: 7px; font-size: 13px; font-weight: 550; }
   .source { flex: 1 1 100%; min-width: 0; margin: 0; padding: 0; border: 0; }
   .source legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
+  .relay-active-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+    border: 1px solid var(--accent);
+    color: var(--ink);
+    font-size: 13px;
+    animation: rise-in var(--dur, 0.2s) var(--ease-out, ease-out);
+  }
+  .relay-active-banner strong { display: block; font-size: 13.5px; color: var(--accent); margin-bottom: 2px; }
+  .relay-active-banner .muted { font-size: 12px; line-height: 1.4; color: var(--muted); }
+  .relay-active-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--accent-bg);
+    color: var(--accent);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
   .join-command { display: grid; gap: 10px; margin-top: 16px; animation: rise-in var(--dur) var(--ease-out); }
   .terminal-block { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 14px; border-radius: var(--radius-md); background: var(--term-bg); color: var(--term-ink); }
   .terminal-block code { flex: 1; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }

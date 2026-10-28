@@ -112,6 +112,13 @@
         <slot />
       </div>
 
+      {#if busy}
+        <div class="modal-busy-banner" role="status" aria-live="polite">
+          <Icon name="loader" size={15} class="spin" />
+          <span>Processing request, please wait…</span>
+        </div>
+      {/if}
+
       <!-- ACTIONS -->
       <div class="modal-actions">
         {#if !hideCancel}
@@ -204,6 +211,17 @@
   .modal-body { display: flex; flex-direction: column; gap: 12px; }
   .modal-body:empty { display: none; }
   .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+  .modal-busy-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 500;
+  }
   .button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .button.danger:hover:not(:disabled) { filter: brightness(1.08); background: var(--danger); }
   :global(.spin) { animation: spin 0.8s linear infinite; }

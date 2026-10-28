@@ -1049,7 +1049,7 @@ func (s *Store) RefreshServerStates(ctx context.Context, now time.Time) error {
 	// Only rows whose derived state changes are written, so a steady fleet
 	// costs a read instead of rewriting every server row.
 	_, err := s.db.ExecContext(ctx, `WITH derived AS (SELECT id,
-CASE WHEN connection_state='revoked' THEN 'revoked' WHEN last_heartbeat IS NULL THEN 'never-connected' WHEN last_heartbeat <= ?1 THEN 'disconnected' ELSE 'connected' END AS connection_state,
+CASE WHEN connection_state='revoked' AND last_heartbeat IS NOT NULL THEN 'revoked' WHEN last_heartbeat IS NULL THEN 'never-connected' WHEN last_heartbeat <= ?1 THEN 'disconnected' ELSE 'connected' END AS connection_state,
 CASE WHEN last_heartbeat IS NULL THEN 'unknown' WHEN last_heartbeat <= ?2 THEN 'stale' ELSE 'fresh' END AS freshness_state,
 CASE WHEN last_heartbeat IS NULL THEN 'no-heartbeat' WHEN last_heartbeat <= ?2 THEN 'heartbeat-timeout' ELSE NULL END AS freshness_reason
 FROM servers)
@@ -1255,6 +1255,16 @@ func (s *Store) MarkServerRevoked(ctx context.Context, serverID contracts.Server
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// ResetNeverConnectedServer ensures a server that has never sent a heartbeat
+// remains in never-connected state rather than revoked or stale.
+func (s *Store) ResetNeverConnectedServer(ctx context.Context, serverID contracts.ServerID) error {
+	if !validStoreServerID(serverID) {
+		return errors.New("server_id must be a bounded URL-safe identifier")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE servers SET connection_state='never-connected',freshness_state='unknown',freshness_reason='no-heartbeat' WHERE id=? AND last_heartbeat IS NULL`, string(serverID))
+	return err
 }
 
 // IsServerUnreachable exposes the durable fleet state to the alert engine so

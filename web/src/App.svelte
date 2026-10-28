@@ -5,6 +5,7 @@
   import { networkRates, networkRollupRate } from './network';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import LoadingModal from './components/LoadingModal.svelte';
   import type { InstallProgressData, InstallStage } from './InstallProgress.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import StatusPill from './components/StatusPill.svelte';
@@ -236,6 +237,20 @@
     action: undefined
   };
 
+  let globalLoading = {
+    open: false,
+    title: '',
+    message: ''
+  };
+
+  function showLoading(title: string, message: string = 'Please wait while we process your request…') {
+    globalLoading = { open: true, title, message };
+  }
+
+  function hideLoading() {
+    globalLoading = { open: false, title: '', message: '' };
+  }
+
 
   // Views that are not needed for the first screen load on demand, which keeps
   // the initial bundle small (charts pull in uPlot, for example).
@@ -323,6 +338,7 @@
       return;
     }
     modalDialog.busy = true;
+    showLoading(modalDialog.title || 'Processing…', 'Please wait while the server completes the operation…');
     try {
       await modalDialog.action();
       modalDialog.open = false;
@@ -330,6 +346,7 @@
       modalDialog.open = false;
     } finally {
       modalDialog.busy = false;
+      hideLoading();
     }
   }
 
@@ -800,6 +817,7 @@
   async function createPendingServer(): Promise<void> {
     if (!newServerName.trim() || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || !installRouteReady() || createServerBusy) return;
     createServerBusy = true; jobError = '';
+    showLoading('Adding and installing server…', 'Connecting to host over SSH, verifying host key, and initiating installation…');
     const host = installHost.trim();
     const port = Number(installPort);
     const user = installUser.trim();
@@ -854,6 +872,7 @@
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       createServerBusy = false;
+      hideLoading();
     }
   }
 
@@ -1038,6 +1057,7 @@
   async function updateAllNodes(): Promise<void> {
     if (!latestRelease || !outdatedNodes.length || nodesUpdateBusy) return;
     nodesUpdateBusy = true; updateApplyError = '';
+    showLoading('Queueing updates…', `Scheduling update to v${latestRelease} for ${outdatedNodes.length} nodes…`);
     try {
       const ids = outdatedNodes.map((server) => server.id);
       for (let start = 0; start < ids.length; start += 20) {
@@ -1052,6 +1072,7 @@
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       nodesUpdateBusy = false;
+      hideLoading();
     }
   }
 
@@ -1066,6 +1087,7 @@
     if (bulkBusy) return;
     const targets = servers.filter((server) => selectedServerIds.includes(server.id) && server.role === 'node' && server.connectionState === 'connected');
     bulkBusy = true; jobError = '';
+    showLoading('Queueing updates…', `Scheduling update for ${targets.length} node${targets.length === 1 ? '' : 's'}…`);
     try {
       if (!targets.length) throw new Error('None of the selected servers are connected nodes that can be updated.');
       if (!PREVIEW_MODE) {
@@ -1087,7 +1109,7 @@
       jobError = error instanceof Error ? error.message : 'Unable to queue the updates.';
       showNotice(jobError);
       if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally { bulkBusy = false; }
+    } finally { bulkBusy = false; hideLoading(); }
   }
 
   function promptDeleteSelected() {
@@ -1137,6 +1159,7 @@
   async function updateSelectedNode(): Promise<void> {
     if (!selectedServer || selectedServer.role !== 'node' || nodeUpdateBusy) return;
     nodeUpdateBusy = true; nodeUpdateError = '';
+    showLoading('Queueing update…', `Checking release and queuing update for ${selectedServer.name}…`);
     try {
       if (PREVIEW_MODE) {
         showNotice(`Update queued for ${selectedServer.name}.`);
@@ -1153,18 +1176,19 @@
     } catch (error) {
       nodeUpdateError = error instanceof Error ? error.message : 'Unable to queue the node update.';
       if (error instanceof ApiError && error.authExpired) authExpired = true;
-    } finally { nodeUpdateBusy = false; }
+    } finally { nodeUpdateBusy = false; hideLoading(); }
   }
 
   async function submitInstall(): Promise<void> {
     if (!selectedServer || !installHost.trim() || !installUser.trim() || (installAuthMethod === 'password' ? !installPassword : !installKey) || !installRouteReady() || installBusy) return;
     installBusy = true; jobError = '';
-    rememberInstallResult(selectedServer.id, null);
     const host = installHost.trim();
     const port = Number(installPort);
     const user = installUser.trim();
     const serverName = selectedServer.name;
     const serverId = selectedServer.id;
+    rememberInstallResult(serverId, null);
+    showLoading('Starting installation…', `Connecting to ${serverName} over SSH and initiating agent installation…`);
     try {
       const job = await apiClient.enqueueInstall({
         server_id: serverId,
@@ -1205,12 +1229,14 @@
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       installBusy = false;
+      hideLoading();
     }
   }
 
   async function controlSelectedNode(action: 'restart' | 'disable' | 'enable'): Promise<void> {
     if (!selectedServer || selectedServer.role !== 'node' || nodeControlBusy) return;
     nodeControlBusy = true; nodeControlError = '';
+    showLoading(`Executing node ${action}…`, `Sending ${action} command to ${selectedServer.name}…`);
     try {
       await apiClient.controlNode(selectedServer.id, {
         action, port: Number(nodeControlPort), user: nodeControlUser.trim(),
@@ -1226,6 +1252,7 @@
       if (error instanceof ApiError && error.authExpired) authExpired = true;
     } finally {
       nodeControlBusy = false;
+      hideLoading();
     }
   }
 
@@ -1351,7 +1378,10 @@
       if (activeInstall.currentStage === 'failed' && server.connection_state !== 'connected') return 'failed';
       if (activeInstall.currentStage !== 'succeeded' && activeInstall.currentStage !== 'failed') return 'installing';
     }
-    if (server.connection_state === 'revoked') return 'disabled';
+    if (server.connection_state === 'revoked') {
+      if (!server.last_heartbeat) return 'pending';
+      return 'disabled';
+    }
     if (server.connection_state === 'never-connected') return 'pending';
     if (server.connection_state === 'disconnected') return 'unreachable';
     if (server.freshness_state === 'stale') return 'stale';
@@ -2088,7 +2118,7 @@
                 {/if}
                 <StatusPill state={selectedServer.displayState} label={stateLabel(selectedServer.displayState)} />
               </div>
-              {#if selectedServer.connectionState === 'never-connected' && selectedServer.platform === 'unknown'}
+              {#if (selectedServer.connectionState === 'never-connected' || (selectedServer.connectionState === 'revoked' && !selectedServer.lastHeartbeat)) && selectedServer.platform === 'unknown'}
                 <p class="lede">Not installed yet · details appear once the agent connects</p>
               {:else}
                 <p class="lede mono">{selectedServer.platform} · {selectedServer.architecture} · v{selectedServer.role === 'node' ? nodeVersionOf(selectedServer) : selectedServer.version}</p>
@@ -2111,6 +2141,10 @@
           <div class="meta-item"><dt>{allAddresses(selectedServer).length > 1 ? 'Addresses' : 'Address'}</dt><dd class="mono address-list">{#each allAddresses(selectedServer).length ? allAddresses(selectedServer) : [displayAddress(selectedServer)] as address (address)}<span>{address}</span>{/each}</dd></div>
           <div class="meta-item tags-item"><dt>Tags</dt><dd><TagEditor tags={selectedServer.tags ?? []} suggestions={fleetTags} readonly={PREVIEW_MODE || myAccount?.permission === 'read'} onSave={(tags) => saveServerTags(selectedServer.id, tags)} /></dd></div>
           <div class="meta-item"><dt>Role</dt><dd class="capitalize">{selectedServer.role === 'node' ? 'Node' : 'Master'}</dd></div>
+          {#if readyRelays.some((r) => r.server_id === selectedServer.id)}
+            {@const relayInfo = readyRelays.find((r) => r.server_id === selectedServer.id)}
+            <div class="meta-item"><dt>Relay</dt><dd class="relay-active-badge-sm"><Icon name="shield" size={13} />Active relay ({relayInfo?.nodes ?? 0} {relayInfo?.nodes === 1 ? 'node' : 'nodes'})</dd></div>
+          {/if}
           <div class="meta-item"><dt>Connection</dt><dd class="capitalize"><span class={`dot ${selectedServer.connectionState}`}></span>{selectedServer.connectionState.replace('-', ' ')}</dd></div>
           {#if selectedServer.capacity?.cpuCores}
             <div class="meta-item"><dt>CPU</dt><dd>{selectedServer.capacity.cpuCores} {selectedServer.capacity.cpuCores === 1 ? 'core' : 'cores'}</dd></div>
@@ -2142,7 +2176,7 @@
           />
           {:catch}{@render chunkFailed()}{/await}
         {:else if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState !== 'connected'}
-          {#if !PREVIEW_MODE && selectedServer.role === 'node' && selectedServer.connectionState === 'never-connected' && !(activeInstall && activeInstall.serverId === selectedServer.id)}
+          {#if !PREVIEW_MODE && selectedServer.role === 'node' && (selectedServer.connectionState === 'never-connected' || (selectedServer.connectionState === 'revoked' && !selectedServer.lastHeartbeat)) && !(activeInstall && activeInstall.serverId === selectedServer.id)}
             {@const lastInstall = lastInstallResults[selectedServer.id]}
             <article class="panel setup-hint" class:failed={!!lastInstall} role="status">
               {#if lastInstall}
@@ -2168,7 +2202,7 @@
             </form>
             {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
           </article>
-          {#if selectedServer.connectionState === 'never-connected' && myAccount?.permission !== 'read'}
+          {#if (selectedServer.connectionState === 'never-connected' || (selectedServer.connectionState === 'revoked' && !selectedServer.lastHeartbeat)) && myAccount?.permission !== 'read'}
             <JoinCommandPanel existing={{ id: selectedServer.id, name: selectedServer.name }} relays={relayCandidates} onRelayUsed={() => void loadRelays()} />
           {/if}
         {/if}
@@ -2274,7 +2308,24 @@
   onCancel={closeConfirmModal}
 />
 
+<LoadingModal
+  open={globalLoading.open}
+  title={globalLoading.title}
+  message={globalLoading.message}
+/>
+
 <style>
+  .relay-active-badge-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 550;
+  }
   .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); font-size: 13px; }
   .bulk-spacer { flex: 1; }
   /* ------------------------------------------------------------------------

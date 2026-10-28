@@ -135,6 +135,7 @@ func (s *EnrollmentService) serveTokenHTTP(w http.ResponseWriter, r *http.Reques
 		// If that installation failed, the certificate was never used; replace
 		// it so the server can still join with a command.
 		if revokeErr := s.Authority.RevokeServer(serverID); revokeErr == nil {
+			_ = s.Store.ResetNeverConnectedServer(r.Context(), serverID)
 			enrollment, err = s.Authority.IssueEnrollment(serverID, now)
 		}
 	}
@@ -295,7 +296,7 @@ func newEnrollmentJobID() string {
 // server never connected and no installation is delivering it right now.
 func (s *EnrollmentService) unusedIdentity(ctx context.Context, serverID contracts.ServerID) bool {
 	server, found, err := s.Store.GetServer(ctx, serverID)
-	if err != nil || !found || server.ConnectionState != "never-connected" || server.LastHeartbeat != nil {
+	if err != nil || !found || server.LastHeartbeat != nil || (server.ConnectionState != "never-connected" && server.ConnectionState != "revoked") {
 		return false
 	}
 	jobs, err := s.Store.ListJobsByKind(ctx, sshInstallJobKind)
