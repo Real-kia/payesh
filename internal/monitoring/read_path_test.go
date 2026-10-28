@@ -433,20 +433,26 @@ func TestRelayCleanupSettingRoundTrip(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	settings, _, err := store.StorageSettings(ctx)
-	if err != nil || settings.RelayCleanupDays != 30 {
-		t.Fatalf("default relay cleanup = %d, %v", settings.RelayCleanupDays, err)
+	if err != nil || settings.RelayCleanupDays != 30 || settings.JoinCommandExpiryHours != 24 {
+		t.Fatalf("default relay cleanup = %d, join expiry = %d, %v", settings.RelayCleanupDays, settings.JoinCommandExpiryHours, err)
 	}
 	settings.RelayCleanupDays = 7
+	settings.JoinCommandExpiryHours = 48
 	if err := store.SaveStorageSettings(ctx, settings); err != nil {
 		t.Fatal(err)
 	}
-	if again, _, _ := store.StorageSettings(ctx); again.RelayCleanupDays != 7 {
-		t.Fatalf("saved relay cleanup = %d", again.RelayCleanupDays)
+	if again, _, _ := store.StorageSettings(ctx); again.RelayCleanupDays != 7 || again.JoinCommandExpiryHours != 48 {
+		t.Fatalf("saved relay cleanup = %d, join expiry = %d", again.RelayCleanupDays, again.JoinCommandExpiryHours)
 	}
 	again, _, _ := store.StorageSettings(ctx)
 	again.RelayCleanupDays = -1
 	if err := store.SaveStorageSettings(ctx, again); err == nil {
 		t.Fatal("negative days accepted")
+	}
+	again, _, _ = store.StorageSettings(ctx)
+	again.JoinCommandExpiryHours = 9999
+	if err := store.SaveStorageSettings(ctx, again); err == nil {
+		t.Fatal("overflow join expiry accepted")
 	}
 }
 

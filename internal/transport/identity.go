@@ -219,17 +219,28 @@ func (ca *CertificateAuthority) Renew(identity NodeIdentity, now time.Time) (Nod
 	}, nil
 }
 
-// IssueEnrollment returns a short-lived, single-use pairing token. Tokens are
-// stored as digests and are never logged or returned after Consume succeeds.
+// DefaultEnrollmentTTL is the default lifetime of a single-use pairing token (one day).
+const DefaultEnrollmentTTL = 24 * time.Hour
+
+// IssueEnrollment returns a single-use pairing token with the default TTL (one day).
 func (ca *CertificateAuthority) IssueEnrollment(serverID contracts.ServerID, now time.Time) (Enrollment, error) {
+	return ca.IssueEnrollmentWithTTL(serverID, now, DefaultEnrollmentTTL)
+}
+
+// IssueEnrollmentWithTTL returns a single-use pairing token with a custom lifetime. Tokens are
+// stored as digests and are never logged or returned after Consume succeeds.
+func (ca *CertificateAuthority) IssueEnrollmentWithTTL(serverID contracts.ServerID, now time.Time, ttl time.Duration) (Enrollment, error) {
 	if len(serverID) < 16 || len(serverID) > 128 {
 		return Enrollment{}, errors.New("invalid server id")
+	}
+	if ttl <= 0 {
+		ttl = DefaultEnrollmentTTL
 	}
 	token, err := randomToken(32)
 	if err != nil {
 		return Enrollment{}, fmt.Errorf("generate enrollment token: %w", err)
 	}
-	expiresAt := now.Add(10 * time.Minute)
+	expiresAt := now.Add(ttl)
 	digest := sha256.Sum256([]byte(token))
 	ca.mu.Lock()
 	if _, enrolled := ca.certificates[serverID]; enrolled {
@@ -260,6 +271,22 @@ func (ca *CertificateAuthority) IssueEnrollment(serverID contracts.ServerID, now
 	}
 	ca.mu.Unlock()
 	return Enrollment{ServerID: serverID, Token: token, ExpiresAt: expiresAt}, nil
+}
+
+// EnrollmentExpiresAt returns the expiration time for the given server and unconsumed token.
+func (ca *CertificateAuthority) EnrollmentExpiresAt(serverID contracts.ServerID, token string) (time.Time, bool) {
+	if len(serverID) < 16 || len(serverID) > 128 || token == "" {
+		return time.Time{}, false
+	}
+	digest := sha256.Sum256([]byte(token))
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	record, ok := ca.enrollments[digest]
+	ownedDigest, ownsServer := ca.serverEnrollments[serverID]
+	if !ok || !ownsServer || ownedDigest != digest || record.consumed || record.serverID != serverID {
+		return time.Time{}, false
+	}
+	return record.expiresAt, true
 }
 
 // ValidateEnrollmentToken checks that a pairing token is currently owned by

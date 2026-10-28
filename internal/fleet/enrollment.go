@@ -21,7 +21,7 @@ import (
 const (
 	enrollmentJobKind    = "enrollment"
 	maxEnrollmentToken   = 256
-	defaultEnrollmentTTL = 10 * time.Minute
+	defaultEnrollmentTTL = 24 * time.Hour
 	maxIssuedTokenCache  = 256
 )
 
@@ -127,16 +127,22 @@ func (s *EnrollmentService) serveTokenHTTP(w http.ResponseWriter, r *http.Reques
 		writeEnrollmentToken(w, http.StatusCreated, enrollmentTokenResponse{ServerID: existing.serverID, Token: existing.token, ExpiresAt: existing.expiresAt})
 		return
 	}
+	ttl := defaultEnrollmentTTL
+	if s.Store != nil {
+		if settings, ok, err := s.Store.StorageSettings(r.Context()); err == nil && ok && settings.JoinCommandExpiryHours > 0 {
+			ttl = time.Duration(settings.JoinCommandExpiryHours) * time.Hour
+		}
+	}
 	// Hold the mutex across IssueEnrollment so concurrent requests cannot both
 	// issue a token before the CA's server reservation becomes visible.
-	enrollment, err := s.Authority.IssueEnrollment(serverID, now)
+	enrollment, err := s.Authority.IssueEnrollmentWithTTL(serverID, now, ttl)
 	if errors.Is(err, transport.ErrServerAlreadyEnrolled) && s.unusedIdentity(r.Context(), serverID) {
 		// An SSH installation mints the node certificate before it connects.
 		// If that installation failed, the certificate was never used; replace
 		// it so the server can still join with a command.
 		if revokeErr := s.Authority.RevokeServer(serverID); revokeErr == nil {
 			_ = s.Store.ResetNeverConnectedServer(r.Context(), serverID)
-			enrollment, err = s.Authority.IssueEnrollment(serverID, now)
+			enrollment, err = s.Authority.IssueEnrollmentWithTTL(serverID, now, ttl)
 		}
 	}
 	if err != nil {
@@ -233,10 +239,18 @@ func (s *EnrollmentService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusBadRequest, "invalid_or_expired_enrollment", "pairing token is invalid or expired", false)
 		return
 	}
+	jobExpiresAt := now.Add(defaultEnrollmentTTL)
+	if exp, ok := s.Authority.EnrollmentExpiresAt(serverID, request.Token); ok {
+		jobExpiresAt = exp
+	} else if s.Store != nil {
+		if settings, ok, err := s.Store.StorageSettings(r.Context()); err == nil && ok && settings.JoinCommandExpiryHours > 0 {
+			jobExpiresAt = now.Add(time.Duration(settings.JoinCommandExpiryHours) * time.Hour)
+		}
+	}
 	job, created, err := s.Store.CreateJob(r.Context(), contracts.Job{
 		ID: newEnrollmentJobID(), Kind: enrollmentJobKind, State: contracts.JobQueued,
 		Revision: 0, IdempotencyKey: request.IdempotencyKey, TargetServerID: serverID,
-		ExpiresAt: now.Add(defaultEnrollmentTTL), Progress: 0,
+		ExpiresAt: jobExpiresAt, Progress: 0,
 	}, hash, now)
 	if err != nil {
 		switch {

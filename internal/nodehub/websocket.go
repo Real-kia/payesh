@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -90,7 +91,7 @@ func serveBootstrapWebSocket(ctx context.Context, ws *transport.WebSocket, hub *
 	}
 	identity, _, err := hub.ConsumeEnrollmentJob(ctx, request.JobID, request.Token, time.Now().UTC())
 	if err != nil {
-		_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: transport.ErrorBody("bootstrap_failed", "bootstrap enrollment failed", false)})
+		_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "error", Request: envelope.Request, SentAt: time.Now().UTC(), Body: transport.ErrorBody("bootstrap_failed", fmt.Sprintf("bootstrap enrollment failed: %v", err), false)})
 		return
 	}
 	_ = ws.WriteEnvelope(contracts.Envelope{Protocol: contracts.NodeProtocol, Message: "bootstrap_response", Request: envelope.Request, SentAt: time.Now().UTC(), Body: transport.MustJSON(identity)})

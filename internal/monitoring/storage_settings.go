@@ -23,9 +23,12 @@ type StorageSettings struct {
 	NotificationsEnabled  bool  `json:"notifications_enabled"`
 	// RelayCleanupDays removes relay access a node has not used for this many
 	// days (0 keeps it forever).
-	RelayCleanupDays int    `json:"relay_cleanup_days"`
-	Revision         int64  `json:"revision,string"`
-	PressureState    string `json:"pressure_state"`
+	RelayCleanupDays int `json:"relay_cleanup_days"`
+	// JoinCommandExpiryHours sets the lifetime of one-line join commands
+	// and enrollment pairing tokens in hours (default: 24 = 1 day).
+	JoinCommandExpiryHours int    `json:"join_command_expiry_hours"`
+	Revision               int64  `json:"revision,string"`
+	PressureState          string `json:"pressure_state"`
 }
 type StorageStatus struct {
 	Settings               StorageSettings `json:"settings"`
@@ -42,9 +45,9 @@ type StorageNotification struct {
 }
 
 func DefaultStorageSettings() StorageSettings {
-	return StorageSettings{MaxDatabaseBytes: DefaultDatabaseLimit, SampleSeconds: 15, PressureSampleSeconds: 60, AdaptiveSampling: true, NotificationsEnabled: true, RelayCleanupDays: 30, PressureState: "normal"}
+	return StorageSettings{MaxDatabaseBytes: DefaultDatabaseLimit, SampleSeconds: 15, PressureSampleSeconds: 60, AdaptiveSampling: true, NotificationsEnabled: true, RelayCleanupDays: 30, JoinCommandExpiryHours: 24, PressureState: "normal"}
 }
-func (p StorageSettings) Validate() error {
+func (p *StorageSettings) Validate() error {
 	if p.MaxDatabaseBytes < 128000000 || p.MaxDatabaseBytes > 64000000000 {
 		return errors.New("database limit must be between 0.128 and 64 GB")
 	}
@@ -53,6 +56,12 @@ func (p StorageSettings) Validate() error {
 	}
 	if p.RelayCleanupDays < 0 || p.RelayCleanupDays > 3650 {
 		return errors.New("relay cleanup must be 0–3650 days")
+	}
+	if p.JoinCommandExpiryHours <= 0 {
+		p.JoinCommandExpiryHours = 24
+	}
+	if p.JoinCommandExpiryHours < 1 || p.JoinCommandExpiryHours > 720 {
+		return errors.New("join command expiry must be 1–720 hours")
 	}
 	return nil
 }
@@ -63,9 +72,12 @@ func (s *Store) initStorageSettings(ctx context.Context) error {
 }
 func (s *Store) StorageSettings(ctx context.Context) (StorageSettings, bool, error) {
 	p := DefaultStorageSettings()
-	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,relay_cleanup_days,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.RelayCleanupDays, &p.Revision, &p.PressureState)
+	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,relay_cleanup_days,join_command_expiry_hours,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.RelayCleanupDays, &p.JoinCommandExpiryHours, &p.Revision, &p.PressureState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, false, nil
+	}
+	if p.JoinCommandExpiryHours <= 0 {
+		p.JoinCommandExpiryHours = 24
 	}
 	return p, err == nil, err
 }
@@ -86,7 +98,7 @@ func (s *Store) SaveStorageSettings(ctx context.Context, p StorageSettings) erro
 		}
 		p.Revision = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,relay_cleanup_days=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.RelayCleanupDays, p.Revision)
+	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,relay_cleanup_days=?,join_command_expiry_hours=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.RelayCleanupDays, p.JoinCommandExpiryHours, p.Revision)
 	if err != nil {
 		return err
 	}

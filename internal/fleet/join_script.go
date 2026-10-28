@@ -409,6 +409,35 @@ chmod 0644 /var/lib/payesh/hub-ca.pem
 	if [ "$USE_PROXY" = 1 ]; then echo "PAYESH_TRANSPORT_PROXY=$PROXY"; fi
 } > "$WORK/payesh.env"
 cp "$WORK/payesh.env" /etc/payesh/payesh.env
+
+say "contacting hub to complete enrollment..."
+AGENT_BIN="/usr/bin/payesh-agent"
+if [ ! -x "$AGENT_BIN" ] && [ -x "$ARTIFACTS/payesh-agent" ]; then
+	AGENT_BIN="$ARTIFACTS/payesh-agent"
+fi
+proxy_flag=""
+if [ "$USE_PROXY" = 1 ]; then
+	proxy_flag="-transport-proxy=$PROXY"
+fi
+if ! "$AGENT_BIN" \
+	-transport-url "$TRANSPORT_URL" \
+	-bootstrap-url "${TRANSPORT_URL%/node/v1}/node/bootstrap/v1" \
+	-bootstrap-job="{{.JobID}}" \
+	-bootstrap-token="{{.Token}}" \
+	-hub-trust-file=/var/lib/payesh/hub-ca.pem \
+	-node-identity-file=/var/lib/payesh/node-identity.json \
+	$proxy_flag \
+	-bootstrap-only >"$WORK/bootstrap.log" 2>&1; then
+	cat "$WORK/bootstrap.log" >&2
+	rm -f /etc/payesh/payesh.env
+	if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+		systemctl stop payesh-agent 2>/dev/null || true
+	elif command -v rc-service >/dev/null 2>&1; then
+		rc-service payesh-agent stop 2>/dev/null || true
+	fi
+	die "hub enrollment failed (see error above). Ensure the join command has not expired and the hub is reachable."
+fi
+
 if id payesh >/dev/null 2>&1; then
 	chown root:payesh /etc/payesh/payesh.env
 	chown -R payesh:payesh /var/lib/payesh 2>/dev/null || true

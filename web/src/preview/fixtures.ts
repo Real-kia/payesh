@@ -108,7 +108,7 @@ export const previewUpdateStatus = {
 };
 
 export const previewStorageStatus = {
-  settings: { max_database_bytes: 1000000000, sample_seconds: 15, pressure_sample_seconds: 60, adaptive_sampling: true, notifications_enabled: true, revision: '3', pressure_state: 'normal' },
+  settings: { max_database_bytes: 1000000000, sample_seconds: 15, pressure_sample_seconds: 60, adaptive_sampling: true, notifications_enabled: true, relay_cleanup_days: 30, join_command_expiry_hours: 24, revision: '3', pressure_state: 'normal' },
   database_bytes: 412000000,
   recovery_snapshot_bytes: 38000000,
   effective_sample_seconds: 15

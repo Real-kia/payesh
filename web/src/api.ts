@@ -115,7 +115,7 @@ export type TrafficPeriod = {
   counted_bytes: string;
   continuity: 'complete' | 'gap' | 'uncertain';
 };
-export type StorageSettings = { max_database_bytes: number; sample_seconds: number; pressure_sample_seconds: number; adaptive_sampling: boolean; notifications_enabled: boolean; relay_cleanup_days?: number; revision: string; pressure_state: string };
+export type StorageSettings = { max_database_bytes: number; sample_seconds: number; pressure_sample_seconds: number; adaptive_sampling: boolean; notifications_enabled: boolean; relay_cleanup_days?: number; join_command_expiry_hours?: number; revision: string; pressure_state: string };
 export type StorageStatus = { settings: StorageSettings; database_bytes: number; recovery_snapshot_bytes: number; effective_sample_seconds: number };
 export type StorageNotification = { id: string; kind: string; message: string; created_at: string; read: boolean };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };

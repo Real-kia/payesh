@@ -639,6 +639,10 @@ func BootstrapAgentVia(ctx context.Context, proxy *netproxy.Proxy, endpoint, job
 			continue
 		}
 		if envelope.Message == "error" {
+			var errBody contracts.Error
+			if err := DecodeBody(envelope.Body, &errBody); err == nil && errBody.Message != "" {
+				return NodeIdentity{}, fmt.Errorf("%w: %s (%s)", ErrIdentityRecoveryRequired, errBody.Message, errBody.Code)
+			}
 			return NodeIdentity{}, ErrIdentityRecoveryRequired
 		}
 		if envelope.Message != "bootstrap_response" {

@@ -475,6 +475,33 @@ join_hub() {
 		printf 'PAYESH_NODE_IDENTITY_FILE=/var/lib/payesh/node-identity.json\n'
 	} >"$WORK/payesh.env.new"
 	cp "$WORK/payesh.env.new" /etc/payesh/payesh.env
+
+	say "Contacting hub to complete enrollment..."
+	AGENT_BIN="/usr/bin/payesh-agent"
+	if [ ! -x "$AGENT_BIN" ] && [ -x "$ARTIFACTS/payesh-agent" ]; then
+		AGENT_BIN="$ARTIFACTS/payesh-agent"
+	fi
+	if [ ! -x "$AGENT_BIN" ]; then
+		die "payesh-agent executable not found; cannot complete enrollment"
+	fi
+	if ! "$AGENT_BIN" \
+		-transport-url "$JOIN_URL" \
+		-bootstrap-url "$bootstrap" \
+		-bootstrap-job "$JOIN_JOB" \
+		-bootstrap-token "$JOIN_TOKEN" \
+		-hub-trust-file "$trust" \
+		-node-identity-file /var/lib/payesh/node-identity.json \
+		-bootstrap-only >"$WORK/bootstrap.log" 2>&1; then
+		cat "$WORK/bootstrap.log" >&2
+		rm -f /etc/payesh/payesh.env
+		if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+			systemctl stop payesh-agent 2>/dev/null || true
+		elif command -v rc-service >/dev/null 2>&1; then
+			rc-service payesh-agent stop 2>/dev/null || true
+		fi
+		die "hub enrollment failed (see error above). Ensure the join command has not expired and the hub is reachable."
+	fi
+
 	if id payesh >/dev/null 2>&1; then
 		chown root:payesh /etc/payesh/payesh.env
 		chown -R payesh:payesh /var/lib/payesh 2>/dev/null || true
@@ -487,7 +514,7 @@ join_hub() {
 	else
 		warn "restart payesh-agent yourself to start joining the hub"
 	fi
-	say "This server is joining the hub. It appears in the dashboard within a minute."
+	say "Enrollment confirmed. This server is connected to the hub and will appear in the dashboard within a minute."
 }
 
 # --- install ---------------------------------------------------------------

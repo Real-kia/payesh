@@ -46,6 +46,7 @@ func main() {
 	privdSocket := flag.String("privd-socket", os.Getenv("PAYESH_PRIVD_SOCKET"), "optional privileged-helper socket enabling authenticated action execution")
 	transportProxy := flag.String("transport-proxy", os.Getenv("PAYESH_TRANSPORT_PROXY"), "optional http:// or socks5:// proxy for reaching the hub")
 	checkTransport := flag.Bool("check-transport", false, "verify the configured hub TLS node port and exit without collecting metrics")
+	bootstrapOnly := flag.Bool("bootstrap-only", false, "perform node bootstrap and exit without starting collection")
 	printVersion := flag.Bool("version", false, "print the agent release version and exit")
 	flag.Parse()
 	if *printVersion {
@@ -115,6 +116,18 @@ func main() {
 		// identity. This prevents a stale local server-id file from producing
 		// samples that the authenticated hub must reject.
 		identity = configuredNodeIdentity.ServerID
+	}
+	if *bootstrapOnly {
+		if configuredTransportURL == "" {
+			fmt.Fprintln(os.Stderr, "bootstrap requires a transport URL")
+			os.Exit(2)
+		}
+		if configuredNodeIdentity.ServerID == "" {
+			fmt.Fprintln(os.Stderr, "bootstrap failed: no node identity established")
+			os.Exit(1)
+		}
+		fmt.Printf("Node %s successfully enrolled with hub.\n", configuredNodeIdentity.ServerID)
+		return
 	}
 	if *checkTransport {
 		if configuredTransportURL == "" {
