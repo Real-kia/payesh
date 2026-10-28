@@ -242,7 +242,7 @@ func supported(id, version string) bool {
 	}
 	switch id {
 	case "ubuntu":
-		return (major == 22 && minor == 4) || (major == 24 && minor == 4)
+		return (major == 22 && minor == 4) || (major == 24 && minor == 4) || (major == 26 && minor == 4)
 	case "debian":
 		return major == 12 || major == 13
 	case "fedora":

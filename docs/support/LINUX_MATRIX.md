@@ -4,7 +4,7 @@ Package 01 records these explicit representatives for compatibility checks:
 
 | Family | Oldest representative | Current representative |
 | --- | --- | --- |
-| Ubuntu | 22.04 | 24.04 |
+| Ubuntu | 22.04 | 26.04 |
 | Debian | 12 | 13 |
 | Fedora | 42 | 43 |
 | Rocky Linux | 9 | 10 |
