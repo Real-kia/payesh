@@ -45,7 +45,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="palette" size={16} /></span><div><h2>Appearance</h2><span class="muted">Saved in this browser only.</span></div></div>
+    <div class="title"><div><h2>Appearance</h2><span class="muted">Saved in this browser only.</span></div></div>
   </div>
 
   <div class="option">
@@ -93,7 +93,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="clock" size={16} /></span><div><h2>Time zone</h2><span class="muted">Charts, logs and alerts use this time zone.</span></div></div>
+    <div class="title"><div><h2>Time zone</h2><span class="muted">Charts, logs and alerts use this time zone.</span></div></div>
   </div>
   <div class="settings-meta-box">
     <div class="meta-row"><span>Active time zone</span><strong>{timezone}</strong></div>
@@ -125,8 +125,8 @@
 
   .theme-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .theme-card { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink-secondary); text-align: left; transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast); }
-  .theme-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
-  .theme-card[aria-checked='true'] { border-color: var(--accent); box-shadow: var(--ring); color: var(--ink); }
+  .theme-card:hover { border-color: var(--line-strong); }
+  .theme-card[aria-checked='true'] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--ink); }
   .preview { display: grid; grid-template-columns: 18px 1fr; grid-template-rows: 1fr 1fr; gap: 4px; height: 48px; padding: 6px; border-radius: var(--radius-sm); }
   .preview .bar { grid-row: 1 / -1; border-radius: 3px; }
   .preview .block { border-radius: 3px; }
@@ -135,15 +135,15 @@
   .theme-card.light .bar, .theme-card.light .block { background: #ffffff; }
   .theme-card.dark .preview { background: #0d1218; }
   .theme-card.dark .bar, .theme-card.dark .block { background: #1d2631; }
-  .theme-card.system .preview { background: linear-gradient(135deg, #eef1f5 50%, #0d1218 50%); }
+  .theme-card.system .preview { background: linear-gradient(90deg, #f6f6f5 50%, #0f1011 50%); }
   .theme-card.system .bar, .theme-card.system .block { background: color-mix(in srgb, #ffffff 55%, #1d2631); }
   .theme-card .block:first-of-type { background: var(--accent); opacity: 0.85; }
   .label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
 
   .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-  .swatch { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink-secondary); font-size: 12.5px; font-weight: 550; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
+  .swatch { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px 5px 6px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink-secondary); font-size: 12.5px; font-weight: 550; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
   .swatch:hover { border-color: var(--line-strong); }
-  .swatch[aria-checked='true'] { border-color: var(--swatch); box-shadow: 0 0 0 3px color-mix(in srgb, var(--swatch) 22%, transparent); color: var(--ink); }
+  .swatch[aria-checked='true'] { border-color: var(--swatch); box-shadow: inset 0 0 0 1px var(--swatch); color: var(--ink); }
   .chip { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--swatch); color: #fff; }
 
   .tz { display: grid; gap: 7px; max-width: 360px; font-size: 13px; font-weight: 550; }

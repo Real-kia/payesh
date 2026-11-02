@@ -262,7 +262,6 @@
   details summary { margin-bottom: 10px; color: var(--muted); cursor: pointer; font-size: 13px; }
   details .field { margin-bottom: 10px; }
   .progress-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
-  .job-progress.running span { background-image: linear-gradient(90deg, var(--accent), var(--blue), var(--accent)); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
   .targets { display: grid; gap: 6px; max-height: 260px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
   .targets li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 1px solid var(--line-light); border-radius: var(--radius-md); font-size: 13px; transition: border-color var(--dur), background-color var(--dur); }
   .targets li > div { display: grid; gap: 2px; min-width: 0; }
@@ -271,7 +270,7 @@
   .mark .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.5; }
   .mark .version-spinner { width: 12px; height: 12px; }
   li.running { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
-  li.done .mark { background: var(--success-bg); color: var(--success); animation: pop-in var(--dur) var(--ease-spring); }
+  li.done .mark { background: var(--success-bg); color: var(--success); }
   li.failed { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: var(--danger-bg); }
   li.failed .mark { background: var(--danger); color: #fff; }
   li.failed small { color: var(--danger); }

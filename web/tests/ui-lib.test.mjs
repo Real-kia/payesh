@@ -38,7 +38,10 @@ test('resource levels and metric text', () => {
   assert.equal(resourceLevel(75), 'warning');
   assert.equal(resourceLevel(90), 'critical');
   assert.equal(metricValue(null), '—');
-  assert.equal(metricValue(12.345), '12.35%');
+  assert.equal(metricValue(12.345), '12%');
+  assert.equal(metricValue(74), '74%');
+  assert.equal(metricValue(4.04), '4%');
+  assert.equal(metricValue(4.25), '4.3%');
 });
 
 test('fleet bandwidth is unknown unless every connected server reports a current rate', () => {

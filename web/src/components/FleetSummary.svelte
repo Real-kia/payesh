@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Icon from '../Icon.svelte';
   import { formatNetworkRate } from '../network';
   import type { DisplayState, PreviewServer } from '../preview/fixtures';
 
@@ -11,125 +10,97 @@
   } = $props();
 
   const order: DisplayState[] = ['healthy', 'installing', 'pending', 'stale', 'failed', 'unreachable', 'disabled', 'unsupported'];
+  // The bar groups states by severity so it reads at a glance instead of as a rainbow.
+  const tone: Record<DisplayState, 'ok' | 'busy' | 'warn' | 'bad' | 'off'> = {
+    healthy: 'ok', installing: 'busy', pending: 'warn', stale: 'warn', failed: 'bad', unreachable: 'bad', disabled: 'off', unsupported: 'off'
+  };
   const healthy = $derived(servers.filter((server) => server.displayState === 'healthy').length);
   const attention = $derived(servers.length - healthy);
   const breakdown = $derived(order.map((state) => ({ state, count: servers.filter((server) => server.displayState === state).length })).filter((entry) => entry.count > 0));
+  const segments = $derived((['ok', 'busy', 'warn', 'bad', 'off'] as const).map((key) => {
+    const entries = breakdown.filter((entry) => tone[entry.state] === key);
+    return { tone: key, count: entries.reduce((sum, entry) => sum + entry.count, 0), title: entries.map((entry) => `${entry.count} ${entry.state}`).join(', ') };
+  }).filter((segment) => segment.count > 0));
+  const problems = $derived(breakdown.filter((entry) => entry.state !== 'healthy'));
   const healthyShare = $derived(servers.length ? Math.round((healthy / servers.length) * 100) : 0);
 </script>
 
-<div class="summary-grid stagger">
-  <article class="summary-card" style:--i={0}>
-    <div class="card-header">
-      <span class="stat-label">Healthy servers</span>
-      <span class="stat-icon success"><Icon name="check" size={15} /></span>
-    </div>
-    <strong class="stat-value tabular">{healthy}<small> / {servers.length}</small></strong>
+<section class="summary" aria-label="Fleet summary">
+  <div class="cell">
+    <span class="label">Healthy</span>
+    <strong class="value tabular">{healthy}<small> / {servers.length}</small></strong>
     {#if servers.length}
       <div class="health-bar" role="img" aria-label={breakdown.map((entry) => `${entry.count} ${entry.state}`).join(', ')}>
-        {#each breakdown as entry (entry.state)}<span class={entry.state} style:flex-grow={entry.count} title={`${entry.count} ${entry.state}`}></span>{/each}
+        {#each segments as segment (segment.tone)}<span class={segment.tone} style:flex-grow={segment.count} title={segment.title}></span>{/each}
       </div>
     {/if}
-    <span class="stat-note">{servers.length ? `${healthyShare}% healthy and responding` : 'No servers yet'}</span>
-  </article>
+    <span class="note">{servers.length ? `${healthyShare}% responding normally` : 'No servers yet'}</span>
+  </div>
 
-  <article class="summary-card" class:attention={attention > 0} style:--i={1}>
-    <div class="card-header">
-      <span class="stat-label">Needs attention</span>
-      <span class="stat-icon warning"><Icon name="alert-triangle" size={15} /></span>
-    </div>
-    <strong class="stat-value tabular">{attention}</strong>
-    {#if breakdown.some((entry) => entry.state !== 'healthy')}
-      <div class="chips">
-        {#each breakdown.filter((entry) => entry.state !== 'healthy') as entry (entry.state)}<span class={`chip ${entry.state}`}>{entry.count} {entry.state}</span>{/each}
-      </div>
+  <div class="cell">
+    <span class="label">Needs attention</span>
+    <strong class="value tabular" class:warn={attention > 0}>{attention}</strong>
+    {#if problems.length}
+      <p class="breakdown">
+        {#each problems as entry, index (entry.state)}{#if index > 0}<span class="sep" aria-hidden="true">·</span>{/if}<span class={tone[entry.state]}><b class="tabular">{entry.count}</b> {entry.state}</span>{/each}
+      </p>
     {:else}
-      <span class="stat-note">{attention > 0 ? 'Stale, pending, or offline servers' : 'Every server is reporting'}</span>
+      <span class="note">Every server is reporting</span>
     {/if}
-  </article>
+  </div>
 
-  <article class="summary-card network" style:--i={2}>
-    <div class="card-header">
-      <span class="stat-label">Fleet bandwidth</span>
-      <span class="stat-icon info"><Icon name="activity" size={15} /></span>
-    </div>
-    <div class="network-split">
-      <div>
-        <span class="rate-title"><span class="rate-badge down"><Icon name="download" size={11} /></span>Download</span>
-        <strong class="tabular">{formatNetworkRate(download)}</strong>
-      </div>
-      <div>
-        <span class="rate-title"><span class="rate-badge up"><Icon name="upload" size={11} /></span>Upload</span>
-        <strong class="tabular">{formatNetworkRate(upload)}</strong>
-      </div>
-    </div>
-    <span class="stat-note">Live rate across connected servers</span>
-  </article>
-</div>
+  <div class="cell">
+    <span class="label">Fleet bandwidth</span>
+    <dl class="rates">
+      <div><dt>In</dt><dd class="tabular">{formatNetworkRate(download)}</dd></div>
+      <div><dt>Out</dt><dd class="tabular">{formatNetworkRate(upload)}</dd></div>
+    </dl>
+    <span class="note">Current rate across connected servers</span>
+  </div>
+</section>
 
 <style>
-  .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); margin-bottom: 24px; }
-  .summary-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-width: 0;
-    padding: var(--card-pad) 20px;
-    overflow: hidden;
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-bottom: 28px;
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow);
   }
-  /* A faint corner wash gives each card a colour identity at no runtime cost. */
-  .summary-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: radial-gradient(120% 90% at 100% 0%, var(--card-wash, transparent), transparent 55%);
-  }
-  .summary-card:nth-child(1) { --card-wash: var(--success-bg); }
-  .summary-card.attention { --card-wash: var(--warning-bg); }
-  .summary-card.network { --card-wash: var(--info-bg); }
-  .card-header { display: flex; align-items: center; justify-content: space-between; }
-  .stat-label { color: var(--muted); font-size: 12.5px; font-weight: 550; }
-  .stat-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius-md); }
-  .stat-icon.success { background: var(--success-bg); color: var(--success); }
-  .stat-icon.warning { background: var(--warning-bg); color: var(--warning); }
-  .stat-icon.info { background: var(--info-bg); color: var(--info); }
-  .stat-value { font-size: 30px; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
-  .stat-value small { color: var(--muted); font-size: 15px; font-weight: 500; letter-spacing: 0; }
-  .stat-note { color: var(--muted); font-size: 12px; }
+  .cell { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: var(--card-pad) 20px; }
+  .cell + .cell { border-left: 1px solid var(--line); }
+  .label { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+  .value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .value small { color: var(--muted); font-size: 15px; font-weight: 400; letter-spacing: 0; }
+  .value.warn { color: var(--warning); }
+  .note { color: var(--muted); font-size: 12px; }
 
-  .health-bar { display: flex; gap: 2px; height: 6px; overflow: hidden; border-radius: var(--radius-pill); }
-  .health-bar span { min-width: 4px; border-radius: 2px; background: var(--line-strong); transition: flex-grow var(--dur-slow) var(--ease-out); }
-  .health-bar .healthy { background: var(--success); }
-  .health-bar .installing { background: var(--info); }
-  .health-bar .pending, .health-bar .stale { background: var(--warning); }
-  .health-bar .failed, .health-bar .unreachable { background: var(--danger); }
+  .health-bar { display: flex; gap: 2px; height: 4px; overflow: hidden; border-radius: 2px; }
+  .health-bar span { min-width: 3px; background: var(--line-strong); }
+  .health-bar .ok { background: var(--success); }
+  .health-bar .busy { background: var(--info); }
+  .health-bar .warn { background: var(--warning); }
+  .health-bar .bad { background: var(--danger); }
 
-  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { padding: 2px 7px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; text-transform: capitalize; }
-  .chip.stale, .chip.pending { background: var(--warning-bg); color: var(--warning); }
-  .chip.failed, .chip.unreachable { background: var(--danger-bg); color: var(--danger); }
-  .chip.installing { background: var(--info-bg); color: var(--info); }
+  .breakdown { display: flex; flex-wrap: wrap; gap: 2px 6px; margin: 0; color: var(--muted); font-size: 12.5px; }
+  .breakdown b { color: var(--ink); font-weight: 600; }
+  .breakdown .warn b { color: var(--warning); }
+  .breakdown .bad b { color: var(--danger); }
+  .sep { opacity: 0.6; }
 
-  .network-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .network-split > div { display: grid; gap: 6px; min-width: 0; }
-  .network-split > div + div { padding-left: 14px; border-left: 1px solid var(--line); }
-  .network-split strong { overflow: hidden; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
-  .rate-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-  .rate-badge { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: var(--radius-xs); }
-  .rate-badge.down { background: var(--accent-bg); color: var(--accent); }
-  .rate-badge.up { background: var(--blue-bg); color: var(--blue); }
+  .rates { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
+  .rates > div { display: contents; }
+  .rates dt { color: var(--muted); font-size: 12.5px; line-height: 26px; }
+  .rates dd { overflow: hidden; margin: 0; font-size: 17px; font-weight: 600; line-height: 26px; text-overflow: ellipsis; white-space: nowrap; }
 
   @media (max-width: 960px) {
-    .summary-grid { grid-template-columns: 1fr 1fr; }
-    .summary-card.network { grid-column: 1 / -1; }
+    .summary { grid-template-columns: 1fr 1fr; }
+    .cell:nth-child(3) { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
   }
   @media (max-width: 480px) {
-    .summary-card { padding: 14px 16px; }
-    .stat-value { font-size: 25px; }
+    .summary { grid-template-columns: 1fr; }
+    .cell + .cell { border-left: 0; border-top: 1px solid var(--line); }
+    .value { font-size: 22px; }
   }
 </style>

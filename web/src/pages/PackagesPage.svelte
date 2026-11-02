@@ -44,16 +44,16 @@
       <p>The verified package catalog is currently empty.</p>
     </div>
   {:else}
-    <div class="module-grid stagger">
+    <div class="module-grid">
       {#each modules as module, index (module.id)}
-        <article class="module-card" style:--i={index}>
+        <article class="module-card">
           <div class="module-top">
-            <span class="module-icon"><Icon name={icons[module.id] ?? 'packages'} size={18} /></span>
+            <h2><Icon name={icons[module.id] ?? 'packages'} size={16} />{module.name}</h2>
             <span class="release-tag mono">v{module.latest_version}</span>
           </div>
-          <h2>{module.name}</h2>
+          {#if module.description}<p>{module.description}</p>{/if}
           {#if !readOnly}
-            <button class="button primary small full-width" type="button" disabled={module.install_supported === false || busy || !hasServers} onclick={() => onInstall(module)}>
+            <button class="button small" type="button" disabled={module.install_supported === false || busy || !hasServers} onclick={() => onInstall(module)}>
               {module.install_supported === false ? 'Requires Payesh update' : 'Install or manage'}
             </button>
           {/if}
@@ -75,13 +75,13 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow);
-    transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
+    transition: border-color var(--transition-fast);
   }
-  .module-card:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: var(--shadow-md); }
-  .module-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-  .module-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--radius-md); background: var(--accent-bg); color: var(--accent); transition: transform var(--dur) var(--ease-spring); }
-  .module-card:hover .module-icon { transform: rotate(-6deg) scale(1.06); }
-  .release-tag { padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--muted); font-size: 12px; }
-  .module-card h2 { flex: 1; margin: 0; font-size: 15.5px; }
+  .module-card:hover { border-color: var(--line-strong); }
+  .module-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .module-top h2 :global(svg) { flex-shrink: 0; color: var(--muted); }
+  .module-card p { flex: 1; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .module-card .button { align-self: flex-start; margin-top: 4px; }
+  .release-tag { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 12px; }
+  .module-card h2 { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; font-size: 14px; }
 </style>

@@ -9,28 +9,38 @@
      data-density="compact"             tighter spacing for large fleets
    public/theme-init.js applies the saved choices before first paint, and the
    app adds .theme-transition to <html> briefly when the user switches theme.
+
+   Visual rules, so the console stays calm and readable:
+     - Colour carries meaning. Metrics use the accent; amber and red appear
+       only when a threshold is crossed or something is wrong.
+     - Surfaces are separated by 1px borders, not shadows, glows or gradients.
+       Shadows are for things that float (menus, dialogs, toasts).
+     - Icons sit inline with text, never inside tinted badges.
+     - Motion confirms an action or shows work in progress; nothing bounces,
+       staggers in, lifts on hover or pulses while idle.
+     - Numbers are shown at the precision an operator acts on (74%, not 74.00%).
    -------------------------------------------------------------------------- */
 
 :root {
   color-scheme: light;
 
-  /* Surfaces */
-  --canvas: #f4f6f9;
+  /* Surfaces: neutral greys, so status colours are the only colour on screen. */
+  --canvas: #f6f6f5;
   --surface: #ffffff;
-  --surface-muted: #f0f3f7;
-  --surface-hover: #f6f8fb;
+  --surface-muted: #f2f2f0;
+  --surface-hover: #f7f7f6;
   --surface-elevated: #ffffff;
-  --surface-sunken: #e9edf2;
+  --surface-sunken: #ececea;
 
   /* Text */
-  --ink: #18212d;
-  --ink-secondary: #3c4858;
-  --muted: #5b697b;
+  --ink: #18181a;
+  --ink-secondary: #3d3d42;
+  --muted: #66666e;
 
   /* Lines */
-  --line: #e0e5ec;
-  --line-light: #ebeef3;
-  --line-strong: #ccd3dd;
+  --line: #e3e3e0;
+  --line-light: #ededeb;
+  --line-strong: #cfcfcb;
 
   /* Accent (overridden per data-accent) */
   --accent: #2f6bd8;
@@ -54,24 +64,26 @@
   --info-bg: #e7f5fa;
 
   /* Log viewer (always dark, like a terminal) */
-  --term-bg: #0b0f15;
+  --term-bg: #111113;
   --term-line: rgba(255, 255, 255, 0.06);
   --term-ink: #dbe3ee;
   --term-muted: #6b7a8f;
 
   /* Elevation */
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.04);
-  --shadow-md: 0 6px 16px -4px rgba(16, 24, 40, 0.1), 0 2px 4px -2px rgba(16, 24, 40, 0.05);
-  --shadow-lg: 0 20px 44px -12px rgba(16, 24, 40, 0.24), 0 4px 10px -4px rgba(16, 24, 40, 0.08);
+  /* Surfaces are separated by borders; shadows are reserved for things that
+     float above the page (menus, dialogs, toasts). */
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.06);
   --ring: 0 0 0 3px var(--accent-glow);
 
   /* Shape */
   --radius-xs: 3px;
-  --radius-sm: 5px;
-  --radius-md: 7px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
   --radius-pill: 999px;
 
   /* Type */
@@ -90,10 +102,11 @@
      composite them without layout work. */
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
-  --dur-fast: 120ms;
-  --dur: 200ms;
-  --dur-slow: 360ms;
+  /* No overshoot: an operations console should feel settled, not bouncy. */
+  --ease-spring: var(--ease-out);
+  --dur-fast: 100ms;
+  --dur: 160ms;
+  --dur-slow: 220ms;
   --transition-fast: var(--dur-fast) var(--ease-out);
 
   /* Aliases kept for older component styles. */
@@ -106,25 +119,25 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --canvas: #0d1218;
-  --surface: #141b23;
-  --surface-muted: #1a222c;
-  --surface-hover: #18202a;
-  --surface-elevated: #1d2631;
-  --surface-sunken: #10161d;
+  --canvas: #0f1011;
+  --surface: #151618;
+  --surface-muted: #1c1d20;
+  --surface-hover: #1a1b1e;
+  --surface-elevated: #1e1f22;
+  --surface-sunken: #0c0d0e;
 
-  --ink: #e7ecf3;
-  --ink-secondary: #b3bfcd;
-  --muted: #8a98aa;
+  --ink: #ececee;
+  --ink-secondary: #b9b9bf;
+  --muted: #8f8f98;
 
-  --line: #243040;
-  --line-light: #1d2632;
-  --line-strong: #324154;
+  --line: #27282c;
+  --line-light: #1f2023;
+  --line-strong: #36373c;
 
-  --accent: #74a5ff;
-  --accent-strong: #9abfff;
-  --accent-bg: rgba(116, 165, 255, 0.12);
-  --accent-glow: rgba(116, 165, 255, 0.24);
+  --accent: #6c9ef0;
+  --accent-strong: #8fb5f5;
+  --accent-bg: rgba(108, 158, 240, 0.12);
+  --accent-glow: rgba(108, 158, 240, 0.28);
   --accent-contrast: #0a1322;
 
   --purple: #b294f4;
@@ -140,12 +153,10 @@
   --info: #4cc4e2;
   --info-bg: rgba(76, 196, 226, 0.12);
 
-  --term-bg: #080b10;
+  --term-bg: #0a0a0b;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 8px 20px -6px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.65), 0 6px 14px -6px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 /* Accent palettes */
@@ -268,9 +279,9 @@ textarea { resize: vertical; line-height: 1.45; }
    -------------------------------------------------------------------------- */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@keyframes pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
-@keyframes slide-in-right { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes pop-in { from { opacity: 0; transform: scale(0.99); } to { opacity: 1; transform: none; } }
+@keyframes slide-in-right { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
 @keyframes ping { 0% { transform: scale(1); opacity: 0.55; } 80%, 100% { transform: scale(2.4); opacity: 0; } }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }

@@ -93,7 +93,7 @@
   .search input:focus { box-shadow: none; }
   kbd { display: inline-grid; place-items: center; min-width: 20px; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-muted); color: var(--muted); font-family: var(--font-sans); font-size: 12px; }
   .results { max-height: min(52vh, 420px); margin: 0; padding: 6px; overflow-y: auto; list-style: none; }
-  .group { padding: 10px 10px 4px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+  .group { padding: 10px 10px 4px; color: var(--muted); font-size: 12px; font-weight: 500; }
   [role='option'] { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-md); color: var(--ink-secondary); font-size: 13.5px; cursor: pointer; }
   [role='option'].active { background: var(--accent-bg); color: var(--ink); }
   .icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--muted); }

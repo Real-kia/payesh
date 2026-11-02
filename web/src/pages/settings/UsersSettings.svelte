@@ -94,7 +94,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="users" size={16} /></span><div><h2>User management</h2><span class="muted">{accounts.length} {accounts.length === 1 ? 'user' : 'users'}</span></div></div>
+    <div class="title"><div><h2>User management</h2><span class="muted">{accounts.length} {accounts.length === 1 ? 'user' : 'users'}</span></div></div>
     <button class={`button small ${adding ? 'ghost' : 'primary'}`} type="button" onclick={() => (adding = !adding)}>{#if adding}Cancel{:else}<Icon name="plus" size={13} />Add user{/if}</button>
   </div>
 
@@ -150,13 +150,13 @@
   .search input { flex: 1; border: 0; background: transparent; box-shadow: none; padding-left: 0; }
   .search input:focus { box-shadow: none; }
   .head, .row { display: grid; grid-template-columns: minmax(140px, 1fr) 90px 100px 100px 230px; gap: 12px; align-items: center; }
-  .head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; }
+  .head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 500; }
   .row { padding: 12px 0; border-bottom: 1px solid var(--line-light); font-size: 13px; }
   .who { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
   .who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .avatar { display: grid; flex-shrink: 0; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 700; }
   .you { padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; }
-  .role { justify-self: start; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--ink-secondary); font-size: 12px; font-weight: 600; text-transform: capitalize; }
+  .role { justify-self: start; padding: 1px 6px; border-radius: var(--radius-xs); background: var(--surface-muted); color: var(--ink-secondary); font-size: 12px; font-weight: 600; text-transform: capitalize; }
   .role.owner { background: var(--accent-bg); color: var(--accent); }
   .actions { display: flex; justify-content: flex-end; gap: 6px; }
   .edit { margin: 4px 0 12px; }

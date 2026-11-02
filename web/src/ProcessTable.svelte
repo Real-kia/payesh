@@ -95,7 +95,7 @@
 </article>
 
 <style>
-  .process-panel { padding: var(--panel-pad); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); animation: fade-in var(--dur) var(--ease-out); }
+  .process-panel { padding: var(--panel-pad); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
   .process-heading, .process-actions, .process-footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
   .process-actions { gap: 8px; }
   h2 { margin: 0 0 4px; font-size: 16px; }
@@ -105,14 +105,13 @@
   input, select { width: 100%; }
   .process-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  th { position: sticky; top: 0; padding: 9px 12px; background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-align: right; text-transform: uppercase; }
+  th { position: sticky; top: 0; padding: 9px 12px; background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 500; text-align: right;  }
   td { padding: 9px 12px; border-top: 1px solid var(--line-light); text-align: right; }
   th:first-child, td:first-child { text-align: left; }
   .process-name { max-width: 240px; overflow: hidden; font-weight: 550; text-overflow: ellipsis; }
   tbody tr { transition: background-color var(--transition-fast); }
   /* A thin usage bar under the value, right-aligned with the number. */
   td.bar { --bar: var(--accent); background: linear-gradient(var(--bar), var(--bar)) right 12px bottom 5px / calc((100% - 24px) * var(--p) / 100) 2px no-repeat; }
-  td.bar.memory { --bar: var(--purple); }
   tbody tr:hover { background: var(--surface-hover); }
   .process-empty { padding: 30px 0; color: var(--muted); text-align: center; }
   .process-footer { flex-wrap: wrap; padding-top: 12px; color: var(--muted); }

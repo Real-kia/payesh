@@ -34,7 +34,7 @@
   $: isRunning = ['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(install.currentStage);
   $: isSucceeded = install.currentStage === 'succeeded';
   $: isFailed = install.currentStage === 'failed';
-  $: isCancelled = install.currentStage === 'cancelled';
+  $: progress = Math.max(0, Math.min(100, install.simulatedProgress));
 
   $: lastErrorLog = install.logs.slice().reverse().find(l => l.level === 'error')?.text || install.logs.slice(-1)[0]?.text || '';
 
@@ -52,7 +52,7 @@
   });
 
   $: if (install.logs && logContainer) {
-    // Auto-scroll to bottom of log
+    // Keep the newest job update in view.
     setTimeout(() => {
       if (logContainer) logContainer.scrollTop = logContainer.scrollHeight;
     }, 50);
@@ -61,705 +61,126 @@
   function formatElapsed(sec: number): string {
     const m = Math.floor(sec / 60).toString().padStart(2, '0');
     const s = (sec % 60).toString().padStart(2, '0');
-    return `${m}:${s}s`;
+    return `${m}:${s}`;
   }
 
+  const glyph: Record<InstallLog['level'], string> = { info: '›', success: '✓', warn: '!', error: '✕' };
 </script>
 
-<article class={`panel install-progress-panel ${compact ? 'compact' : ''}`} aria-live="polite">
-  <!-- HEADER -->
-  <div class="install-header">
-    <div class="install-title-group">
-      <div class="install-target-chip">
-        <Icon name="server" size={14} />
-        <strong>{install.serverName}</strong>
-        <span class="mono faint">{install.user}@{install.host}:{install.port}</span>
-      </div>
-      <h2 class="install-heading">
-        {#if isRunning}
-          Installing Payesh Agent…
-        {:else if isSucceeded}
-          Server Installed & Active
-        {:else if isFailed}
-          Installation Failed
-        {:else}
-          Installation Cancelled
-        {/if}
+<article class="panel install" class:compact aria-live="polite">
+  <header class="head">
+    <div class="title">
+      <h2>
+        {#if isRunning}Installing the agent{:else if isSucceeded}Server installed{:else if isFailed}Installation failed{:else}Installation cancelled{/if}
       </h2>
+      <p><strong>{install.serverName}</strong> <span class="mono">{install.user}@{install.host}:{install.port}</span></p>
     </div>
+    {#if isRunning}
+      <span class="status-pill installing"><i class="status-dot"></i><span>In progress</span></span>
+    {:else if isSucceeded}
+      <span class="status-pill healthy"><i class="status-dot"></i><span>Online</span></span>
+    {:else if isFailed}
+      <span class="status-pill failed"><i class="status-dot"></i><span>Failed</span></span>
+    {:else}
+      <span class="status-pill cancelled"><i class="status-dot"></i><span>Cancelled</span></span>
+    {/if}
+  </header>
 
-    <div class="install-status-group">
-      {#if isRunning}
-        <span class="status-pill installing">
-          <i class="status-dot"></i>
-          <span>{install.simulatedProgress}% · In progress</span>
-        </span>
-      {:else if isSucceeded}
-        <span class="status-pill healthy">
-          <Icon name="check" size={12} />
-          <span>Server Online</span>
-        </span>
-      {:else if isFailed}
-        <span class="status-pill failed">
-          <Icon name="alert-triangle" size={12} />
-          <span>Failed</span>
-        </span>
-      {:else}
-        <span class="status-pill disabled">
-          <span>Cancelled</span>
-        </span>
-      {/if}
+  <div class="bar-wrap">
+    <div class="bar" role="progressbar" aria-label="Installation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progress}>
+      <span class:success={isSucceeded} class:error={isFailed} style:width={`${Math.max(2, progress)}%`}></span>
+    </div>
+    <div class="bar-meta tabular">
+      <span>Elapsed {formatElapsed(elapsedSeconds)}</span>
+      <span>{progress}%</span>
     </div>
   </div>
 
-  <!-- PROGRESS BAR -->
-  <div class="install-bar-wrapper">
-    <div class="install-bar">
-      <span
-        class={`install-bar-fill ${isSucceeded ? 'success' : isFailed ? 'error' : ''}`}
-        style={`width: ${Math.max(4, Math.min(100, install.simulatedProgress))}%`}
-      ></span>
-    </div>
-    <div class="install-bar-meta">
-      <span class="faint">Elapsed: <strong>{formatElapsed(elapsedSeconds)}</strong></span>
-      <span class="tabular mono">{install.simulatedProgress}%</span>
-    </div>
-  </div>
-
-  <!-- TERMINAL LOGS -->
-  <div class="terminal-window">
-    <div class="terminal-bar">
-      <div class="terminal-dots">
-        <span class="dot red"></span>
-        <span class="dot yellow"></span>
-        <span class="dot green"></span>
-      </div>
-      <div class="terminal-title">
-        <Icon name="terminal" size={13} />
-        <span>Installation job status · {install.host}</span>
-      </div>
-      <span class="terminal-timer mono faint">{formatElapsed(elapsedSeconds)}</span>
-    </div>
-    <div class="terminal-body" bind:this={logContainer}>
+  <section class="log" aria-label="Installation job log">
+    <div class="log-head"><span>Job log</span><span class="mono">{install.host}</span></div>
+    <div class="log-body" bind:this={logContainer}>
       {#each install.logs as log}
-        <div class={`log-line ${log.level}`}>
-          <span class="log-time mono">{log.time}</span>
-          <span class="log-glyph">
-            {#if log.level === 'success'}✓
-            {:else if log.level === 'error'}✕
-            {:else if log.level === 'warn'}!
-            {:else}→{/if}
-          </span>
-          <span class="log-text">{log.text}</span>
+        <div class={`line ${log.level}`}>
+          <span class="time">{log.time}</span>
+          <span class="glyph" aria-hidden="true">{glyph[log.level]}</span>
+          <span class="text">{log.text}</span>
         </div>
       {/each}
       {#if isRunning}
-        <div class="log-line running-cursor">
-          <span class="cursor-dot"></span>
-          <span class="faint">Waiting for the next job update…</span>
-        </div>
+        <div class="line waiting"><span class="time"></span><span class="glyph" aria-hidden="true">·</span><span class="text">Waiting for the next job update</span></div>
       {/if}
     </div>
-  </div>
+  </section>
 
-  <!-- ACTIONS -->
-  <div class="install-actions">
+  {#if isFailed}
+    <p class="failure" role="alert">{lastErrorLog || 'Installation failed.'}</p>
+  {/if}
+
+  <footer class="actions">
     {#if isRunning}
-      <div class="running-footer-left">
-        <span class="active-badge">
-          <span class="pulse-ring"></span>
-          <span class="pulse-core"></span>
-          <span>Deploying agent</span>
-        </span>
-        <span class="install-hint faint">
-          Safe to navigate away — Payesh is managing this job in the background.
-        </span>
-      </div>
-      <button class="cancel-install-btn" type="button" on:click={onCancel}>
-        <Icon name="x-circle" size={14} />
-        <span>Cancel installation</span>
-      </button>
+      <p class="hint">You can leave this page. The hub keeps running the job.</p>
+      <button class="button danger small" type="button" on:click={onCancel}>Cancel installation</button>
     {:else if isSucceeded}
-      <div class="success-banner">
-        <Icon name="check" size={16} />
-        <span>Installation complete! Telemetry heartbeats are now streaming live.</span>
-      </div>
-      <div class="action-buttons">
-        <button class="button ghost small" type="button" on:click={onAddAnother}>
-          Add another server
-        </button>
-        <button class="button primary small" type="button" on:click={() => onViewServer(install.serverId)}>
-          <span>View Server Dashboard</span>
-          <Icon name="chevron-right" size={14} />
-        </button>
+      <p class="hint">The agent is installed and sending heartbeats.</p>
+      <div class="buttons">
+        <button class="button ghost small" type="button" on:click={onAddAnother}>Add another server</button>
+        <button class="button primary small" type="button" on:click={() => onViewServer(install.serverId)}>Open server<Icon name="chevron-right" size={14} /></button>
       </div>
     {:else if isFailed}
-      <div class="diagnostic-card">
-        <div class="diagnostic-header">
-          <div class="diagnostic-badge">
-            <Icon name="alert-triangle" size={15} />
-            <span>Deployment Halted</span>
-          </div>
-        </div>
-
-        <div class="diagnostic-error-summary">
-          <p class="error-primary-text">{lastErrorLog || 'Installation failed.'}</p>
-        </div>
-
-        <div class="diagnostic-footer">
-          <button class="button ghost small" type="button" on:click={() => onViewServer(install.serverId)}>
-            <Icon name="server" size={13} />
-            <span>Server details</span>
-          </button>
-          <button class="button ghost small" type="button" on:click={onAddAnother}>
-            <Icon name="plus" size={13} />
-            <span>Add another server</span>
-          </button>
-          <button class="button primary small auto-retry-btn" type="button" on:click={onRetry}>
-            <Icon name="refresh" size={13} />
-            <span>Adjust Settings & Retry</span>
-          </button>
-        </div>
+      <div class="buttons">
+        <button class="button ghost small" type="button" on:click={() => onViewServer(install.serverId)}>Server details</button>
+        <button class="button ghost small" type="button" on:click={onAddAnother}>Add another server</button>
+        <button class="button primary small" type="button" on:click={onRetry}>Edit settings and retry</button>
       </div>
     {:else}
-      <div class="action-buttons">
-        <button class="button primary small" type="button" on:click={onRetry}>
-          Restart installation
-        </button>
+      <div class="buttons">
+        <button class="button primary small" type="button" on:click={onRetry}>Restart installation</button>
       </div>
     {/if}
-  </div>
+  </footer>
 </article>
 
 <style>
-  .install-progress-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.5rem;
-    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.12);
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .install-progress-panel::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--info), var(--accent), var(--success));
-    opacity: 0.8;
-  }
-
-  .install-progress-panel.compact {
-    padding: 1.25rem;
-    gap: 1rem;
-  }
-
-  /* HEADER */
-  .install-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-
-  .install-title-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .install-target-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    padding: 0.25rem 0.65rem;
-    border-radius: 6px;
-    font-size: 0.8125rem;
-    color: var(--ink-secondary);
-    width: fit-content;
-  }
-
-  .install-heading {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 600;
-    letter-spacing: -0.015em;
-    color: var(--ink);
-  }
-
-  /* PROGRESS BAR */
-  .install-bar-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
-
-  .install-bar {
-    width: 100%;
-    height: 6px;
-    background: var(--surface-muted);
-    border-radius: 4px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .install-bar-fill {
-    display: block;
-    height: 100%;
-    background: linear-gradient(90deg, var(--info), var(--accent));
-    border-radius: 4px;
-    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 0 10px rgba(6, 182, 212, 0.4);
-  }
-
-  .install-bar-fill.success {
-    background: var(--success);
-    box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
-  }
-
-  .install-bar-fill.error {
-    background: var(--danger);
-    box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
-  }
-
-  .install-bar-meta {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.75rem;
-    color: var(--ink-faint);
-  }
-
-  /* STEPPER */
-  .stepper-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 0.5rem;
-    margin: 0.5rem 0;
-  }
-
-  @media (max-width: 768px) {
-    .stepper-grid {
-      grid-template-columns: 1fr;
-      gap: 0.75rem;
-    }
-  }
-
-  .step-node {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    position: relative;
-  }
-
-  .step-indicator {
-    display: flex;
-    align-items: center;
-    position: relative;
-  }
-
-  .step-icon {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75rem;
-    font-weight: 600;
-    flex-shrink: 0;
-    transition: all 0.2s ease;
-    z-index: 1;
-  }
-
-  .step-icon.pending {
-    background: var(--surface-muted);
-    color: var(--ink-faint);
-    border: 1px solid var(--border);
-  }
-
-  .step-icon.active {
-    background: rgba(6, 182, 212, 0.15);
-    color: var(--info);
-    border: 1px solid var(--info);
-    box-shadow: 0 0 12px rgba(6, 182, 212, 0.35);
-  }
-
-  .step-icon.done {
-    background: rgba(16, 185, 129, 0.15);
-    color: var(--success);
-    border: 1px solid var(--success);
-  }
-
-  .step-icon.failed {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--danger);
-    border: 1px solid var(--danger);
-  }
-
-  .step-connector {
-    flex: 1;
-    height: 2px;
-    background: var(--border);
-    margin-left: 0.5rem;
-    transition: background 0.3s ease;
-  }
-
-  .step-connector.connector-done {
-    background: var(--success);
-  }
-
-  @media (max-width: 768px) {
-    .step-connector {
-      display: none;
-    }
-  }
-
-  .step-content {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .step-label {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--ink);
-  }
-
-  .step-node.pending .step-label {
-    color: var(--ink-faint);
-  }
-
-  .step-node.active .step-label {
-    color: var(--info);
-  }
-
-  .step-desc {
-    font-size: 0.6875rem;
-    color: var(--ink-faint);
-  }
-
-  /* TERMINAL */
-  .terminal-window {
-    background: #080c14;
-    border: 1px solid #1e293b;
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
-  }
-
-  .terminal-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.45rem 0.75rem;
-    background: #0d1320;
-    border-bottom: 1px solid #1e293b;
-    font-size: 0.75rem;
-    color: #94a3b8;
-  }
-
-  .terminal-dots {
-    display: flex;
-    gap: 5px;
-  }
-
-  .terminal-dots .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-
-  .dot.red { background: var(--danger); }
-  .dot.yellow { background: #eab308; }
-  .dot.green { background: var(--success); }
-
-  .terminal-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-weight: 500;
-  }
-
-  .terminal-body {
-    padding: 0.75rem;
-    max-height: 180px;
-    overflow-y: auto;
-    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 0.75rem;
-    line-height: 1.5;
-    color: #cbd5e1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .log-line {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    word-break: break-word;
-  }
-
-  .log-time {
-    color: #64748b;
-    font-size: 0.6875rem;
-    flex-shrink: 0;
-  }
-
-  .log-glyph {
-    font-weight: 700;
-    flex-shrink: 0;
-  }
-
-  .log-line.info .log-glyph { color: var(--info); }
-  .log-line.success .log-glyph { color: var(--success); }
-  .log-line.warn .log-glyph { color: #eab308; }
-  .log-line.error .log-glyph { color: var(--danger); }
-  .log-line.error .log-text { color: #fca5a5; }
-  .log-line.success .log-text { color: #86efac; }
-
-  .running-cursor {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding-top: 0.25rem;
-  }
-
-  .cursor-dot {
-    width: 6px;
-    height: 6px;
-    background: var(--info);
-    border-radius: 50%;
-    animation: blink 1s ease infinite;
-  }
-
-  @keyframes blink {
-    0%, 100% { opacity: 0.2; }
-    50% { opacity: 1; }
-  }
-
-  :global(.spin) {
-    animation: rotate 1.2s linear infinite;
-  }
-
-  @keyframes rotate {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
-  /* ACTIONS */
-  .install-actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-wrap: wrap;
-    padding-top: 0.75rem;
-    border-top: 1px solid var(--border);
-  }
-
-  .running-footer-left {
-    display: flex;
-    align-items: center;
-    gap: 0.85rem;
-    flex: 1;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
-  .active-badge {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0.65rem 0.25rem 1.6rem;
-    background: rgba(6, 182, 212, 0.08);
-    border: 1px solid rgba(6, 182, 212, 0.25);
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--info);
-    letter-spacing: 0.02em;
-    flex-shrink: 0;
-  }
-
-  .pulse-core {
-    position: absolute;
-    left: 8px;
-    width: 6px;
-    height: 6px;
-    background: var(--info);
-    border-radius: 50%;
-  }
-
-  .pulse-ring {
-    position: absolute;
-    left: 7px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--info);
-    animation: pulse 2s cubic-bezier(0, 0, 0.2, 1) infinite;
-    opacity: 0.6;
-  }
-
-  @keyframes pulse {
-    0% { transform: scale(0.9); opacity: 0.8; }
-    70% { transform: scale(2.4); opacity: 0; }
-    100% { transform: scale(2.4); opacity: 0; }
-  }
-
-  .cancel-install-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.4rem 0.85rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--danger);
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    white-space: nowrap;
-  }
-
-  .cancel-install-btn:hover {
-    background: rgba(239, 68, 68, 0.16);
-    border-color: rgba(239, 68, 68, 0.45);
-    color: var(--danger);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.2);
-  }
-
-  .cancel-install-btn:active {
-    transform: translateY(0);
-  }
-
-  .install-hint {
-    font-size: 0.8125rem;
-    flex: 1;
-  }
-
-  .success-banner {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    color: var(--success);
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .error-banner {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    color: var(--danger);
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .action-buttons {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-left: auto;
-  }
-
-  /* DIAGNOSTIC CARD */
-  .diagnostic-card {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    background: rgba(239, 68, 68, 0.03);
-    border: 1px solid rgba(239, 68, 68, 0.22);
-    border-radius: var(--radius-lg);
-    padding: 1.25rem;
-  }
-
-  .diagnostic-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-  }
-
-  .diagnostic-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    color: var(--danger);
-    font-weight: 600;
-    font-size: 0.875rem;
-  }
-
-  .diagnostic-tag {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.2rem 0.6rem;
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--ink-secondary);
-  }
-
-  .diagnostic-error-summary {
-    background: var(--surface);
-    border: 1px solid rgba(239, 68, 68, 0.2);
-    border-left: 3px solid var(--danger);
-    border-radius: 6px;
-    padding: 0.75rem 1rem;
-  }
-
-  .error-primary-text {
-    margin: 0;
-    font-size: 0.875rem;
-    line-height: 1.5;
-    color: var(--danger);
-    font-weight: 500;
-    word-break: break-word;
-  }
-
-  .diagnostic-footer {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 0.75rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid rgba(239, 68, 68, 0.15);
-  }
-
-  .auto-retry-btn {
-    background: var(--accent) !important;
-    border: none !important;
-    color: #fff !important;
-    font-weight: 600 !important;
-    box-shadow: none !important;
-  }
-
-  .auto-retry-btn:hover {
-    filter: brightness(1.1);
-    transform: translateY(-1px);
-    box-shadow: none !important;
+  .install { display: grid; gap: 18px; }
+  .install.compact { gap: 14px; }
+
+  .head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; }
+  .title { display: grid; gap: 4px; min-width: 0; }
+  .title h2 { margin: 0; }
+  .title p { margin: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .title strong { color: var(--ink-secondary); font-weight: 500; }
+  .title .mono { font-size: 12px; }
+
+  .bar-wrap { display: grid; gap: 6px; }
+  .bar { height: 4px; overflow: hidden; border-radius: 2px; background: var(--surface-muted); }
+  .bar span { display: block; height: 100%; background: var(--accent); transition: width var(--dur-slow) var(--ease-out); }
+  .bar span.success { background: var(--success); }
+  .bar span.error { background: var(--danger); }
+  .bar-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+
+  /* The log is always dark, like the Logs page viewer. */
+  .log { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--term-bg); color: var(--term-ink); }
+  .log-head { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-bottom: 1px solid var(--term-line); color: var(--term-muted); font-size: 12px; }
+  .log-head .mono { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .log-body { display: grid; gap: 2px; max-height: 200px; padding: 10px 12px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; }
+  .compact .log-body { max-height: 160px; }
+  .line { display: grid; grid-template-columns: 8ch 12px minmax(0, 1fr); gap: 8px; overflow-wrap: anywhere; }
+  .time { color: var(--term-muted); }
+  .glyph { color: var(--term-muted); text-align: center; }
+  .line.success .glyph { color: #4fc98f; }
+  .line.warn .glyph, .line.warn .text { color: #e8b15e; }
+  .line.error .glyph, .line.error .text { color: #f2777e; }
+  .line.waiting .text { color: var(--term-muted); }
+  .line.waiting .glyph { animation: breathe 2s ease-in-out infinite; }
+
+  .failure { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: inset 2px 0 0 var(--danger); color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+
+  .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .hint { flex: 1 1 240px; margin: 0; color: var(--muted); font-size: 13px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+
+  @media (max-width: 480px) {
+    .buttons { width: 100%; margin-left: 0; }
+    .buttons .button { flex: 1 1 auto; }
   }
 </style>

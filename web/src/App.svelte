@@ -1805,7 +1805,7 @@
           </label>
         {/if}
         <button class="icon-button theme-toggle" type="button" on:click={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>
-          {#key theme}<span class="theme-icon"><Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} /></span>{/key}
+          <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
         </button>
         {#if !PREVIEW_MODE && sessionState === 'authenticated'}
           <button class="icon-button" type="button" on:click={() => openSettings('notifications')} aria-label={`Notifications${unreadNotifications ? ` (${unreadNotifications} unread)` : ''}`} title="Notifications">
@@ -1911,7 +1911,7 @@
         {/if}
 
         <article class="panel method">
-          <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
+          <div class="panel-heading"><div class="title"><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
           <form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}>
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
             <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
@@ -2103,7 +2103,6 @@
 
         <div class="page-heading server-heading">
           <div class="server-title">
-            <span class="server-avatar" aria-hidden="true"><Icon name="server" size={20} /></span>
             <div>
               <div class="heading-row">
                 {#if renaming}
@@ -2191,7 +2190,7 @@
             </article>
           {/if}
           <article class="panel server-actions">
-            <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="terminal" size={16} /></span><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
+            <div class="panel-heading"><div class="title"><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
               <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
               <div class="setup-actions">
@@ -2375,8 +2374,6 @@
   .search-trigger kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-family: var(--font-sans); font-size: 12px; }
   .preview-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
   .preview-control select { padding-top: 5px; padding-bottom: 5px; }
-  .theme-icon { display: grid; place-items: center; animation: theme-spin var(--dur-slow) var(--ease-spring); }
-  @keyframes theme-spin { from { opacity: 0; transform: rotate(-90deg) scale(0.6); } to { opacity: 1; transform: none; } }
   .notification-badge {
     position: absolute;
     top: -5px;
@@ -2393,7 +2390,6 @@
     line-height: 13px;
     text-align: center;
     pointer-events: none;
-    animation: pop-in var(--dur) var(--ease-spring);
   }
   .banners:empty { display: none; }
   .update-banner { justify-content: space-between; }
@@ -2405,7 +2401,6 @@
     max-width: 1320px;
     margin: 0 auto;
     padding: var(--page-pad-y) var(--page-pad-x) 56px;
-    animation: rise-in var(--dur-slow) var(--ease-out);
   }
   :global(.page.narrow) { max-width: 900px; }
   :global(.page-heading) { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
@@ -2420,23 +2415,17 @@
     place-items: center;
     padding: 24px;
     overflow-y: auto;
-    background:
-      radial-gradient(60% 50% at 20% 10%, var(--accent-glow), transparent 70%),
-      radial-gradient(50% 50% at 90% 90%, color-mix(in srgb, var(--purple) 18%, transparent), transparent 70%),
-      var(--canvas);
-    animation: fade-in var(--dur-slow) var(--ease-out);
+    background: var(--canvas);
   }
   .login-card {
     width: min(400px, 100%);
-    padding: 34px 30px 30px;
+    padding: 32px 28px 28px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow-lg);
-    animation: pop-in var(--dur-slow) var(--ease-spring);
   }
-  .login-mark { display: block; width: 46px; height: 46px; margin: 0 auto 16px; filter: drop-shadow(0 8px 18px var(--accent-glow)); }
-  .login-mark rect { fill: var(--accent); }
+  .login-mark { display: block; width: 32px; height: 32px; margin: 0 auto 16px; }
+  .login-mark rect { fill: var(--ink); }
   .login-mark path { fill: none; stroke: var(--accent-contrast); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
   .login-card h1 { margin-bottom: 4px; font-size: 20px; text-align: center; }
   .auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 24px; }
@@ -2457,13 +2446,12 @@
     border-radius: var(--radius-md);
     background: var(--info-bg);
     font-size: 13px;
-    animation: rise-in var(--dur) var(--ease-out);
   }
   .banner-left { display: flex; align-items: center; gap: 10px; }
   .pulse-dot { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--info); }
-  .pulse-dot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.8s var(--ease-out) infinite; }
+  .pulse-dot { animation: breathe 2s ease-in-out infinite; }
   .method .form-grid { margin-bottom: 0; }
-  .or-divider { display: flex; align-items: center; gap: 14px; margin: 18px 0; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .or-divider { display: flex; align-items: center; gap: 14px; margin: 18px 0; color: var(--muted); font-size: 12px; }
   .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
   /* Settings ------------------------------------------------------------------ */
@@ -2473,8 +2461,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 38px;
-    padding: 0 12px;
+    min-height: 32px;
+    padding: 0 10px;
     border: 0;
     border-radius: var(--radius-md);
     background: transparent;
@@ -2485,21 +2473,20 @@
   }
   .settings-nav button :global(svg) { color: var(--muted); }
   .settings-nav button:hover { background: var(--surface-muted); color: var(--ink); }
-  .settings-nav button.chosen { background: var(--surface); color: var(--ink); font-weight: 620; box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
-  .settings-nav button.chosen :global(svg) { color: var(--accent); }
-  .nav-badge { margin-left: auto; padding: 0 7px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 12px; font-weight: 700; }
+  .settings-nav button.chosen { background: var(--surface-muted); color: var(--ink); font-weight: 600; }
+  .settings-nav button.chosen :global(svg) { color: var(--ink); }
+  .nav-badge { margin-left: auto; padding: 0 6px; border-radius: var(--radius-sm); background: var(--danger); color: #fff; font-size: 12px; font-weight: 700; }
   .settings-content { min-width: 0; }
-  .settings-section { display: grid; gap: var(--gap); animation: rise-in var(--dur) var(--ease-out); }
+  .settings-section { display: grid; gap: var(--gap); }
   .settings-section :global(.panel + .panel) { margin-top: 0; }
 
   /* Onboarding ---------------------------------------------------------------- */
   .stepper { display: flex; gap: 8px; margin: 0 0 18px; padding: 0; list-style: none; }
   .step { display: flex; flex: 1; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 550; transition: border-color var(--dur), color var(--dur); }
-  .step span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 700; transition: background-color var(--dur), border-color var(--dur), color var(--dur); }
+  .step span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 600; transition: background-color var(--dur), border-color var(--dur), color var(--dur); }
   .step.current { border-color: var(--accent); color: var(--ink); }
   .step.current span, .step.done span { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
   .step.done { color: var(--ink-secondary); }
-  .step-body { animation: rise-in var(--dur) var(--ease-out); }
   .onboarding-card h2 { margin-bottom: 6px; }
   .choice-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
   .choice-row label { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink-secondary); font-size: 13px; cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
@@ -2511,7 +2498,6 @@
   /* Server detail ------------------------------------------------------------- */
   .server-heading { align-items: center; }
   .server-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
-  .server-avatar { display: grid; flex-shrink: 0; place-items: center; width: 46px; height: 46px; border-radius: var(--radius-lg); background: var(--accent-bg); color: var(--accent); }
   .heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .heading-row h1 { margin: 0; }
   .rename-button { width: 30px; height: 30px; border-color: transparent; background: transparent; opacity: 0.6; }
@@ -2529,11 +2515,10 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow);
   }
   .meta-item { display: grid; gap: 3px; margin: 0; }
-  .meta-item dt { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-  .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 550; }
+  .meta-item dt { color: var(--muted); font-size: 12px; }
+  .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 500; }
   .meta-item.note dd { color: var(--warning); }
   .setup-hint { padding: 14px 18px; border-left: 3px solid var(--warn, #e0b060); }
   .setup-hint.failed { border-left-color: var(--danger, #e5646a); }
@@ -2547,7 +2532,6 @@
   .dot.never-connected { background: var(--warning); }
   .server-actions { margin-bottom: var(--gap); }
   .tabs button { display: inline-flex; align-items: center; gap: 7px; }
-  .tab-body { animation: fade-in var(--dur) var(--ease-out); }
   .unavailable-panel.large :global(svg) { color: var(--muted); }
 
   /* ------------------------------------------------------------------------

@@ -74,8 +74,6 @@
   {:else if loadState === 'empty'}
     <div class="empty-onboarding">
       <div class="empty-main">
-        <span class="eyebrow">Get started · 1 of 3</span>
-        <div class="state-icon"><Icon name="servers" size={26} /></div>
         <h2>Bring your first server online</h2>
         <p>Connect a Linux server over SSH. Payesh checks node transport reachability before installing the agent, then shows its live metrics here.</p>
         {#if readOnly}
@@ -84,15 +82,15 @@
           <button class="button primary" type="button" onclick={onAddServer}><Icon name="plus" size={15} /><span>Add first server</span></button>
         {/if}
       </div>
-      <ol class="empty-steps stagger" aria-label="Server setup steps">
-        <li style:--i={1}><span>01</span><div><strong>Enter server details</strong><small>Hostname, SSH user, and one sign-in method.</small></div></li>
-        <li style:--i={2}><span>02</span><div><strong>Verify the connection</strong><small>Payesh checks SSH and the TLS node endpoint.</small></div></li>
-        <li style:--i={3}><span>03</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
+      <ol class="empty-steps" aria-label="Server setup steps">
+        <li><span>1</span><div><strong>Enter server details</strong><small>Hostname, SSH user, and one sign-in method.</small></div></li>
+        <li><span>2</span><div><strong>Verify the connection</strong><small>Payesh checks SSH and the TLS node endpoint.</small></div></li>
+        <li><span>3</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
       </ol>
     </div>
   {:else if loadState === 'error'}
     <div class="state-panel error-state">
-      <div class="state-icon"><Icon name="alert-triangle" size={26} /></div>
+      <div class="state-icon"><Icon name="alert-triangle" size={22} /></div>
       <h2>Could not connect to fleet</h2>
       <p>{apiError || 'The API endpoint returned an error.'}</p>
       <button class="button primary" type="button" onclick={onRetry}><Icon name="refresh" size={14} />Retry connection</button>
@@ -106,8 +104,8 @@
     </div>
     <ServerTable {servers} {timezone} {onSelect} nameHeading="Hostname / address" />
 
-    <div class="lower-grid stagger">
-      <article class="panel" style:--i={1}>
+    <div class="lower-grid">
+      <article class="panel">
         <div class="panel-heading">
           <h2>Allowance overview</h2>
           {#if servers[0]}<button class="text-button" type="button" onclick={() => onSelect(servers[0])}>View metrics <Icon name="chevron-right" size={14} /></button>{/if}
@@ -130,21 +128,19 @@
         {/if}
       </article>
 
-      <article class="panel" style:--i={2}>
+      <article class="panel">
         <div class="panel-heading">
           <h2>Collection status</h2>
           <StatusPill state={attention ? 'stale' : 'healthy'} label={attention ? 'Review needed' : 'Receiving data'} />
         </div>
         <div class="feed">
           <div class="feed-item">
-            <span class="feed-icon success"><Icon name="radio" size={14} /></span>
             <div>
               <strong>{connected} of {servers.length} servers connected</strong>
               <small>{healthy} healthy · {attention} need attention</small>
             </div>
           </div>
           <div class="feed-item">
-            <span class="feed-icon warning"><Icon name="alerts" size={14} /></span>
             <div>
               <strong>Alerts and incidents</strong>
               <button class="text-button" type="button" onclick={() => onNavigate('alerts')}>Review alert history <Icon name="chevron-right" size={14} /></button>
@@ -180,7 +176,7 @@
     gap: 9px;
     padding: 6px 12px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     color: var(--muted);
     font-size: 12px;
@@ -188,14 +184,14 @@
   }
   .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
   .section-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
-  .count { padding: 1px 8px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; }
+  .count { color: var(--muted); font-size: 13px; font-weight: 400; }
   .lower-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-top: 24px; }
   .lower-grid .panel + .panel { margin-top: 0; }
 
   .allowance { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .allowance > div { display: grid; gap: 2px; }
-  .big { font-size: 30px; font-weight: 700; letter-spacing: -0.035em; line-height: 1.1; }
-  .share { color: var(--accent); font-size: 15px; font-weight: 700; }
+  .big { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .share { color: var(--ink-secondary); font-size: 14px; font-weight: 600; }
   .share.warn { color: var(--warning); }
   .share.crit { color: var(--danger); }
   .progress.warn span { background: var(--warning); }
@@ -207,31 +203,24 @@
   .feed-item:last-child { padding-bottom: 0; border-bottom: 0; }
   .feed-item strong { display: block; font-size: 13px; }
   .feed-item small { color: var(--muted); font-size: 12px; }
-  .feed-icon { display: grid; flex-shrink: 0; place-items: center; width: 30px; height: 30px; border-radius: var(--radius-md); }
-  .feed-icon.success { background: var(--success-bg); color: var(--success); }
-  .feed-icon.warning { background: var(--warning-bg); color: var(--warning); }
 
   .job-panel { margin-top: var(--gap); }
-  .job-progress.running span { background-image: linear-gradient(90deg, var(--accent), var(--blue), var(--accent)); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
 
   .empty-onboarding {
     display: grid;
     grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
     overflow: hidden;
     border: 1px solid var(--line);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow-md);
-    animation: pop-in var(--dur-slow) var(--ease-out);
   }
-  .empty-main { padding: 40px; background: radial-gradient(120% 120% at 0% 0%, var(--accent-bg), transparent 60%), var(--surface); }
-  .empty-main .state-icon { margin: 26px 0 18px; background: var(--accent-bg); color: var(--accent); }
-  .empty-main h2 { margin: 0 0 12px; font-size: clamp(22px, 3vw, 30px); letter-spacing: -0.03em; line-height: 1.15; }
+  .empty-main { padding: 36px; }
+  .empty-main h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: -0.015em; line-height: 1.25; }
   .empty-main p { max-width: 52ch; margin: 0 0 22px; color: var(--ink-secondary); line-height: 1.6; }
   .empty-steps { display: grid; align-content: center; margin: 0; padding: 20px 30px; list-style: none; border-left: 1px solid var(--line-light); }
-  .empty-steps li { display: flex; gap: 16px; padding: 20px 0; border-bottom: 1px solid var(--line-light); }
+  .empty-steps li { display: flex; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line-light); }
   .empty-steps li:last-child { border-bottom: 0; }
-  .empty-steps li > span { flex: 0 0 30px; color: var(--accent); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .empty-steps li > span { flex: 0 0 16px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .empty-steps li div { display: grid; gap: 5px; }
   .empty-steps strong { font-size: 14px; }
   .empty-steps small { color: var(--muted); line-height: 1.5; }

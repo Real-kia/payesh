@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
-  import { chartColors, gradientFill } from './lib/chart';
+  import { chartColors, areaFill } from './lib/chart';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
   let { label = 'Resource chart', range = '15m', data, timezone = 'UTC', metric = 'both' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string; metric?: 'cpu' | 'memory' | 'swap' | 'both' } = $props();
@@ -22,12 +22,11 @@
   onMount(() => {
     if (data.coverage === 'unavailable' || data.timestamps.length < 2) return;
     const { muted, line, surface, read } = chartColors(host);
-    const teal = read('--accent', '#2f6bd8');
-    const purple = read('--purple', '#7a55c7');
+    const accent = read('--accent', '#2f6bd8');
+    const secondary = read('--muted', '#66666e');
     const chartData: uPlot.AlignedData = [data.timestamps, metric === 'memory' ? data.memory : metric === 'swap' ? data.swap : data.cpu, ...(metric === 'both' ? [data.memory] : [])];
-    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : `${raw.toFixed(2)}%`;
+    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : `${raw.toFixed(1)}%`;
     const labelForMetric = metric === 'memory' ? 'Memory' : metric === 'swap' ? 'Swap' : 'CPU';
-    const colorForMetric = metric === 'memory' || metric === 'swap' ? purple : teal;
     plot = new uPlot({
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
@@ -52,8 +51,8 @@
       cursor: {
         focus: { prox: 30 },
         points: {
-          size: 7,
-          width: 2,
+          size: 6,
+          width: 1.5,
           fill: surface
         }
       },
@@ -61,17 +60,16 @@
         {},
         {
           label: labelForMetric,
-          stroke: colorForMetric,
-          width: 2,
-          fill: gradientFill(colorForMetric),
+          stroke: accent,
+          width: 1.5,
+          fill: areaFill(accent),
           points: { show: false },
           value
         },
         ...(metric === 'both' ? [{
           label: 'Memory',
-          stroke: purple,
-          width: 2,
-          fill: gradientFill(purple),
+          stroke: secondary,
+          width: 1.5,
           points: { show: false },
           value
         }] : [])

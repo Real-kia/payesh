@@ -38,8 +38,6 @@
     justify-content: center;
     padding: 1.5rem;
     background: rgba(5, 9, 15, 0.65);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
     animation: fade-in var(--dur, 0.15s) var(--ease-out, ease-out);
   }
   :global(:root[data-theme='dark']) .loading-backdrop {

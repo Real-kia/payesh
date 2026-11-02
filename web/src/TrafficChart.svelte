@@ -3,7 +3,7 @@
   import { formatNetworkRate } from './network';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
-  import { chartColors, gradientFill } from './lib/chart';
+  import { chartColors, areaFill } from './lib/chart';
   import type { PreviewChartData } from './preview/fixtures';
 
   let { data, timezone = 'UTC' }: { data: PreviewChartData; timezone?: string } = $props();
@@ -19,8 +19,8 @@
   onMount(() => {
     if (!data.networkRx || !data.networkTx || data.timestamps.length < 2) return;
     const { muted, line, surface, read } = chartColors(host);
-    const teal = read('--accent', '#2f6bd8');
-    const blue = read('--blue', '#1d8cb0');
+    const accent = read('--accent', '#2f6bd8');
+    const secondary = read('--muted', '#66666e');
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : rate(raw);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
@@ -47,8 +47,8 @@
       cursor: {
         focus: { prox: 30 },
         points: {
-          size: 7,
-          width: 2,
+          size: 6,
+          width: 1.5,
           fill: surface
         }
       },
@@ -56,17 +56,16 @@
         {},
         {
           label: 'Download',
-          stroke: teal,
-          width: 2,
-          fill: gradientFill(teal),
+          stroke: accent,
+          width: 1.5,
+          fill: areaFill(accent),
           points: { show: false },
           value
         },
         {
           label: 'Upload',
-          stroke: blue,
-          width: 2,
-          fill: gradientFill(blue),
+          stroke: secondary,
+          width: 1.5,
           points: { show: false },
           value
         }

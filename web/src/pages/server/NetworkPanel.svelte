@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import Icon from '../../Icon.svelte';
   import TrafficChart from '../../TrafficChart.svelte';
   import StatusPill from '../../components/StatusPill.svelte';
   import { ApiError, apiClient, type TrafficUsage } from '../../api';
@@ -69,15 +68,9 @@
   onDestroy(() => controller?.abort());
 </script>
 
-<div class="rates stagger">
-  <article class="rate-card down" style:--i={0}>
-    <span class="rate-icon"><Icon name="download" size={16} /></span>
-    <div><span class="muted">Download now</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
-  </article>
-  <article class="rate-card up" style:--i={1}>
-    <span class="rate-icon"><Icon name="upload" size={16} /></span>
-    <div><span class="muted">Upload now</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
-  </article>
+<div class="rates">
+  <div class="rate-card"><span class="muted">Download now</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(server, 'download'))}</strong></div>
+  <div class="rate-card"><span class="muted">Upload now</span><strong class="tabular">{formatNetworkRate(currentNetworkRate(server, 'upload'))}</strong></div>
 </div>
 
 <article class="panel">
@@ -90,7 +83,7 @@
     </div>
   </div>
   {#if chartData && hasRates}
-    <div class="legend"><span><i class="legend-dot accent"></i> Download</span><span><i class="legend-dot blue"></i> Upload</span></div>
+    <div class="legend"><span><i class="legend-dot accent"></i> Download</span><span><i class="legend-dot muted-dot"></i> Upload</span></div>
     {#key `${range}-${theme}-${server.id}-${timezone}-traffic`}
       <TrafficChart data={chartData} {timezone} />
     {/key}
@@ -115,8 +108,8 @@
   {#if usage}
     <p class="muted period">{formatDateTimeInTz(usage.from, timezone)} → {formatDateTimeInTz(usage.to, timezone)}</p>
     <div class="usage" aria-live="polite">
-      <div><span class="muted">Download</span><strong class="tabular down-text">{usage.download_bytes === null ? 'Unavailable' : formatBytes(usage.download_bytes)}</strong><small class="muted">{usage.download_hours}/{usage.requested_hours} hours recorded</small></div>
-      <div><span class="muted">Upload</span><strong class="tabular up-text">{usage.upload_bytes === null ? 'Unavailable' : formatBytes(usage.upload_bytes)}</strong><small class="muted">{usage.upload_hours}/{usage.requested_hours} hours recorded</small></div>
+      <div><span class="muted">Download</span><strong class="tabular">{usage.download_bytes === null ? 'Unavailable' : formatBytes(usage.download_bytes)}</strong><small class="muted">{usage.download_hours}/{usage.requested_hours} hours recorded</small></div>
+      <div><span class="muted">Upload</span><strong class="tabular">{usage.upload_bytes === null ? 'Unavailable' : formatBytes(usage.upload_bytes)}</strong><small class="muted">{usage.upload_hours}/{usage.requested_hours} hours recorded</small></div>
       <div><span class="muted">Total recorded</span><strong class="tabular">{usage.total_bytes === null ? 'Unavailable' : formatBytes(usage.total_bytes)}</strong></div>
     </div>
     {#if usage.download_hours < usage.requested_hours || usage.upload_hours < usage.requested_hours}
@@ -147,12 +140,11 @@
 {/if}
 
 <style>
-  .rates { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-bottom: var(--gap); }
-  .rate-card { --tone: var(--accent); --tone-bg: var(--accent-bg); display: flex; align-items: center; gap: 14px; padding: var(--card-pad) 20px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: radial-gradient(120% 120% at 100% 0%, var(--tone-bg), transparent 55%), var(--surface); box-shadow: var(--shadow); }
-  .rate-card.up { --tone: var(--blue); --tone-bg: var(--blue-bg); }
-  .rate-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--radius-md); background: var(--tone-bg); color: var(--tone); }
-  .rate-card > div { display: grid; gap: 2px; font-size: 12.5px; }
-  .rate-card strong { color: var(--tone); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  .rates { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: var(--gap); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+  .rate-card { display: grid; gap: 4px; padding: var(--card-pad) 20px; font-size: 12.5px; }
+  .rate-card + .rate-card { border-left: 1px solid var(--line); }
+  .rate-card strong { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .legend :global(.muted-dot) { background: var(--muted); }
 
   .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
   .range-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 8px; }
@@ -160,16 +152,14 @@
   .range-form input { width: 100%; }
   .period { margin: 16px 0 10px; font-size: 12.5px; }
   .usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .usage > div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); font-size: 12.5px; animation: pop-in var(--dur) var(--ease-out); }
-  .usage strong { font-size: 20px; letter-spacing: -0.02em; }
+  .usage > div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); font-size: 12.5px; }
+  .usage strong { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
   .usage small { font-size: 12px; }
-  .down-text { color: var(--accent); }
-  .up-text { color: var(--blue); }
 
   .billing { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
   .billing > div { display: grid; gap: 2px; }
-  .big { font-size: 28px; font-weight: 700; letter-spacing: -0.035em; }
-  .share { color: var(--accent); font-weight: 700; }
+  .big { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+  .share { color: var(--ink-secondary); font-weight: 600; }
   .share.warn { color: var(--warning); }
   .share.crit { color: var(--danger); }
   .progress.warn span { background: var(--warning); }
@@ -180,6 +170,7 @@
 
   @media (max-width: 640px) {
     .rates, .usage, .details { grid-template-columns: 1fr; }
+    .rate-card + .rate-card { border-left: 0; border-top: 1px solid var(--line); }
     .panel-heading { flex-wrap: wrap; }
   }
 </style>

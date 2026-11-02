@@ -25,7 +25,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="bell" size={16} /></span><div><h2>Notifications</h2><span class="muted">{unread ? `${unread} unread` : 'You are all caught up'}</span></div></div>
+    <div class="title"><div><h2>Notifications</h2><span class="muted">{unread ? `${unread} unread` : 'You are all caught up'}</span></div></div>
     <div class="actions">
       <button class="button ghost small" type="button" disabled={busy} onclick={onRefresh}><Icon name="refresh" size={13} />Refresh</button>
       {#if canEdit}<button class="button ghost small" type="button" disabled={!unread || busy} onclick={onMarkRead}><Icon name="check" size={13} />Mark all read</button>{/if}
@@ -34,9 +34,9 @@
   <div class="notification-explainer"><strong>What are notifications?</strong><span>This inbox contains storage pressure messages such as warnings, cleanup notices, and recovery updates. Alert rule states and incidents are managed on the Alerts page.</span></div>
   <div class="delivery"><div><strong>In-app notifications</strong><small>Storage warnings and recovery updates appear in this inbox.</small></div><span class="enabled">Enabled</span></div>
   {#if error}<p class="form-error" role="alert">{error}</p>{/if}
-  <div class="list stagger">
+  <div class="list">
     {#each items as item, index (item.id)}
-      <article class={`item ${tone(item.kind)}`} class:unread={!item.read} style:--i={Math.min(index, 8)}>
+      <article class={`item ${tone(item.kind)}`} class:unread={!item.read}>
         <span class="marker" aria-hidden="true"></span>
         <div class="body">
           <div class="head"><strong>{title(item.kind)}</strong><time datetime={item.created_at}>{formatDateTimeInTz(item.created_at, timezone)}</time></div>

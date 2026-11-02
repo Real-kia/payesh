@@ -126,7 +126,7 @@
   </div>
 
   <article class="panel rules-panel">
-    <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="bell" size={16} /></span><div><h2>Alert rules</h2><span class="muted">Rules watch telemetry and create an alert event when a condition stays true.</span></div></div>{#if canEdit}<button class="button primary small" type="button" onclick={() => (showRuleForm = !showRuleForm)}><Icon name="plus" size={13} />Add rule</button>{/if}</div>
+    <div class="panel-heading"><div class="title"><div><h2>Alert rules</h2><span class="muted">Rules watch telemetry and create an alert event when a condition stays true.</span></div></div>{#if canEdit}<button class="button primary small" type="button" onclick={() => (showRuleForm = !showRuleForm)}><Icon name="plus" size={13} />Add rule</button>{/if}</div>
     {#if showRuleForm}<form class="rule-form" onsubmit={(event) => { event.preventDefault(); void addRule(); }}><input placeholder="Rule name" aria-label="Rule name" bind:value={newRuleName} /><select aria-label="Metric" bind:value={newRuleMetric}><option value="cpu.utilization">CPU utilization</option><option value="memory.used_percent">Memory utilization</option><option value="disk.root.used_percent">Disk utilization</option><option value="memory.swap_used_percent">Swap utilization</option><option value="node.unreachable">Node unreachable (0 = reachable, 1 = unreachable)</option></select><input type="number" min="1" aria-label="Threshold" bind:value={newRuleThreshold} /><button class="button primary small" type="submit" disabled={ruleBusy}>{ruleBusy ? 'Creating…' : 'Create rule'}</button></form>{/if}
     {#if ruleError}<p class="form-error" role="alert">{ruleError}</p>{/if}
     {#each ruleGroups as group (group.id)}
@@ -191,9 +191,9 @@
     {#if paged.length === 0}
       <div class="unavailable-panel"><strong>No alerts match these filters</strong><span>Choose another filter.</span></div>
     {:else}
-      <div class="alert-list stagger">
+      <div class="alert-list">
         {#each paged as alert, index (alert.id)}
-          <article class={`alert-row ${alert.state}`} style:--i={Math.min(index, 10)}>
+          <article class={`alert-row ${alert.state}`}>
             <StatusPill state={tone(alert.state)} label={alert.state} />
             <div class="what">
               <strong>{rules.find((rule) => rule.id === alert.rule_id)?.name ?? ruleLabel(alert.rule_id)}</strong>
@@ -225,9 +225,9 @@
   .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .rules-panel { margin-bottom: 16px; }
   .rule-group + .rule-group { margin-top: 14px; }
-  .rule-group-title { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .rule-group-title { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 500;  }
   .category-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .category-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink); font-size: 12.5px; cursor: pointer; }
+  .category-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font-size: 12.5px; cursor: pointer; }
   .category-chip:hover { background: var(--surface-hover); }
   .category-chip[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-bg); }
   .firing-count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -248,7 +248,7 @@
   .page-size { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
   .page-size select { padding-top: 5px; padding-bottom: 5px; }
 
-  .alert-list { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
+  .alert-list { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
   .alert-row {
     position: relative;
     display: grid;
@@ -259,7 +259,7 @@
     border-bottom: 1px solid var(--line-light);
   }
   .alert-row:last-child { border-bottom: 0; }
-  .alert-row.firing { background: linear-gradient(90deg, var(--danger-bg), transparent 40%); }
+  .alert-row.firing { box-shadow: inset 2px 0 0 var(--danger); }
   .alert-row.firing::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--danger); }
   .what { min-width: 0; }
   .what strong { display: block; overflow: hidden; font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }

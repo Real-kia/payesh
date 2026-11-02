@@ -34,8 +34,10 @@ export function stateLabel(state: DisplayState): string {
   return state.replace('-', ' ');
 }
 
+/** Whole percent, with one decimal below 10% where the extra digit still means something. */
 export function metricValue(value: number | null): string {
-  return value === null ? '—' : `${value.toFixed(2)}%`;
+  if (value === null || !Number.isFinite(value)) return '—';
+  return value < 10 ? `${Number(value.toFixed(1))}%` : `${Math.round(value)}%`;
 }
 
 export function clampPercent(value: number | null | undefined): number {

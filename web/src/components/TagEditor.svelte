@@ -58,10 +58,10 @@
 <style>
   .tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
   .tags.busy { opacity: 0.6; }
-  .tag { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface-muted, var(--surface)); font-size: 12px; font-weight: 550; line-height: 20px; }
+  .tag { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface-muted, var(--surface)); font-size: 12px; font-weight: 550; line-height: 20px; }
   .tag button { display: inline-grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
   .tag button:hover { background: var(--line); color: var(--ink); }
-  input { width: 84px; min-width: 0; padding: 1px 6px; border: 1px dashed var(--line-strong); border-radius: var(--radius-pill); background: transparent; color: var(--ink); font: inherit; font-size: 12px; line-height: 18px; }
+  input { width: 84px; min-width: 0; padding: 1px 6px; border: 1px dashed var(--line-strong); border-radius: var(--radius-xs); background: transparent; color: var(--ink); font: inherit; font-size: 12px; line-height: 18px; }
   input:focus { border-style: solid; outline: none; border-color: var(--accent); }
   .none { color: var(--muted); }
   .form-error { margin: 4px 0 0; font-size: 12px; }

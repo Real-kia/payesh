@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import Icon from '../../Icon.svelte';
   import StatusPill from '../../components/StatusPill.svelte';
   import { ApiError, apiClient, type HTTPSStatus, type NodeTransportStatus } from '../../api';
   import { PREVIEW_MODE } from '../../lib/env';
@@ -195,7 +194,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="lock" size={16} /></span><div><h2>SSL / TLS</h2><span class="muted">Serve the dashboard over HTTPS with a free Let's Encrypt certificate.</span></div></div>
+    <div class="title"><div><h2>SSL / TLS</h2><span class="muted">Serve the dashboard over HTTPS with a free Let's Encrypt certificate.</span></div></div>
   </div>
   <div class="settings-meta-box">
     <div class="meta-row">
@@ -236,7 +235,7 @@
 </article>
 
 <article class="panel">
-  <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="globe" size={16} /></span><div><h2>Dashboard port</h2><span class="muted">The browser is moved to the new port after it is verified.</span></div></div></div>
+  <div class="panel-heading"><div class="title"><div><h2>Dashboard port</h2><span class="muted">The browser is moved to the new port after it is verified.</span></div></div></div>
   <form class="port-form" onsubmit={(event) => { event.preventDefault(); void saveDashboardPort(); }}>
     <label>Dashboard port<input type="number" min="1" max="65535" required bind:value={dashboardPort} disabled={portBusy || readOnly} /></label>
     <button class="button primary" type="submit" disabled={portBusy || PREVIEW_MODE || readOnly}>{portBusy ? 'Checking port…' : 'Change port'}</button>
@@ -245,7 +244,7 @@
 </article>
 
 <article class="panel">
-  <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="radio" size={16} /></span><div><h2>Node transport port</h2><span class="muted">Nodes connect to the hub here over mutual TLS.</span></div></div></div>
+  <div class="panel-heading"><div class="title"><div><h2>Node transport port</h2><span class="muted">Nodes connect to the hub here over mutual TLS.</span></div></div></div>
   <form class="port-form" onsubmit={(event) => { event.preventDefault(); void saveNodePort(); }}>
     <label>Node transport port<input type="number" min="1" max="65535" required bind:value={nodePort} disabled={nodePortBusy || PREVIEW_MODE || readOnly} /></label>
     <button class="button primary" type="submit" disabled={nodePortBusy || PREVIEW_MODE || !nodeTransportStatus?.url || Number(nodePort) === Number(nodeTransportStatus.port) || readOnly}>{nodePortBusy ? 'Saving…' : 'Change node port'}</button>

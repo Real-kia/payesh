@@ -109,7 +109,7 @@
 </script>
 
 <article class="panel">
-  <div class="panel-heading"><div class="title"><span class="section-icon"><Icon name="copy" size={16} /></span><div><h2>Run one command on the server</h2><span class="muted">For a server you are already logged in to. Run it as a user with sudo.</span></div></div></div>
+  <div class="panel-heading"><div class="title"><div><h2>Run one command on the server</h2><span class="muted">For a server you are already logged in to. Run it as a user with sudo.</span></div></div></div>
   <form class="join-form" onsubmit={(event) => { event.preventDefault(); void create(); }}>
     {#if !existing}<label>Server name<input bind:value={name} maxlength="128" placeholder="e.g. EU-Node-02" required /></label>{/if}
     <fieldset class="source">

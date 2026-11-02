@@ -82,7 +82,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="packages" size={16} /></span><div><h2>Installed packages</h2><span class="muted">Optional signed extensions on {server.name}.</span></div></div>
+    <div class="title"><div><h2>Installed packages</h2><span class="muted">Optional signed extensions on {server.name}.</span></div></div>
     <div class="heading-actions">
       <button class="button ghost small" type="button" disabled={loading} onclick={() => void load()}><Icon name="refresh" size={13} />{loading ? 'Refreshing…' : 'Refresh'}</button>
       {#if !readOnly}<button class="button primary small" type="button" onclick={onBrowse}><Icon name="plus" size={13} />Add package</button>{/if}
@@ -96,11 +96,11 @@
   {:else if items.length === 0}
     <div class="unavailable-panel"><strong>No packages installed</strong><span>This server has no optional packages yet.</span>{#if !readOnly}<button class="button primary small" type="button" onclick={onBrowse}>Browse packages</button>{/if}</div>
   {:else}
-    <div class="list stagger">
+    <div class="list">
       {#each items as item, index (item.module_id)}
         {@const entry = moduleFor(item)}
         {@const outdated = !!entry.latest_version && !!item.version && entry.latest_version !== item.version}
-        <div class="package" style:--i={index}>
+        <div class="package">
           <div class="head">
             <div class="identity">
               <div class="name"><h3>{entry.name}</h3><span class="mono id">{item.module_id}</span>{#if outdated}<span class="update">v{entry.latest_version} available</span>{/if}</div>
@@ -138,17 +138,17 @@
   .skeleton.row { height: 118px; border-radius: var(--radius-md); }
   .list { display: grid; gap: 12px; }
   .package { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); transition: border-color var(--dur), box-shadow var(--dur); }
-  .package:hover { border-color: var(--line-strong); box-shadow: var(--shadow-sm); }
+  .package:hover { border-color: var(--line-strong); }
   .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
   .identity { display: grid; gap: 4px; min-width: 0; }
   .name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .name h3 { margin: 0; font-size: 14.5px; }
   .id { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 12px; }
-  .update { padding: 1px 8px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 650; }
+  .update { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--ink-secondary); font-size: 12px; font-weight: 500; }
   .identity p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
   .facts { display: flex; flex-wrap: wrap; gap: 8px 26px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-muted); }
   .facts div { display: grid; gap: 2px; }
-  .facts span { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
+  .facts span { color: var(--muted); font-size: 12px; }
   .facts strong { font-size: 12.5px; font-weight: 600; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .danger-text { color: var(--danger); }

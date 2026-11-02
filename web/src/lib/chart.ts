@@ -23,14 +23,7 @@ export function withAlpha(color: string, alpha: number): string {
   return color;
 }
 
-/** A vertical gradient fill that fades a series colour out towards the x axis. */
-export function gradientFill(color: string): uPlot.Series.Fill {
-  return (u: uPlot) => {
-    const { top, height } = u.bbox;
-    if (!Number.isFinite(top) || !Number.isFinite(height) || height <= 0) return withAlpha(color, 0.1);
-    const gradient = u.ctx.createLinearGradient(0, top, 0, top + height);
-    gradient.addColorStop(0, withAlpha(color, 0.26));
-    gradient.addColorStop(1, withAlpha(color, 0.01));
-    return gradient;
-  };
+/** A flat, faint area under a series: enough to read the shape, not a decoration. */
+export function areaFill(color: string): uPlot.Series.Fill {
+  return withAlpha(color, 0.07);
 }

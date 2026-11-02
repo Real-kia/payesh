@@ -42,7 +42,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="download" size={16} /></span><div><h2>Versions & updates</h2><span class="muted">Payesh checks GitHub releases for new versions.</span></div></div>
+    <div class="title"><div><h2>Versions & updates</h2><span class="muted">Payesh checks GitHub releases for new versions.</span></div></div>
     <button class="button ghost small" type="button" disabled={checkBusy || PREVIEW_MODE} onclick={onCheck}>{#if checkBusy}<span class="version-spinner" aria-hidden="true"></span>Checking…{:else}<Icon name="refresh" size={13} />Check now{/if}</button>
   </div>
 
@@ -145,9 +145,9 @@
   .timeline::before { content: ''; position: absolute; left: 5px; top: 14px; bottom: 14px; width: 2px; background: var(--line); }
   .timeline li { position: relative; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 10px 0; font-size: 13px; }
   .node { width: 12px; height: 12px; border: 2px solid var(--line-strong); border-radius: 50%; background: var(--surface); z-index: 1; }
-  li.installed .node { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); }
+  li.installed .node { border-color: var(--accent); background: var(--accent); }
   .release { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
-  .tag { padding: 1px 7px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 650; }
+  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--ink-secondary); font-size: 12px; font-weight: 500; }
   .date { font-size: 12px; }
   .release-actions { display: flex; align-items: center; gap: 12px; font-size: 12.5px; }
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 12.5px; }

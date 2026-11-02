@@ -88,21 +88,21 @@
 </section>
 
 <style>
-  .node-update { margin: 0 0 var(--gap); padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
+  .node-update { margin: 0 0 var(--gap); padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
   .node-update.updating { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
   .node-update.failed { border-color: color-mix(in srgb, var(--warning) 55%, var(--line)); }
   .node-update.done { border-color: color-mix(in srgb, var(--success) 50%, var(--line)); }
-  .head { display: flex; align-items: center; gap: 12px; }
-  .badge { display: grid; flex-shrink: 0; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); background: var(--accent-bg); color: var(--accent); }
-  .badge.ok, .done .badge { background: var(--success-bg); color: var(--success); }
-  .failed .badge { background: var(--warning-bg); color: var(--warning); }
+  .head { display: flex; align-items: flex-start; gap: 10px; }
+  .badge { display: grid; flex-shrink: 0; place-items: center; width: 18px; height: 20px; color: var(--muted); }
+  .badge.ok, .done .badge { color: var(--success); }
+  .failed .badge { color: var(--warning); }
   .updating .badge :global(svg) { animation: spin 1.4s linear infinite; }
   .title { display: grid; flex: 1; gap: 2px; min-width: 0; }
   .title strong { font-size: 13.5px; }
   .title span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
-  .actions { display: flex; flex-shrink: 0; gap: 8px; }
+  .actions { display: flex; flex-shrink: 0; align-self: center; gap: 8px; }
   .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
-  .steps li { display: flex; align-items: center; gap: 8px; padding-top: 10px; border-top: 3px solid var(--line); color: var(--muted); font-size: 12px; }
+  .steps li { display: flex; align-items: center; gap: 8px; padding-top: 10px; border-top: 2px solid var(--line); color: var(--muted); font-size: 12px; }
   .steps li.complete { border-top-color: var(--success); color: var(--ink); }
   .steps li.current { border-top-color: var(--accent); color: var(--ink); font-weight: 600; }
   .dot { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: var(--success); }
@@ -110,6 +110,8 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 640px) {
     .head { flex-wrap: wrap; }
+    .title { flex-basis: calc(100% - 28px); }
+    .actions { padding-left: 28px; }
     .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (prefers-reduced-motion: reduce) { .updating .badge :global(svg), .spinner { animation: none; } }

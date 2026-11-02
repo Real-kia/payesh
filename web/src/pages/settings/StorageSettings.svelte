@@ -89,7 +89,7 @@
 
 <article class="panel">
   <div class="panel-heading">
-    <div class="title"><span class="section-icon"><Icon name="database" size={16} /></span><div><h2>Storage & sampling</h2><span class="muted">How much history is kept and how often servers report.</span></div></div>
+    <div class="title"><div><h2>Storage & sampling</h2><span class="muted">How much history is kept and how often servers report.</span></div></div>
     <button class="button ghost small" type="button" disabled={busy || PREVIEW_MODE} onclick={() => void load()}><Icon name="refresh" size={13} />Refresh</button>
   </div>
   {#if storageStatus}

@@ -10,10 +10,10 @@
   let { server, onSelect }: { server: PreviewServer; timezone?: string; onSelect: (server: PreviewServer) => void } = $props();
 
   const rows = [
-    { label: 'CPU', key: 'cpu', tone: 'teal', spark: true },
-    { label: 'Memory', key: 'memory', tone: 'purple', spark: true },
-    { label: 'Disk', key: 'disk', tone: 'blue', spark: false },
-    { label: 'Swap', key: 'swap', tone: 'blue', spark: false }
+    { label: 'CPU', key: 'cpu', spark: true },
+    { label: 'Memory', key: 'memory', spark: true },
+    { label: 'Disk', key: 'disk', spark: false },
+    { label: 'Swap', key: 'swap', spark: false }
   ] as const;
 
   function open(event: KeyboardEvent) {
@@ -39,10 +39,10 @@
       {#each rows as row (row.key)}
         {@const value = server.metrics[row.key]}
         {@const history = server.metricHistory?.ranges['15m']?.[row.key] ?? []}
-        <div class={`row ${row.tone} ${resourceLevel(value)}`}>
+        <div class={`row ${resourceLevel(value)}`}>
           <span class="label">{row.label}</span>
           <span class="bar" role="meter" aria-label={`${row.label} usage`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={value ?? undefined}><i style:width={`${clampPercent(value)}%`}></i></span>
-          {#if row.spark}<span class="spark">{#if history.filter((point) => point !== null).length > 1}<Sparkline values={history} tone={row.tone} />{/if}</span>{:else}<span class="spark"></span>{/if}
+          {#if row.spark}<span class="spark">{#if history.filter((point) => point !== null).length > 1}<Sparkline values={history} />{/if}</span>{:else}<span class="spark"></span>{/if}
           <strong class="tabular">{metricValue(value)}</strong>
         </div>
       {/each}
@@ -62,29 +62,28 @@
 </div>
 
 <style>
-  .card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); cursor: pointer; transition: border-color var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out); }
-  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow); }
+  .card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
+  .card:hover { border-color: var(--line-strong); background: var(--surface-hover); }
   .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .identity { min-width: 0; }
   .identity h2 { margin: 0 0 2px; overflow: hidden; font-size: 14.5px; text-overflow: ellipsis; white-space: nowrap; }
   .identity small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; color: var(--muted); font-size: 12px; }
-  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: 12px; line-height: 16px; }
+  .tag { padding: 0 5px; border: 1px solid var(--line); border-radius: var(--radius-xs); font-size: 12px; line-height: 16px; }
 
   .rows { display: grid; gap: 5px; }
   .row { display: grid; grid-template-columns: 52px 1fr 44px 52px; align-items: center; gap: 8px; --metric: var(--accent); font-size: 12px; }
-  .row.purple { --metric: var(--purple); }
-  .row.blue { --metric: var(--blue); }
   .row.warning { --metric: var(--warning); }
   .row.critical { --metric: var(--danger); }
   .label { color: var(--muted); }
-  .bar { height: 5px; overflow: hidden; border-radius: var(--radius-pill); background: var(--line); }
+  .bar { height: 4px; overflow: hidden; border-radius: 2px; background: var(--surface-muted); }
   .bar i { display: block; height: 100%; border-radius: inherit; background: var(--metric); transition: width var(--dur-slow) var(--ease-out); }
   .spark { display: block; height: 16px; }
-  .row strong { color: var(--metric); font-size: 12.5px; font-weight: 650; text-align: right; }
+  .row strong { color: var(--ink); font-size: 12.5px; font-weight: 500; text-align: right; }
+  .row.warning strong, .row.critical strong { color: var(--metric); font-weight: 600; }
 
   .net { display: flex; gap: 14px; color: var(--ink); font-size: 12px; }
   .net span { display: inline-flex; align-items: center; gap: 4px; }
-  .offline { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); color: var(--muted); font-size: 12px; }
+  .offline { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: 12px; }
   .bottom { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: auto; color: var(--muted); font-size: 12px; }
   .bottom span { display: inline-flex; align-items: center; gap: 4px; }
   .more-addresses { color: var(--muted); font-weight: 600; }

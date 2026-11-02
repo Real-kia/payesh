@@ -1,7 +1,6 @@
 <script lang="ts">
   import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
-  import CircleChart from '../CircleChart.svelte';
   import StatusPill from './StatusPill.svelte';
   import Pager from './Pager.svelte';
   import { formatNetworkRate } from '../network';
@@ -92,14 +91,14 @@
     <span class="col-rxtx">Rx / Tx</span>
     <span></span>
   </div>
-  <div class="server-list stagger">
+  <div class="server-list">
     {#each paged as server, index (server.id)}
       {@const online = server.connectionState === 'connected'}
       <div class="row-wrap" class:checked={selectedIds.includes(server.id)}>
       {#if selectable && server.role === 'node'}
         <input class="row-check" type="checkbox" aria-label={`Select ${serverLabel(server)}`} checked={selectedIds.includes(server.id)} onchange={() => toggle(server.id)} />
       {/if}
-      <button class="server-row" type="button" style:--i={Math.min(index, 12)} onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
+      <button class="server-row" type="button" onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
           <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span>{#if latestNode && server.role === 'node' && server.connectionState === 'connected' && isOlder(nodeVersionOf(server), latestNode)}<span class="role-chip update-chip" title={`Node v${nodeVersionOf(server)}; v${latestNode} is available`}>Update</span>{/if}</strong>
@@ -114,15 +113,13 @@
         <div class="col-metric">
           {#if online}
             <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
-            <div class={`microbar memory ${resourceLevel(server.metrics.memory)}`}><span style:width={`${clampPercent(server.metrics.memory)}%`}></span></div>
+            <div class={`microbar ${resourceLevel(server.metrics.memory)}`}><span style:width={`${clampPercent(server.metrics.memory)}%`}></span></div>
           {:else}<span class="faint">—</span>{/if}
         </div>
         <div class="col-metric col-disk">
           {#if online}
-            <div class="disk-cell">
-              <CircleChart value={server.metrics.disk} size={26} strokeWidth={11} showValue={false} color="var(--blue)" />
-              <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
-            </div>
+            <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
+            <div class={`microbar ${resourceLevel(server.metrics.disk)}`}><span style:width={`${clampPercent(server.metrics.disk)}%`}></span></div>
           {:else}<span class="faint">—</span>{/if}
         </div>
         <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{server.version && server.version !== '—' ? `v${server.role === 'node' ? nodeVersionOf(server) : server.version.replace(/^v/, '')}` : '—'}</div>
@@ -148,35 +145,31 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow);
   }
   .table-header, .server-row {
     display: grid;
-    grid-template-columns: 128px minmax(180px, 2fr) 92px 92px 104px 76px minmax(150px, 1.2fr) 24px;
+    grid-template-columns: 116px minmax(180px, 2fr) 84px 84px 84px 72px minmax(140px, 1.2fr) 16px;
     gap: 16px;
     align-items: center;
     padding: 0 20px;
   }
   .table-header {
     position: relative;
-    min-height: 40px;
+    min-height: 36px;
     border-bottom: 1px solid var(--line);
-    background: var(--surface-muted);
     color: var(--muted);
     font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
+    font-weight: 500;
   }
   .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; text-transform: inherit; cursor: pointer; }
   .sort:hover, .sort.sorted { color: var(--ink); }
   .arrow { opacity: 0; font-size: 12px; transition: opacity var(--transition-fast); }
   .sort:hover .arrow, .sort:focus-visible .arrow { opacity: 0.5; }
-  .sort.sorted .arrow { opacity: 1; color: var(--accent); }
+  .sort.sorted .arrow { opacity: 1; }
   .server-list { display: flex; flex-direction: column; }
   .row-wrap { position: relative; border-bottom: 1px solid var(--line-light); }
   .row-wrap:last-child { border-bottom: 0; }
-  .row-wrap.checked { background: var(--accent-bg); }
+  .row-wrap.checked { background: var(--surface-muted); }
   .row-check { position: absolute; z-index: 1; left: 18px; top: 50%; width: 16px; height: 16px; margin: -8px 0 0; accent-color: var(--accent); cursor: pointer; }
   .selectable .table-header, .selectable .server-row { padding-left: 52px; }
   .server-row {
@@ -191,53 +184,34 @@
     text-align: left;
     transition: background-color var(--transition-fast);
   }
-  .server-row::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 8px;
-    bottom: 8px;
-    width: 3px;
-    border-radius: 0 3px 3px 0;
-    background: var(--accent);
-    transform: scaleY(0);
-    transition: transform var(--dur) var(--ease-out);
-  }
   .server-row:last-child { border-bottom: 0; }
   .server-row:hover, .server-row:focus-visible { background: var(--surface-hover); }
-  .server-row:hover::before, .server-row:focus-visible::before { transform: scaleY(1); }
   .server-row:focus-visible { outline-offset: -2px; }
 
   .col-name { min-width: 0; }
-  .col-name strong { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+  .col-name strong { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
   .col-name small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .role-chip {
     padding: 1px 6px;
     border: 1px solid var(--line);
     border-radius: var(--radius-xs);
     color: var(--muted);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: 11.5px;
+    font-weight: 500;
   }
 
-  .col-metric { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-  .col-metric strong { font-size: 13.5px; font-weight: 600; }
-  .microbar { height: 4px; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-muted); }
+  .col-metric { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .col-metric strong { font-size: 13px; font-weight: 500; }
+  .microbar { height: 3px; overflow: hidden; border-radius: 2px; background: var(--surface-muted); }
   .microbar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-slow) var(--ease-out); }
-  .microbar.memory span { background: var(--purple); }
   .microbar.warning span { background: var(--warning); }
   .microbar.critical span { background: var(--danger); }
-  .disk-cell { display: inline-flex; align-items: center; gap: 8px; }
-  .disk-cell strong { font-size: 13.5px; font-weight: 600; }
 
   .col-version { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .rates { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; font-weight: 500; }
-  .down { color: var(--accent); }
-  .up { color: var(--blue); }
+  .rates { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--ink-secondary); font-size: 12px; }
 
-  .col-action { display: flex; justify-content: flex-end; color: var(--muted); transition: transform var(--dur) var(--ease-out), color var(--transition-fast); }
-  .server-row:hover .col-action { color: var(--accent); transform: translateX(3px); }
+  .col-action { display: flex; justify-content: flex-end; color: var(--muted); opacity: 0.5; transition: opacity var(--transition-fast); }
+  .server-row:hover .col-action { opacity: 1; }
 
   @media (max-width: 1100px) {
     .table-header, .server-row { grid-template-columns: 120px minmax(150px, 1.5fr) 84px 84px 100px 20px; }
@@ -258,7 +232,7 @@
     .col-metric:nth-child(3) .microbar { width: 54px; }
     .col-metric:nth-child(4), .col-disk { display: none; }
   }
-  .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 12px; font-weight: 550; }
+  .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong, var(--line)); color: var(--muted); font-size: 12px; font-weight: 550; }
   .update-chip { border-color: var(--accent); color: var(--accent); }
   .more-addresses { color: var(--muted); font-weight: 600; }
 </style>

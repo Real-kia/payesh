@@ -274,7 +274,7 @@
   .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 12px 16px; }
   .filters { display: flex; flex-wrap: wrap; gap: 12px; }
   .control { display: grid; gap: 5px; }
-  .control span { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .control span { color: var(--muted); font-size: 12px; }
   .control select { padding-top: 6px; padding-bottom: 6px; }
   .search { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 220px; max-width: 360px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
   .search:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
@@ -287,13 +287,13 @@
   .dot { width: 6px; height: 6px; border-radius: 50%; }
   .dot.error { background: var(--danger); }
   .dot.warn { background: var(--warning); }
-  .dot.info { background: var(--success); }
+  .dot.info { background: var(--muted); }
   .levels .error[aria-pressed='true'] { color: var(--danger); }
   .levels .warn[aria-pressed='true'] { color: var(--warning); }
-  .levels .info[aria-pressed='true'] { color: var(--success); }
+  .levels .info[aria-pressed='true'] { color: var(--ink); }
   .inline { margin: 0 0 14px; }
 
-  .viewer { overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: var(--radius-lg); background: var(--term-bg); color: var(--term-ink); box-shadow: var(--shadow-md); animation: fade-in var(--dur) var(--ease-out); }
+  .viewer { overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: var(--radius-lg); background: var(--term-bg); color: var(--term-ink); }
   .viewer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--term-line); color: var(--term-muted); font-size: 12px; }
   .viewer-bar.bottom { border-top: 1px solid var(--term-line); border-bottom: 0; }
   .summary { font-size: 12px; }
@@ -308,14 +308,14 @@
   .log-entry { display: flex; align-items: baseline; gap: 10px; padding: 6px 6px; border-bottom: 1px solid var(--term-line); border-radius: 3px; font-size: 12px; line-height: 1.5; }
   .log-entry:last-child { border-bottom: 0; }
   .log-entry:hover { background: rgba(255, 255, 255, 0.035); }
-  .log-entry.error { background: linear-gradient(90deg, rgba(242, 119, 126, 0.07), transparent 30%); }
+  .log-entry.error { box-shadow: inset 2px 0 0 #f2777e; }
   .log-entry time { flex-shrink: 0; min-width: 76px; color: var(--term-muted); }
   .level { flex-shrink: 0; min-width: 50px; padding: 0 5px; border: 1px solid; border-radius: var(--radius-xs); font-size: 12px; font-weight: 700; text-align: center; }
-  .level.info { border-color: rgba(79, 201, 143, 0.25); background: rgba(79, 201, 143, 0.1); color: #4fc98f; }
+  .level.info { border-color: rgba(255, 255, 255, 0.12); background: transparent; color: var(--term-muted); }
   .level.warn { border-color: rgba(232, 177, 94, 0.25); background: rgba(232, 177, 94, 0.1); color: #e8b15e; }
   .level.error { border-color: rgba(242, 119, 126, 0.3); background: rgba(242, 119, 126, 0.12); color: #f2777e; }
   .level.debug { border-color: rgba(148, 163, 184, 0.25); background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
-  .server { flex-shrink: 0; max-width: 160px; overflow: hidden; padding: 0 7px; border: 1px solid rgba(116, 165, 255, 0.25); border-radius: var(--radius-xs); background: rgba(116, 165, 255, 0.1); color: #9abfff; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .server { flex-shrink: 0; max-width: 160px; overflow: hidden; padding: 0 7px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-xs); background: transparent; color: var(--term-ink); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .text { flex: 1; min-width: 0; color: var(--term-ink); font-size: 12px; overflow-wrap: anywhere; }
   .text small { display: block; margin-top: 2px; color: var(--term-muted); font-size: 12px; }
 
