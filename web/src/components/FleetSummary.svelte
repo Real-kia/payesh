@@ -38,7 +38,7 @@
       <span class="stat-icon warning"><Icon name="alert-triangle" size={15} /></span>
     </div>
     <strong class="stat-value tabular">{attention}</strong>
-    {#if detailed && breakdown.some((entry) => entry.state !== 'healthy')}
+    {#if breakdown.some((entry) => entry.state !== 'healthy')}
       <div class="chips">
         {#each breakdown.filter((entry) => entry.state !== 'healthy') as entry (entry.state)}<span class={`chip ${entry.state}`}>{entry.count} {entry.state}</span>{/each}
       </div>
@@ -110,7 +110,7 @@
   .health-bar .failed, .health-bar .unreachable { background: var(--danger); }
 
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { padding: 2px 7px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: capitalize; }
+  .chip { padding: 2px 7px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; text-transform: capitalize; }
   .chip.stale, .chip.pending { background: var(--warning-bg); color: var(--warning); }
   .chip.failed, .chip.unreachable { background: var(--danger-bg); color: var(--danger); }
   .chip.installing { background: var(--info-bg); color: var(--info); }
@@ -119,7 +119,7 @@
   .network-split > div { display: grid; gap: 6px; min-width: 0; }
   .network-split > div + div { padding-left: 14px; border-left: 1px solid var(--line); }
   .network-split strong { overflow: hidden; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
-  .rate-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .rate-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .rate-badge { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: var(--radius-xs); }
   .rate-badge.down { background: var(--accent-bg); color: var(--accent); }
   .rate-badge.up { background: var(--blue-bg); color: var(--blue); }

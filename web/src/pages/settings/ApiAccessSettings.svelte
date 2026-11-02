@@ -353,7 +353,7 @@
   .flow-heading { margin-bottom: 18px; }
   .flow-heading h3, .list-heading h3, .created h3 { margin: 2px 0 4px; }
   .flow-heading p, .list-heading p, .created p { margin: 0; }
-  .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
   .flow-panel { margin: 4px 0 22px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }
   .api-modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 100%; height: 100%; padding: clamp(16px, 4vw, 32px); overflow-y: auto; background: rgba(5, 9, 15, .58); backdrop-filter: blur(3px); }
   .api-modal { position: relative; inset: auto; display: flex; flex-direction: column; box-sizing: border-box; flex: 0 1 700px; width: min(700px, 100%); max-width: 700px; max-height: min(860px, calc(100dvh - 48px)); margin: 0; overflow: auto; padding: clamp(20px, 3vw, 28px); border: 1px solid var(--line); border-radius: var(--radius-xl); background: var(--surface-elevated, var(--surface)); color: var(--ink); box-shadow: 0 24px 70px rgba(0, 0, 0, .34); animation: api-modal-in var(--dur-slow) var(--ease-spring); }
@@ -378,7 +378,7 @@
   .permission-row span, .who { display: grid; gap: 2px; min-width: 0; }
   .permission-row small { color: var(--muted); }
   .snippet { display: grid; gap: 6px; }
-  .snippet-label { color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+  .snippet-label { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
   .terminal-block { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 14px; border-radius: var(--radius-md); background: var(--term-bg); color: var(--term-ink); }
   .terminal-block code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
   .terminal-block .icon-button { width: 30px; height: 30px; flex-shrink: 0; border-color: transparent; background: rgba(255, 255, 255, .07); color: var(--term-ink); }
@@ -386,10 +386,10 @@
   .filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 16px; }
   .filters label { display: grid; gap: 6px; flex: 1; min-width: 150px; }
   .head, .row { display: grid; grid-template-columns: minmax(140px, 1fr) 230px 145px 110px 150px; gap: 12px; align-items: center; }
-  .head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+  .head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
   .row { padding: 12px 0; border-bottom: 1px solid var(--line-light); font-size: 13px; }
   .who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mono { font-family: var(--font-mono); font-size: 11.5px; }
+  .mono { font-family: var(--font-mono); font-size: 12px; }
   .actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
   .expiry-warning { color: var(--warning); }
   .activity { padding: 16px; margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); }

@@ -142,7 +142,7 @@
             </div>
             {#if canEdit}<button class="button ghost small" type="button" disabled={ruleBusy} onclick={() => void toggleEntry(entry)}>{enabledCount === entry.rules.length ? (entry.rules.length > 1 ? 'Disable all' : 'Disable') : (entry.rules.length > 1 ? 'Enable all' : 'Enable')}</button>{/if}
           </div>{/each}</div>
-        <Pager total={group.entries.length} bind:page={rulePages[group.id]} pageSize={RULES_PER_PAGE} label="rules" />
+        <Pager total={group.entries.length} bind:page={() => rulePages[group.id] ?? 0, (value) => (rulePages[group.id] = value)} pageSize={RULES_PER_PAGE} label="rules" />
       </div>
     {:else}<p class="muted">No alert rules have been configured.</p>{/each}
   </article>
@@ -225,12 +225,12 @@
   .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .rules-panel { margin-bottom: 16px; }
   .rule-group + .rule-group { margin-top: 14px; }
-  .rule-group-title { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .rule-group-title { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .category-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .category-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink); font-size: 12.5px; cursor: pointer; }
   .category-chip:hover { background: var(--surface-hover); }
   .category-chip[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-bg); }
-  .firing-count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .firing-count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
   .category-tag { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-muted); }
   .rule-list { display: grid; gap: 8px; }
   .rule-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); }
@@ -241,7 +241,7 @@
   .rule-state.partial { background: var(--warning); }
   .rule-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 10px; border: 1px solid var(--line-light); border-radius: var(--radius-md); }
   .rule-form input, .rule-form select { min-width: 140px; }
-  .n { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .n { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   .dot { width: 6px; height: 6px; border-radius: 50%; }
   .dot.firing { background: var(--danger); }
   .dot.pending { background: var(--warning); }
@@ -265,7 +265,7 @@
   .what strong { display: block; overflow: hidden; font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }
   .what small, .when { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
   .value { display: grid; justify-items: end; }
-  .value small { color: var(--muted); font-size: 11px; }
+  .value small { color: var(--muted); font-size: 12px; }
 
   .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; font-size: 12.5px; }
   .pager-buttons { display: flex; align-items: center; gap: 10px; }

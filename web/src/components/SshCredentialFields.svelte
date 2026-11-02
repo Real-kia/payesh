@@ -59,5 +59,5 @@
 <style>
   .auth { min-width: 0; margin: 0; padding: 0; border: 0; }
   .auth legend { margin-bottom: 8px; font-size: 13px; font-weight: 550; }
-  .auth small { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
+  .auth small { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
 </style>

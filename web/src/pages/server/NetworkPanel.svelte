@@ -162,7 +162,7 @@
   .usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .usage > div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); font-size: 12.5px; animation: pop-in var(--dur) var(--ease-out); }
   .usage strong { font-size: 20px; letter-spacing: -0.02em; }
-  .usage small { font-size: 11.5px; }
+  .usage small { font-size: 12px; }
   .down-text { color: var(--accent); }
   .up-text { color: var(--blue); }
 

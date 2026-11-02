@@ -2372,7 +2372,7 @@
   }
   .search-trigger:hover { border-color: var(--line-strong); color: var(--ink-secondary); }
   .search-trigger span { flex: 1; text-align: left; }
-  .search-trigger kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-family: var(--font-sans); font-size: 10.5px; }
+  .search-trigger kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-family: var(--font-sans); font-size: 12px; }
   .preview-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
   .preview-control select { padding-top: 5px; padding-bottom: 5px; }
   .theme-icon { display: grid; place-items: center; animation: theme-spin var(--dur-slow) var(--ease-spring); }
@@ -2463,7 +2463,7 @@
   .pulse-dot { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--info); }
   .pulse-dot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.8s var(--ease-out) infinite; }
   .method .form-grid { margin-bottom: 0; }
-  .or-divider { display: flex; align-items: center; gap: 14px; margin: 18px 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .or-divider { display: flex; align-items: center; gap: 14px; margin: 18px 0; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
   .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
   /* Settings ------------------------------------------------------------------ */
@@ -2487,7 +2487,7 @@
   .settings-nav button:hover { background: var(--surface-muted); color: var(--ink); }
   .settings-nav button.chosen { background: var(--surface); color: var(--ink); font-weight: 620; box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
   .settings-nav button.chosen :global(svg) { color: var(--accent); }
-  .nav-badge { margin-left: auto; padding: 0 7px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; }
+  .nav-badge { margin-left: auto; padding: 0 7px; border-radius: var(--radius-pill); background: var(--danger); color: #fff; font-size: 12px; font-weight: 700; }
   .settings-content { min-width: 0; }
   .settings-section { display: grid; gap: var(--gap); animation: rise-in var(--dur) var(--ease-out); }
   .settings-section :global(.panel + .panel) { margin-top: 0; }
@@ -2495,7 +2495,7 @@
   /* Onboarding ---------------------------------------------------------------- */
   .stepper { display: flex; gap: 8px; margin: 0 0 18px; padding: 0; list-style: none; }
   .step { display: flex; flex: 1; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 550; transition: border-color var(--dur), color var(--dur); }
-  .step span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 11px; font-weight: 700; transition: background-color var(--dur), border-color var(--dur), color var(--dur); }
+  .step span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 700; transition: background-color var(--dur), border-color var(--dur), color var(--dur); }
   .step.current { border-color: var(--accent); color: var(--ink); }
   .step.current span, .step.done span { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
   .step.done { color: var(--ink-secondary); }
@@ -2532,7 +2532,7 @@
     box-shadow: var(--shadow);
   }
   .meta-item { display: grid; gap: 3px; margin: 0; }
-  .meta-item dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .meta-item dt { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
   .meta-item dd { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 550; }
   .meta-item.note dd { color: var(--warning); }
   .setup-hint { padding: 14px 18px; border-left: 3px solid var(--warn, #e0b060); }

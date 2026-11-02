@@ -67,8 +67,8 @@
   .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .identity { min-width: 0; }
   .identity h2 { margin: 0 0 2px; overflow: hidden; font-size: 14.5px; text-overflow: ellipsis; white-space: nowrap; }
-  .identity small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; color: var(--muted); font-size: 11px; }
-  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: 10.5px; line-height: 16px; }
+  .identity small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; color: var(--muted); font-size: 12px; }
+  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: 12px; line-height: 16px; }
 
   .rows { display: grid; gap: 5px; }
   .row { display: grid; grid-template-columns: 52px 1fr 44px 52px; align-items: center; gap: 8px; --metric: var(--accent); font-size: 12px; }
@@ -85,7 +85,7 @@
   .net { display: flex; gap: 14px; color: var(--ink); font-size: 12px; }
   .net span { display: inline-flex; align-items: center; gap: 4px; }
   .offline { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); color: var(--muted); font-size: 12px; }
-  .bottom { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: auto; color: var(--muted); font-size: 11px; }
+  .bottom { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: auto; color: var(--muted); font-size: 12px; }
   .bottom span { display: inline-flex; align-items: center; gap: 4px; }
   .more-addresses { color: var(--muted); font-weight: 600; }
 </style>

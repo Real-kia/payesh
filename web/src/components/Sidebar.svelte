@@ -93,12 +93,12 @@
   .brand-mark path { fill: none; stroke: var(--accent-contrast); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
   .brand-text { display: grid; line-height: 1.15; }
   .brand-text strong { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
-  .brand-text small { color: var(--muted); font-size: 11px; }
+  .brand-text small { color: var(--muted); font-size: 12px; }
   .menu-toggle { display: none; margin-left: auto; }
 
   .nav { display: flex; flex-direction: column; gap: 18px; }
   .group { display: flex; flex-direction: column; gap: 2px; }
-  .group-label { padding: 0 12px 6px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.8; }
+  .group-label { padding: 0 12px 6px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.8; }
   .nav-item {
     position: relative;
     display: flex;
@@ -134,7 +134,7 @@
   .nav-item.active { background: var(--accent-bg); color: var(--ink); font-weight: 620; }
   .nav-item.active :global(svg) { color: var(--accent); }
   .nav-item.active::before { transform: scaleY(1); }
-  .count { margin-left: auto; min-width: 22px; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 11px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+  .count { margin-left: auto; min-width: 22px; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--surface-muted); color: var(--muted); font-size: 12px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
   .nav-item.active .count:not(.firing) { background: var(--surface); }
   .count.firing { background: var(--danger); color: #fff; animation: pop-in var(--dur) var(--ease-spring); }
 
@@ -145,7 +145,7 @@
   .status.ok .dot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.2s var(--ease-out) 2; }
   .status.warn .dot { background: var(--warning); }
   .user { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; color: var(--ink-secondary); text-overflow: ellipsis; white-space: nowrap; }
-  .avatar { display: grid; flex-shrink: 0; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-size: 11px; font-weight: 700; }
+  .avatar { display: grid; flex-shrink: 0; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 700; }
 
   @media (max-width: 960px) {
     .sidebar { z-index: 60; flex-direction: column; gap: 0; height: auto; padding: 10px 16px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }

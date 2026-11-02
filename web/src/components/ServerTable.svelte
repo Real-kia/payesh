@@ -163,14 +163,14 @@
     border-bottom: 1px solid var(--line);
     background: var(--surface-muted);
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
   }
   .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; text-transform: inherit; cursor: pointer; }
   .sort:hover, .sort.sorted { color: var(--ink); }
-  .arrow { opacity: 0; font-size: 11px; transition: opacity var(--transition-fast); }
+  .arrow { opacity: 0; font-size: 12px; transition: opacity var(--transition-fast); }
   .sort:hover .arrow, .sort:focus-visible .arrow { opacity: 0.5; }
   .sort.sorted .arrow { opacity: 1; color: var(--accent); }
   .server-list { display: flex; flex-direction: column; }
@@ -210,13 +210,13 @@
 
   .col-name { min-width: 0; }
   .col-name strong { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
-  .col-name small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+  .col-name small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .role-chip {
     padding: 1px 6px;
     border: 1px solid var(--line);
     border-radius: var(--radius-xs);
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.02em;
   }
@@ -258,7 +258,7 @@
     .col-metric:nth-child(3) .microbar { width: 54px; }
     .col-metric:nth-child(4), .col-disk { display: none; }
   }
-  .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 11.5px; font-weight: 550; }
+  .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--line-strong, var(--line)); color: var(--muted); font-size: 12px; font-weight: 550; }
   .update-chip { border-color: var(--accent); color: var(--accent); }
   .more-addresses { color: var(--muted); font-weight: 600; }
 </style>

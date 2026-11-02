@@ -50,6 +50,8 @@
   .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
   .search { display: flex; flex: 1 1 220px; align-items: center; gap: 7px; min-width: 0; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); }
   .search input { flex: 1; min-width: 0; height: 34px; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+  .search:hover { border-color: var(--line-strong); }
+  .search:focus-within { border-color: var(--accent); box-shadow: var(--ring); color: var(--ink-secondary); }
   select { height: 36px; max-width: 170px; font-size: 13px; }
   .count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   @media (max-width: 520px) { select { flex: 1 1 calc(50% - 4px); max-width: none; } }

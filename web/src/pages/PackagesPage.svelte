@@ -82,6 +82,6 @@
   .module-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .module-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--radius-md); background: var(--accent-bg); color: var(--accent); transition: transform var(--dur) var(--ease-spring); }
   .module-card:hover .module-icon { transform: rotate(-6deg) scale(1.06); }
-  .release-tag { padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--muted); font-size: 11px; }
+  .release-tag { padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--muted); font-size: 12px; }
   .module-card h2 { flex: 1; margin: 0; font-size: 15.5px; }
 </style>

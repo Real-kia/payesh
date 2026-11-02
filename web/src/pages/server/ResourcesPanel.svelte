@@ -194,7 +194,7 @@
   .metric-card.critical { --metric: var(--danger); }
   .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .metric-title { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; flex-wrap: wrap; }
-  .metric-sub { font-size: 11px; font-weight: 500; color: var(--ink); padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-muted); }
+  .metric-sub { font-size: 12px; font-weight: 500; color: var(--ink); padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-muted); }
   .metric-big { color: var(--metric); font-size: 24px; font-weight: 700; letter-spacing: -0.03em; }
   .sparkline, .sparkline-unavailable, .disk-ring { height: 50px; margin: 12px 0 10px; }
   .sparkline-unavailable { display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--muted); font-size: 12px; }

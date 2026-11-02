@@ -143,12 +143,12 @@
   .identity { display: grid; gap: 4px; min-width: 0; }
   .name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .name h3 { margin: 0; font-size: 14.5px; }
-  .id { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 11px; }
-  .update { padding: 1px 8px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 11px; font-weight: 650; }
+  .id { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--muted); font-size: 12px; }
+  .update { padding: 1px 8px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 650; }
   .identity p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
   .facts { display: flex; flex-wrap: wrap; gap: 8px 26px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-muted); }
   .facts div { display: grid; gap: 2px; }
-  .facts span { color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
+  .facts span { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
   .facts strong { font-size: 12.5px; font-weight: 600; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .danger-text { color: var(--danger); }

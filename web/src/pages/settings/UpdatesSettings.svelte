@@ -147,7 +147,7 @@
   .node { width: 12px; height: 12px; border: 2px solid var(--line-strong); border-radius: 50%; background: var(--surface); z-index: 1; }
   li.installed .node { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); }
   .release { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
-  .tag { padding: 1px 7px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 11px; font-weight: 650; }
+  .tag { padding: 1px 7px; border-radius: var(--radius-pill); background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 650; }
   .date { font-size: 12px; }
   .release-actions { display: flex; align-items: center; gap: 12px; font-size: 12.5px; }
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 12.5px; }
