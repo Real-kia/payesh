@@ -10,6 +10,7 @@ export type PreviewChartData = {
   disk: Array<number | null>;
   networkRx?: Array<number | null>;
   networkTx?: Array<number | null>;
+  missingNetworkTiming?: boolean;
   coverage: 'complete' | 'gap' | 'unavailable';
 };
 export type PreviewMetricHistory = { ranges: Record<PreviewChartRange, PreviewChartData> };

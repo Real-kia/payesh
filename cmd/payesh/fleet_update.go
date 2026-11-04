@@ -42,7 +42,7 @@ func runFleetUpdateWithHooks(ctx context.Context, dir string, req webupdate.Requ
 			return policy, err
 		}
 		if !strings.HasPrefix(req.JobID, "web-local-") && policy.mode != "production" {
-			return policy, errors.New("remote fleet updates require production release authentication; preview mode refused")
+			return policy, &webupdate.StageError{Stage: "trust", Err: errors.New("remote fleet updates require production release authentication; preview mode refused")}
 		}
 		return policy, nil
 	}

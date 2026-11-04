@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1099,5 +1100,69 @@ func TestScopedServerPageFiltersBeforePagination(t *testing.T) {
 	second, err := store.QueryScopedServerPage(ctx, 1, first.NextCursor, ids)
 	if err != nil || len(second.Items) != 1 || second.Items[0].Name != "D allowed" || second.NextCursor != "" {
 		t.Fatalf("second page: %+v %v", second, err)
+	}
+}
+
+func TestCounterRollupRecordsDurationForBandwidth(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 50, 0, time.UTC)
+	for _, seconds := range []int{60, 3600} {
+		samples := []contracts.MetricSample{
+			{ServerID: testServer().ID, CollectorEpoch: "epoch-duration", Sequence: 1, ObservedAt: base, Counters: map[string]string{"net.billing.rx_bytes": "100"}},
+			{ServerID: testServer().ID, CollectorEpoch: "epoch-duration", Sequence: 2, ObservedAt: base.Add(20 * time.Second), Counters: map[string]string{"net.billing.rx_bytes": "2100"}},
+			{ServerID: testServer().ID, CollectorEpoch: "epoch-duration", Sequence: 3, ObservedAt: base.Add(35 * time.Second), Counters: map[string]string{"net.billing.rx_bytes": "3600"}},
+		}
+		rollups := BuildRollups(testServer().ID, samples, seconds)
+		var duration float64
+		for _, r := range rollups {
+			if r.Coverage != "complete" {
+				continue
+			}
+			duration += r.ObservedSeconds
+			if r.ObservedSeconds <= 0 {
+				t.Fatalf("valid counter delta has no duration: %+v", r)
+			}
+			delta, err := strconv.ParseFloat(r.CounterDelta, 64)
+			if err != nil || delta/r.ObservedSeconds != 100 {
+				t.Fatalf("wrong bandwidth rate: %+v", r)
+			}
+		}
+		if duration != 35 {
+			t.Fatalf("observed duration %v, want 35", duration)
+		}
+		samples[1].ObservedAt = base
+		for _, r := range BuildRollups(testServer().ID, samples[:2], seconds) {
+			if r.CounterDelta != "" {
+				t.Fatalf("zero-duration counter became a rate: %+v", r)
+			}
+		}
+	}
+}
+
+func TestCounterRollupCrossBoundaryDurationSurvivesStorage(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := testServer()
+	if err := store.EnsureServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 50, 0, time.UTC)
+	var samples []contracts.MetricSample
+	for i, offset := range []int{0, 20, 35, 50, 65} {
+		samples = append(samples, contracts.MetricSample{ServerID: server.ID, CollectorEpoch: "epoch-boundary-duration", Sequence: uint64(i), ObservedAt: base.Add(time.Duration(offset) * time.Second), Counters: map[string]string{"net.billing.rx_bytes": strconv.Itoa(offset * 100)}})
+	}
+	rollups := BuildRollups(server.ID, samples, 60)
+	if err := store.PutRollups(ctx, rollups); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _, err := store.QueryRollups(ctx, server.ID, base.Truncate(time.Minute).Add(time.Minute), base.Add(2*time.Minute), 60, 200, "")
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	if stored[0].CounterDelta != "6500" || stored[0].ObservedSeconds != 65 {
+		t.Fatalf("cross-boundary rate denominator was clipped: %+v", stored[0])
 	}
 }

@@ -16,6 +16,7 @@ func TestFleetFailureReportsSafeReasonAndCorrelatesWorkerLog(t *testing.T) {
 		want  string
 	}{
 		{fmt.Errorf("staging: %w", updater.ErrInsufficientDisk), "disk space"},
+		{&StageError{Stage: "trust", Err: errors.New("private trust details")}, "trusted release public key"},
 		{&StageError{Stage: "preflight", Err: errors.New("private upstream details")}, "verification"},
 		{&StageError{Stage: "installation", Err: errors.New("private upstream details")}, "installation"},
 		{&StageError{Stage: "health", Err: errors.New("private upstream details")}, "health"},

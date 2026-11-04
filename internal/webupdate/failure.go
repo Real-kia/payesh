@@ -33,6 +33,8 @@ func failureMessage(req Request, cause error) string {
 		reason = "Could not download the release; check the hub's network connection"
 	case errors.As(cause, &stage):
 		switch stage.Stage {
+		case "trust":
+			reason = "Node updates require production release authentication. Configure the trusted release public key and key ID on the node before retrying"
 		case "preflight":
 			reason = "Release verification or compatibility check failed"
 		case "installation":

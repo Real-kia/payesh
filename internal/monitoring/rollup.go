@@ -33,7 +33,10 @@ func (r Rollup) Validate() error {
 		return errors.New("rollup bucket must be minute or hour")
 	}
 	maxDuration := float64(r.BucketSeconds) + 1e-3
-	if r.SampleCount < 1 || r.SampleCount > 1000000 || r.ObservedSeconds < 0 || r.ObservedSeconds > maxDuration || math.IsNaN(r.ObservedSeconds) || math.IsInf(r.ObservedSeconds, 0) {
+	// Gauge coverage is clipped to the bucket. A counter delta retains the
+	// full interval ending in the bucket, so its duration can be longer.
+	gaugeDurationTooLong := (r.Minimum != nil || r.Maximum != nil || r.WeightedMean != nil) && r.ObservedSeconds > maxDuration
+	if r.SampleCount < 1 || r.SampleCount > 1000000 || r.ObservedSeconds < 0 || gaugeDurationTooLong || math.IsNaN(r.ObservedSeconds) || math.IsInf(r.ObservedSeconds, 0) {
 		return errors.New("invalid rollup sample count or duration")
 	}
 	if r.Coverage != "complete" && r.Coverage != "gap" && r.Coverage != "uncertain" {
@@ -209,7 +212,7 @@ func BuildRollupsWithGaps(serverID contracts.ServerID, samples []contracts.Metri
 			bucket.points = append(bucket.points, current)
 			if state.hasPrev {
 				interval := counterInterval{from: state.previous, to: current}
-				if state.missing || state.previous.coverage != "complete" || current.coverage != "complete" || state.previous.epoch != current.epoch || sequenceGap(state.previous.sequence, current.sequence) || current.value < state.previous.value {
+				if state.missing || state.previous.coverage != "complete" || current.coverage != "complete" || state.previous.epoch != current.epoch || sequenceGap(state.previous.sequence, current.sequence) || current.value < state.previous.value || !current.observedAt.After(state.previous.observedAt) {
 					bucket.uncertain = true
 				} else {
 					interval.delta = current.value - state.previous.value
@@ -263,6 +266,9 @@ func BuildRollupsWithGaps(serverID contracts.ServerID, samples []contracts.Metri
 				bucket.uncertain = true
 				continue
 			}
+			// Deltas belong to the ending bucket, including the full duration
+			// of intervals crossing its boundary. Rates must use that same span.
+			rollup.ObservedSeconds += interval.to.observedAt.Sub(interval.from.observedAt).Seconds()
 			var ok bool
 			total, ok = addRollupCounter(total, interval.delta)
 			if !ok {

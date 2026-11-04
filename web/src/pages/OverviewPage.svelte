@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
   import FleetSummary from '../components/FleetSummary.svelte';
-  import ServerTable from '../components/ServerTable.svelte';
+  import { filterServers, defaultFilter } from '../lib/serverFilter';
+  import { serverLabel } from '../lib/flags';
   import LoadingSkeleton from '../components/LoadingSkeleton.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import LiveIndicator from '../components/LiveIndicator.svelte';
@@ -30,7 +32,8 @@
     onCancelJob,
     onReloadJob,
     refreshing = false,
-    updatedAt = null
+    updatedAt = null,
+    firingAlerts = 0
   }: {
     servers: PreviewServer[];
     loadState: 'ready' | 'loading' | 'empty' | 'error';
@@ -46,14 +49,16 @@
     jobBusy: boolean;
     onSelect: (server: PreviewServer) => void;
     onAddServer: () => void;
-    onNavigate: (page: 'monitoring' | 'alerts') => void;
+    onNavigate: (page: 'monitoring' | 'alerts' | 'servers') => void;
     onRetry: () => void;
     onCancelJob: () => void;
     onReloadJob: () => void;
     refreshing?: boolean;
     updatedAt?: number | null;
+    firingAlerts?: number;
   } = $props();
 
+  const issues = $derived(filterServers(servers, { ...defaultFilter, status: 'attention' }));
   const healthy = $derived(servers.filter((server) => server.displayState === 'healthy').length);
   const attention = $derived(servers.length - healthy);
   const connected = $derived(servers.filter((server) => server.connectionState === 'connected').length);
@@ -64,7 +69,7 @@
   <div class="page-heading">
     <div>
       <h1 id="overview-title" tabindex="-1">Fleet overview</h1>
-      <p class="lede">Health, resources and bandwidth across every server.</p>
+      <p class="lede">Fleet health, active issues, and billing at a glance.</p>
     </div>
     {#if PREVIEW_MODE}<span class="live-badge">Fixture preview</span>{:else}<LiveIndicator {refreshing} {updatedAt} />{/if}
   </div>
@@ -98,17 +103,33 @@
   {:else}
     <FleetSummary {servers} {download} {upload} />
 
-    <div class="section-heading">
-      <h2>Servers <span class="count">{servers.length}</span></h2>
-      <button class="button ghost small" type="button" onclick={() => onNavigate('monitoring')}>Server monitoring <Icon name="chevron-right" size={14} /></button>
-    </div>
-    <ServerTable {servers} {timezone} {onSelect} nameHeading="Hostname / address" />
+    <article class="panel attention-panel">
+      <div class="panel-heading">
+        <div><h2>Needs attention <span class="count">{issues.length}</span></h2><span class="muted">Servers with connection, collection, or setup issues</span></div>
+        <a class="button ghost small" href="/monitoring" onclick={(event) => followLink(event, () => onNavigate('monitoring'))}>Live monitoring <Icon name="chevron-right" size={14} /></a>
+      </div>
+      {#if issues.length}
+        <div class="attention-list">
+          {#each issues.slice(0, 5) as server (server.id)}
+            <a class="attention-row" href={`/servers/${encodeURIComponent(server.id)}`} onclick={(event) => followLink(event, () => onSelect(server))}>
+              <span class="issue-identity"><strong>{serverLabel(server)}</strong><small>{server.freshnessReason || (server.connectionState !== 'connected' ? 'Not connected to the hub' : 'Review server status')}</small></span>
+              <StatusPill state={server.displayState} label={server.displayState.replace('-', ' ')} />
+              <Icon name="chevron-right" size={14} />
+            </a>
+          {/each}
+        </div>
+        {#if issues.length > 5}<p class="hint">Showing 5 of {issues.length} servers needing attention.</p>{/if}
+      {:else}
+        <div class="all-healthy"><Icon name="check" size={18} /><div><strong>All servers healthy</strong><span>Every server is connected and reporting fresh data.</span></div></div>
+      {/if}
+      <div class="attention-footer"><span class="muted">{servers.length} servers in your fleet</span><a class="text-button" href="/servers" onclick={(event) => followLink(event, () => onNavigate('servers'))}>Manage servers <Icon name="chevron-right" size={14} /></a></div>
+    </article>
 
     <div class="lower-grid">
       <article class="panel">
         <div class="panel-heading">
           <h2>Allowance overview</h2>
-          {#if servers[0]}<button class="text-button" type="button" onclick={() => onSelect(servers[0])}>View metrics <Icon name="chevron-right" size={14} /></button>{/if}
+          {#if servers[0]}<a class="text-button" href={`/servers/${encodeURIComponent(servers[0].id)}`} onclick={(event) => followLink(event, () => onSelect(servers[0]))}>View metrics <Icon name="chevron-right" size={14} /></a>{/if}
         </div>
         {#if allowanceBytes === '0'}
           <div class="unavailable-panel">
@@ -142,8 +163,8 @@
           </div>
           <div class="feed-item">
             <div>
-              <strong>Alerts and incidents</strong>
-              <button class="text-button" type="button" onclick={() => onNavigate('alerts')}>Review alert history <Icon name="chevron-right" size={14} /></button>
+              <strong>{firingAlerts} active {firingAlerts === 1 ? 'alert' : 'alerts'}</strong>
+              <a class="text-button" href="/alerts" onclick={(event) => followLink(event, () => onNavigate('alerts'))}>Review alert history <Icon name="chevron-right" size={14} /></a>
             </div>
           </div>
         </div>
@@ -182,9 +203,16 @@
     font-size: 12px;
     white-space: nowrap;
   }
-  .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
-  .section-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
   .count { color: var(--muted); font-size: 13px; font-weight: 400; }
+  .attention-list { display: grid; }
+  .attention-row { display: flex; align-items: center; gap: 14px; padding: 14px 0; color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line-light); }
+  .attention-row:hover .issue-identity strong { color: var(--accent); }
+  .issue-identity { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
+  .issue-identity small { color: var(--muted); }
+  .attention-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; font-size: 12px; }
+  .all-healthy { display: flex; align-items: center; gap: 12px; padding: 20px 0; color: var(--success); }
+  .all-healthy div { display: grid; gap: 5px; font-size: 13px; }
+  .all-healthy span { color: var(--muted); }
   .lower-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-top: 24px; }
   .lower-grid .panel + .panel { margin-top: 0; }
 

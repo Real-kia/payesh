@@ -4,7 +4,7 @@
   import type { ServerFilterState } from '../lib/serverFilter';
   import type { PreviewServer } from '../preview/fixtures';
 
-  let { servers, state = $bindable(), shown }: { servers: PreviewServer[]; state: ServerFilterState; shown: number } = $props();
+  let { servers, state = $bindable(), shown, inventory = false }: { servers: PreviewServer[]; state: ServerFilterState; shown: number; inventory?: boolean } = $props();
 
   const tags = $derived([...new Set(servers.flatMap((server) => server.tags ?? []))].sort((a, b) => a.localeCompare(b)));
   const countries = $derived([...new Set(servers.map((server) => (server.countryCode ?? '').toUpperCase()).filter(Boolean))].sort());
@@ -34,11 +34,13 @@
   <select aria-label="Sort" bind:value={state.sort}>
     <option value="urgency">Most urgent</option>
     <option value="name">Name</option>
+    {#if !inventory}
     <option value="cpu">CPU</option>
     <option value="memory">Memory</option>
     <option value="disk">Disk</option>
     <option value="download">Download</option>
     <option value="upload">Upload</option>
+    {/if}
   </select>
   {#if filtered}
     <span class="count">{shown}/{servers.length}</span>

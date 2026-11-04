@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import { followLink } from './lib/navigation';
   import Icon from './Icon.svelte';
   import { onMount, onDestroy } from 'svelte';
 
@@ -124,11 +125,11 @@
       <p class="hint">The agent is installed and sending heartbeats.</p>
       <div class="buttons">
         <button class="button ghost small" type="button" on:click={onAddAnother}>Add another server</button>
-        <button class="button primary small" type="button" on:click={() => onViewServer(install.serverId)}>Open server<Icon name="chevron-right" size={14} /></button>
+        <a class="button primary small" href={`/servers/${encodeURIComponent(install.serverId)}`} on:click={(event) => followLink(event, () => onViewServer(install.serverId))}>Open server<Icon name="chevron-right" size={14} /></a>
       </div>
     {:else if isFailed}
       <div class="buttons">
-        <button class="button ghost small" type="button" on:click={() => onViewServer(install.serverId)}>Server details</button>
+        <a class="button ghost small" href={`/servers/${encodeURIComponent(install.serverId)}`} on:click={(event) => followLink(event, () => onViewServer(install.serverId))}>Server details</a>
         <button class="button ghost small" type="button" on:click={onAddAnother}>Add another server</button>
         <button class="button primary small" type="button" on:click={onRetry}>Edit settings and retry</button>
       </div>

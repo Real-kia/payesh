@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { followLink } from '../lib/navigation';
   import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import Sparkline from '../Sparkline.svelte';
@@ -16,16 +17,9 @@
     { label: 'Swap', key: 'swap', spark: false }
   ] as const;
 
-  function open(event: KeyboardEvent) {
-    if (event.target !== event.currentTarget) return;
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onSelect(server);
-    }
-  }
 </script>
 
-<div class="card" role="button" tabindex="0" aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`} onclick={() => onSelect(server)} onkeydown={open}>
+<a href={`/servers/${encodeURIComponent(server.id)}`} class="card" aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`} onclick={(event) => followLink(event, () => onSelect(server))}>
   <div class="top">
     <div class="identity">
       <h2>{serverLabel(server)}</h2>
@@ -59,10 +53,10 @@
     <span><Icon name="clock" size={11} /> {sampleAge(server)}</span>
     {#if server.connectionState === 'connected' && server.traffic.allowanceBytes !== '0'}<span>Billing {formatBytes(server.traffic.countedBytes)}</span>{/if}
   </div>
-</div>
+</a>
 
 <style>
-  .card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
+  .card { color: inherit; text-decoration: none; display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); cursor: pointer; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
   .card:hover { border-color: var(--line-strong); background: var(--surface-hover); }
   .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .identity { min-width: 0; }

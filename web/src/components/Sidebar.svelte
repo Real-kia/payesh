@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
 
   type NavPage = 'overview' | 'monitoring' | 'servers' | 'alerts' | 'logs' | 'packages' | 'settings';
@@ -56,12 +57,12 @@
       <div class="group">
         <span class="group-label">{group.label}</span>
         {#each group.items as item (item.page)}
-          <button class="nav-item" class:active={isActive(item.page)} type="button" aria-current={isActive(item.page) ? 'page' : undefined} onclick={() => go(item.page)}>
+          <a href={item.page === 'overview' ? '/' : `/${item.page}`} class="nav-item" class:active={isActive(item.page)} aria-current={isActive(item.page) ? 'page' : undefined} onclick={(event) => followLink(event, () => go(item.page))}>
             <Icon name={item.icon} size={17} />
             <span>{item.label}</span>
             {#if item.page === 'servers'}<span class="count">{serverCount}</span>{/if}
             {#if item.page === 'alerts' && firingAlerts > 0}<span class="count firing" aria-label={`${firingAlerts} firing`}>{firingAlerts}</span>{/if}
-          </button>
+          </a>
         {/each}
       </div>
     {/each}
@@ -100,6 +101,7 @@
   .group { display: flex; flex-direction: column; gap: 2px; }
   .group-label { padding: 0 12px 6px; color: var(--muted); font-size: 12px; font-weight: 500; }
   .nav-item {
+    text-decoration: none;
     position: relative;
     display: flex;
     align-items: center;
@@ -137,7 +139,8 @@
     .menu-toggle { display: grid; }
     .nav { display: none; }
     .nav.open { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 14px 0 6px; }
-    .nav-item { min-height: 42px; }
+    .nav-item {
+    text-decoration: none; min-height: 42px; }
     .footer { display: none; }
   }
   @media (max-width: 480px) { .nav.open { grid-template-columns: 1fr; } }

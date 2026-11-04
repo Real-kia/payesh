@@ -3,7 +3,7 @@
   import { formatNetworkRate } from './network';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
-  import { chartColors, areaFill } from './lib/chart';
+  import { chartColors, areaFill, hoverValues } from './lib/chart';
   import type { PreviewChartData } from './preview/fixtures';
 
   let { data, timezone = 'UTC' }: { data: PreviewChartData; timezone?: string } = $props();
@@ -17,7 +17,7 @@
   });
 
   onMount(() => {
-    if (!data.networkRx || !data.networkTx || data.timestamps.length < 2) return;
+    if (!data.networkRx || !data.networkTx || data.timestamps.length === 0) return;
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
@@ -25,6 +25,7 @@
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
+      plugins: [hoverValues(timezone)],
       scales: { x: { time: true } },
       axes: [
         {

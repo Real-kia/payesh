@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { followLink } from '../lib/navigation';
   import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
   import StatusPill from './StatusPill.svelte';
   import Pager from './Pager.svelte';
-  import { formatNetworkRate } from '../network';
   import { formatHeartbeatInTz } from '../timezone';
-  import { allAddresses, clampPercent, currentNetworkRate, displayAddress, metricValue, nodeVersionOf, resourceLevel, roleLabel, stateLabel } from '../lib/format';
+  import { allAddresses, displayAddress, nodeVersionOf, roleLabel, stateLabel } from '../lib/format';
   import type { PreviewServer } from '../preview/fixtures';
 
   let { servers, timezone, onSelect, nameHeading = 'Server & address', selectedIds = [], onSelectionChange, latestNode = '' }: {
@@ -24,29 +24,35 @@
   const allSelected = $derived(selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id)));
   const someSelected = $derived(selectedIds.some((id) => selectableIds.includes(id)));
 
+  let selectionOrder = $state<string[]>([]);
+  function rememberOrder() {
+    if (!selectedIds.length) selectionOrder = sorted.map((server) => server.id);
+  }
   function toggle(id: string) {
+    rememberOrder();
     onSelectionChange?.(selectedIds.includes(id) ? selectedIds.filter((entry) => entry !== id) : [...selectedIds, id]);
   }
   function toggleAll() {
+    rememberOrder();
     onSelectionChange?.(allSelected ? selectedIds.filter((id) => !selectableIds.includes(id)) : [...new Set([...selectedIds, ...selectableIds])]);
   }
 
-  type SortKey = 'status' | 'name' | 'cpu' | 'memory' | 'disk';
+  type SortKey = 'status' | 'name' | 'platform' | 'version' | 'contact';
   let sortKey = $state<SortKey | null>(null);
   let descending = $state(false);
-
-  // Problems first for status; metrics high to low; unknown values always last.
   const urgency: Record<string, number> = { failed: 0, unreachable: 1, stale: 2, installing: 3, pending: 4, unsupported: 5, disabled: 6, healthy: 7 };
   const sorted = $derived.by(() => {
-    if (!sortKey) return servers;
     const key = sortKey;
-    const value = (server: PreviewServer): number | string | null => key === 'name' ? server.name.toLowerCase() : key === 'status' ? urgency[server.displayState] ?? 9 : server.connectionState === 'connected' ? server.metrics[key] : null;
-    return [...servers].sort((a, b) => {
+    const value = (server: PreviewServer): number | string | null => key === 'name' ? server.name.toLowerCase() : key === 'status' ? urgency[server.displayState] ?? 9 : key === 'platform' ? server.platform : key === 'version' ? nodeVersionOf(server) : server.lastHeartbeat;
+    const ordered = !key ? servers : [...servers].sort((a, b) => {
       const left = value(a), right = value(b);
       if (left === null || right === null) return left === right ? 0 : left === null ? 1 : -1;
       const order = left < right ? -1 : left > right ? 1 : 0;
       return descending ? -order : order;
     });
+    if (!selectedIds.length || !selectionOrder.length) return ordered;
+    const ranks = new Map(selectionOrder.map((id, index) => [id, index]));
+    return [...ordered].sort((a, b) => (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity));
   });
 
   function isOlder(installed: string, latest: string): boolean {
@@ -63,13 +69,10 @@
 
   function sortBy(key: SortKey) {
     page = 0;
-    if (sortKey === key) {
-      if (descending === (key === 'cpu' || key === 'memory' || key === 'disk')) descending = !descending;
-      else { sortKey = null; descending = false; }
-    } else {
-      sortKey = key;
-      descending = key === 'cpu' || key === 'memory' || key === 'disk';
-    }
+    selectionOrder = [];
+    if (sortKey === key) descending = !descending;
+    else { sortKey = key; descending = key === 'contact'; }
+    if (selectedIds.length) selectionOrder = sorted.map((server) => server.id);
   }
 
   function detail(server: PreviewServer): string {
@@ -82,57 +85,30 @@
     {#if selectable && selectableIds.length}
       <input class="row-check" type="checkbox" aria-label="Select all servers" checked={allSelected} indeterminate={someSelected && !allSelected} onchange={toggleAll} />
     {/if}
-    {#each [['status', 'Status', ''], ['name', nameHeading, ''], ['cpu', 'CPU', ''], ['memory', 'Memory', ''], ['disk', 'Disk', 'col-disk']] as [key, label, extra] (key)}
+    {#each [['status', 'Status', ''], ['name', nameHeading, ''], ['platform', 'Platform', 'col-platform'], ['version', 'Agent / release', 'col-version'], ['contact', 'Last contact', 'col-contact']] as [key, label, extra] (key)}
       <button type="button" class={`sort ${extra}`} class:sorted={sortKey === key} aria-pressed={sortKey === key} aria-label={`Sort by ${label.toLowerCase()}${sortKey === key ? (descending ? ', descending' : ', ascending') : ''}`} onclick={() => sortBy(key as SortKey)}>
         {label}<span class="arrow" aria-hidden="true">{sortKey === key ? (descending ? '↓' : '↑') : '↕'}</span>
       </button>
     {/each}
-    <span class="col-version">Version</span>
-    <span class="col-rxtx">Rx / Tx</span>
     <span></span>
   </div>
   <div class="server-list">
     {#each paged as server, index (server.id)}
-      {@const online = server.connectionState === 'connected'}
       <div class="row-wrap" class:checked={selectedIds.includes(server.id)}>
       {#if selectable && server.role === 'node'}
         <input class="row-check" type="checkbox" aria-label={`Select ${serverLabel(server)}`} checked={selectedIds.includes(server.id)} onchange={() => toggle(server.id)} />
       {/if}
-      <button class="server-row" type="button" onclick={() => onSelect(server)} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
+      <a href={`/servers/${encodeURIComponent(server.id)}`} class="server-row" onclick={(event) => followLink(event, () => onSelect(server))} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
           <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span>{#if latestNode && server.role === 'node' && server.connectionState === 'connected' && isOlder(nodeVersionOf(server), latestNode)}<span class="role-chip update-chip" title={`Node v${nodeVersionOf(server)}; v${latestNode} is available`}>Update</span>{/if}</strong>
-          <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if} · {detail(server)}</small>
+          <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if}</small>
         </div>
-        <div class="col-metric">
-          {#if online}
-            <strong class="tabular">{metricValue(server.metrics.cpu)}</strong>
-            <div class={`microbar ${resourceLevel(server.metrics.cpu)}`}><span style:width={`${clampPercent(server.metrics.cpu)}%`}></span></div>
-          {:else}<span class="faint">—</span>{/if}
-        </div>
-        <div class="col-metric">
-          {#if online}
-            <strong class="tabular">{metricValue(server.metrics.memory)}</strong>
-            <div class={`microbar ${resourceLevel(server.metrics.memory)}`}><span style:width={`${clampPercent(server.metrics.memory)}%`}></span></div>
-          {:else}<span class="faint">—</span>{/if}
-        </div>
-        <div class="col-metric col-disk">
-          {#if online}
-            <strong class="tabular">{metricValue(server.metrics.disk)}</strong>
-            <div class={`microbar ${resourceLevel(server.metrics.disk)}`}><span style:width={`${clampPercent(server.metrics.disk)}%`}></span></div>
-          {:else}<span class="faint">—</span>{/if}
-        </div>
+        <div class="col-platform"><span>{server.platform || '—'}</span><small class="mono">{server.architecture || '—'}</small></div>
         <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{server.version && server.version !== '—' ? `v${server.role === 'node' ? nodeVersionOf(server) : server.version.replace(/^v/, '')}` : '—'}</div>
-        <div class="col-rxtx">
-          {#if online}
-            <span class="rates tabular">
-              <span class="down">↓ {formatNetworkRate(currentNetworkRate(server, 'download'))}</span>
-              <span class="up">↑ {formatNetworkRate(currentNetworkRate(server, 'upload'))}</span>
-            </span>
-          {:else}<span class="faint">—</span>{/if}
-        </div>
+        <div class="col-contact">{detail(server)}</div>
         <div class="col-action" aria-hidden="true"><Icon name="chevron-right" size={16} /></div>
-      </button>
+      </a>
       </div>
     {/each}
   </div>
@@ -148,7 +124,7 @@
   }
   .table-header, .server-row {
     display: grid;
-    grid-template-columns: 116px minmax(180px, 2fr) 84px 84px 84px 72px minmax(140px, 1.2fr) 16px;
+    grid-template-columns: 116px minmax(180px, 2fr) minmax(110px, 1fr) 110px minmax(130px, 1fr) 16px;
     gap: 16px;
     align-items: center;
     padding: 0 20px;
@@ -173,6 +149,7 @@
   .row-check { position: absolute; z-index: 1; left: 18px; top: 50%; width: 16px; height: 16px; margin: -8px 0 0; accent-color: var(--accent); cursor: pointer; }
   .selectable .table-header, .selectable .server-row { padding-left: 52px; }
   .server-row {
+    text-decoration: none;
     position: relative;
     width: 100%;
     padding-top: var(--row-pad-y);
@@ -200,37 +177,27 @@
     font-weight: 500;
   }
 
-  .col-metric { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .col-metric strong { font-size: 13px; font-weight: 500; }
-  .microbar { height: 3px; overflow: hidden; border-radius: 2px; background: var(--surface-muted); }
-  .microbar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-slow) var(--ease-out); }
-  .microbar.warning span { background: var(--warning); }
-  .microbar.critical span { background: var(--danger); }
-
-  .col-version { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .rates { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--ink-secondary); font-size: 12px; }
+  .col-platform, .col-contact, .col-version { min-width: 0; color: var(--ink-secondary); font-size: 12px; }
+  .col-platform small { display: block; margin-top: 3px; color: var(--muted); }
+  .col-contact { color: var(--muted); }
 
   .col-action { display: flex; justify-content: flex-end; color: var(--muted); opacity: 0.5; transition: opacity var(--transition-fast); }
   .server-row:hover .col-action { opacity: 1; }
 
   @media (max-width: 1100px) {
-    .table-header, .server-row { grid-template-columns: 120px minmax(150px, 1.5fr) 84px 84px 100px 20px; }
-    .col-rxtx, .col-version { display: none; }
+    .table-header, .server-row { grid-template-columns: 100px minmax(150px, 2fr) minmax(100px, 1fr) 100px 16px; gap: 12px; }
+    .col-contact { display: none; }
   }
   @media (max-width: 760px) {
     .table-header { display: none; }
-    .server-row {
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      grid-template-areas: 'name name action' 'status cpu action';
-      gap: 8px 12px;
-      padding: 14px 16px;
-    }
+    .server-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'name action' 'status version' 'platform platform'; gap: 8px 12px; padding: 14px 16px; }
     .col-name { grid-area: name; }
+    .col-name strong { flex-wrap: wrap; }
     .col-status { grid-area: status; }
     .col-action { grid-area: action; }
-    .col-metric:not(.col-disk):nth-child(3) { grid-area: cpu; flex-direction: row; align-items: center; }
-    .col-metric:nth-child(3) .microbar { width: 54px; }
-    .col-metric:nth-child(4), .col-disk { display: none; }
+    .col-version { grid-area: version; }
+    .col-platform { grid-area: platform; display: flex; gap: 8px; align-items: baseline; }
+    .col-platform small { margin: 0; }
   }
   .duplicate-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong, var(--line)); color: var(--muted); font-size: 12px; font-weight: 550; }
   .update-chip { border-color: var(--accent); color: var(--accent); }

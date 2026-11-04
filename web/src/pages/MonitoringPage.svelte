@@ -1,5 +1,4 @@
 <script lang="ts">
-  import FleetSummary from '../components/FleetSummary.svelte';
   import MonitoringCard from '../components/MonitoringCard.svelte';
   import ServerToolbar from '../components/ServerToolbar.svelte';
   import Pager from '../components/Pager.svelte';
@@ -7,11 +6,9 @@
   import { filterServers, loadFilter, saveFilter } from '../lib/serverFilter';
   import type { PreviewServer } from '../preview/fixtures';
 
-  let { servers, timezone, download, upload, onSelect, refreshing = false, updatedAt = null }: {
+  let { servers, timezone, onSelect, refreshing = false, updatedAt = null }: {
     servers: PreviewServer[];
     timezone: string;
-    download: number | null;
-    upload: number | null;
     onSelect: (server: PreviewServer) => void;
     refreshing?: boolean;
     updatedAt?: number | null;
@@ -30,11 +27,11 @@
   <div class="page-heading">
     <div>
       <h1 id="monitoring-title" tabindex="-1">Server monitoring</h1>
+      <p class="lede">Compare live CPU, memory, disk, swap, and bandwidth across your fleet.</p>
     </div>
     <LiveIndicator {refreshing} {updatedAt} />
   </div>
 
-  <FleetSummary {servers} {download} {upload} detailed />
 
   {#if servers.length === 0}
     <div class="state-panel"><h2>No servers to monitor</h2><p>Add a server to see its health here.</p></div>

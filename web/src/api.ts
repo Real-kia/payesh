@@ -468,8 +468,22 @@ export class ApiClient {
     return this.request<Server>(`/servers/${encodeURIComponent(serverId)}`, { signal: options.signal });
   }
 
-  queryMetrics(serverId: string, params: { from: string; to: string; resolution?: 'raw' | 'minute' | 'hour'; limit?: number } & QueryOptions): Promise<MetricQuery> {
-    return this.request<MetricQuery>(`/servers/${encodeURIComponent(serverId)}/metrics${queryString({ from: params.from, to: params.to, resolution: params.resolution, limit: params.limit ?? 200 })}`, { signal: params.signal });
+  async queryMetrics(serverId: string, params: { from: string; to: string; resolution?: 'raw' | 'minute' | 'hour'; limit?: number } & QueryOptions): Promise<MetricQuery> {
+    const path = `/servers/${encodeURIComponent(serverId)}/metrics`;
+    const query = { from: params.from, to: params.to, resolution: params.resolution, limit: params.limit ?? 200 };
+    const result = await this.request<MetricQuery>(`${path}${queryString(query)}`, { signal: params.signal });
+    const seen = new Set<string>();
+    while (result.next_cursor) {
+      const cursor = result.next_cursor;
+      if (seen.has(cursor)) throw new Error('Metric history pagination did not advance');
+      seen.add(cursor);
+      const page = await this.request<MetricQuery>(`${path}${queryString({ ...query, cursor })}`, { signal: params.signal });
+      result.samples.push(...page.samples);
+      result.rollups.push(...page.rollups);
+      result.next_cursor = page.next_cursor;
+      result.truncated = page.truncated;
+    }
+    return result;
   }
 
   queryTraffic(serverId: string, params: { from: string; to: string; scope?: string; limit?: number } & QueryOptions): Promise<TrafficQuery> {

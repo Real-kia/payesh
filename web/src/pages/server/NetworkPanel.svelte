@@ -9,12 +9,14 @@
   import { PREVIEW_MODE } from '../../lib/env';
   import type { PreviewChartData, PreviewChartRange, PreviewServer } from '../../preview/fixtures';
 
-  let { server, chartData, range = $bindable(), timezone, theme, onAuthExpired }: {
+  let { server, chartData, range = $bindable(), timezone, theme, loading = false, error = '', onAuthExpired }: {
     server: PreviewServer;
     chartData: PreviewChartData | null;
     range: PreviewChartRange;
     timezone: string;
     theme: string;
+    loading?: boolean;
+    error?: string;
     onAuthExpired: () => void;
   } = $props();
 
@@ -87,6 +89,13 @@
     {#key `${range}-${theme}-${server.id}-${timezone}-traffic`}
       <TrafficChart data={chartData} {timezone} />
     {/key}
+    {#if chartData.missingNetworkTiming}<p class="muted">Some older summaries lack timing data and are omitted from this rate chart. Recorded traffic totals remain available below.</p>{/if}
+  {:else if loading}
+    <div class="unavailable-panel" role="status"><strong>Loading bandwidth history…</strong><span>Fetching the selected time range.</span></div>
+  {:else if error}
+    <p class="error-text" role="alert">{error}</p>
+  {:else if chartData?.missingNetworkTiming}
+    <div class="unavailable-panel"><strong>Historical bandwidth timing unavailable</strong><span>Older summaries lack the timing needed to calculate rates. Try a recent range; recorded traffic totals remain available below.</span></div>
   {:else}
     <div class="unavailable-panel"><strong>Waiting for network samples</strong><span>At least two consecutive network counter samples are needed to calculate bandwidth rate.</span></div>
   {/if}
@@ -113,7 +122,7 @@
       <div><span class="muted">Total recorded</span><strong class="tabular">{usage.total_bytes === null ? 'Unavailable' : formatBytes(usage.total_bytes)}</strong></div>
     </div>
     {#if usage.download_hours < usage.requested_hours || usage.upload_hours < usage.requested_hours}
-      <p class="warning-text" role="status">History is incomplete. These are available totals; missing hours and uncertain counters are excluded.</p>
+      <p class="warning-text" role="status">Partial history: download has {usage.download_hours} of {usage.requested_hours} hours recorded; upload has {usage.upload_hours} of {usage.requested_hours}. Totals include only reliable recorded hours. Earlier monitoring data, outages, and counter resets can leave gaps.</p>
     {/if}
   {/if}
 </article>

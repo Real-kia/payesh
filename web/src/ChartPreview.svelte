@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
-  import { chartColors, areaFill } from './lib/chart';
+  import { chartColors, areaFill, hoverValues } from './lib/chart';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
   let { label = 'Resource chart', range = '15m', data, timezone = 'UTC', metric = 'both' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string; metric?: 'cpu' | 'memory' | 'swap' | 'both' } = $props();
@@ -20,7 +20,7 @@
   });
 
   onMount(() => {
-    if (data.coverage === 'unavailable' || data.timestamps.length < 2) return;
+    if (data.coverage === 'unavailable' || data.timestamps.length === 0) return;
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
@@ -30,6 +30,7 @@
     plot = new uPlot({
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
+      plugins: [hoverValues(timezone)],
       scales: { x: { time: true }, y: { range: [0, 100] } },
       axes: [
         {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { followLink } from './lib/navigation';
   import { serverLabel } from './lib/flags';
   import { onMount, tick } from 'svelte';
   import ProcessTable from './ProcessTable.svelte';
@@ -462,6 +463,7 @@
   }
   $: displayServers = servers;
   let serversFilter = loadFilter('servers');
+  if (!['name', 'urgency'].includes(serversFilter.sort)) serversFilter.sort = 'name';
   $: saveFilter('servers', serversFilter);
   $: filteredServers = filterServers(displayServers, serversFilter);
   $: hubVersion = servers.find((server) => server.role !== 'node')?.version ?? '';
@@ -1418,12 +1420,13 @@
   function metricChart(query: MetricQuery): PreviewChartData {
     if (!query.samples.length && query.rollups.length) {
       const timestamps = [...new Set(query.rollups.map((rollup) => Date.parse(String(rollup.bucket_start)) / 1000))].filter(Number.isFinite).sort((a, b) => a - b);
-      const bucket = (timestamp: number, name: string) => query.rollups.find((rollup) => Date.parse(String(rollup.bucket_start)) / 1000 === timestamp && rollup.metric === name);
+      const buckets = new Map(query.rollups.map((rollup) => [`${Date.parse(String(rollup.bucket_start)) / 1000}:${rollup.metric}`, rollup]));
+      const bucket = (timestamp: number, name: string) => buckets.get(`${timestamp}:${name}`);
       const gauge = (timestamp: number, names: string[]) => {
         const point = names.map((name) => bucket(timestamp, name)).find((entry) => typeof entry?.weighted_mean === 'number');
         return typeof point?.weighted_mean === 'number' && Number.isFinite(point.weighted_mean) ? point.weighted_mean : null;
       };
-      return { timestamps, cpu: timestamps.map((t) => gauge(t, ['cpu.utilization', 'cpu'])), memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), swap: timestamps.map((t) => gauge(t, ['memory.swap_used_percent', 'swap.used_percent', 'swap'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
+      return { timestamps, missingNetworkTiming: query.rollups.some((r) => (r.metric === 'net.billing.rx_bytes' || r.metric === 'net.billing.tx_bytes') && r.coverage === 'complete' && r.counter_delta != null && r.observed_seconds === 0), cpu: timestamps.map((t) => gauge(t, ['cpu.utilization', 'cpu'])), memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), swap: timestamps.map((t) => gauge(t, ['memory.swap_used_percent', 'swap.used_percent', 'swap'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
     }
     const samples = [...query.samples].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
     const value = (sample: MetricQuery['samples'][number], name: string) => {
@@ -1553,18 +1556,28 @@
     finally { window.clearTimeout(timeout); liveRefreshBusy = false; }
   }
 
-  let selectedRefreshBusy = false;
+  let selectedRefreshController: AbortController | null = null;
+  let selectedRefreshKey = '';
+  let chartLoading = false;
+  let chartError = '';
+  $: if (activePage === 'server' && selectedServerId && chartRange) void refreshSelectedServer();
   async function refreshSelectedServer(): Promise<void> {
-    if (selectedRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || activePage !== 'server' || !selectedServerId || document.hidden) return;
+    if (PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || activePage !== 'server' || !selectedServerId || document.hidden) return;
     const id = selectedServerId;
     const range = chartRange;
+    const key = `${id}:${range}`;
+    if (selectedRefreshController && selectedRefreshKey === key) return;
+    selectedRefreshController?.abort();
     const controller = new AbortController();
+    selectedRefreshController = controller;
+    selectedRefreshKey = key;
+    chartLoading = true;
+    chartError = '';
     const timeout = window.setTimeout(() => controller.abort(), 10000);
-    selectedRefreshBusy = true;
     try {
       const [item, query, latestQuery, trafficQuery] = await Promise.all([
         apiClient.getServer(id, { signal: controller.signal }),
-        apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '15m' ? 'raw' : range === '1h' ? 'minute' : 'hour', signal: controller.signal }),
+        apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '24h' ? 'hour' : 'raw', signal: controller.signal }),
         range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { ...alignedWindow(120_000), resolution: 'raw', signal: controller.signal }),
         apiClient.queryTraffic(id, { ...rangeWindow('24h'), signal: controller.signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
       ]);
@@ -1584,9 +1597,10 @@
       });
     } catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
+      if (selectedRefreshController === controller && selectedServerId === id) chartError = 'History could not be loaded. Please retry shortly.';
     } finally {
       window.clearTimeout(timeout);
-      selectedRefreshBusy = false;
+      if (selectedRefreshController === controller) { selectedRefreshController = null; chartLoading = false; }
     }
   }
 
@@ -1736,6 +1750,7 @@
     const onVisibility = () => { if (!document.hidden) { void refreshSelectedServer(); void refreshMonitoring(); } };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
+      selectedRefreshController?.abort();
       window.clearInterval(liveRefresh);
       window.clearInterval(notificationRefresh);
       window.clearTimeout(updatePollTimer);
@@ -1782,7 +1797,7 @@
         <span class="crumb-root">Workspace</span>
         <Icon name="chevron-right" size={13} />
         {#if activePage === 'server' || activePage === 'install-progress'}
-          <button class="crumb-link" type="button" on:click={() => navigate('servers')}>Servers</button>
+          <a class="crumb-link" href={pageLocation('servers')} on:click={(event) => followLink(event, () => navigate('servers'))}>Servers</a>
           <Icon name="chevron-right" size={13} />
         {/if}
         <strong class="crumb-current" aria-current="page">{pageTitle}</strong>
@@ -1862,26 +1877,26 @@
         </div>
       </section>
     {:else if activePage === 'monitoring'}
-      <MonitoringPage servers={displayServers} timezone={currentTimezone} download={fleetDownload} upload={fleetUpload} onSelect={selectServer} refreshing={liveRefreshBusy} updatedAt={liveUpdatedAt} />
+      <MonitoringPage servers={displayServers} timezone={currentTimezone} onSelect={selectServer} refreshing={liveRefreshBusy} updatedAt={liveUpdatedAt} />
     {:else if activePage === 'servers'}
       <section class="page" aria-labelledby="servers-title">
         <div class="page-heading">
           <div>
             <h1 id="servers-title" tabindex="-1">Servers</h1>
-            <p class="lede">{servers.length} {servers.length === 1 ? 'server' : 'servers'} · {servers.length - attentionCount} healthy</p>
+            <p class="lede">Manage your inventory, agent versions, and node updates.</p>
           </div>
           {#if myAccount?.permission !== 'read'}<button class="button primary" type="button" on:click={() => openAddServer()}><Icon name="plus" size={15} /><span>Add server</span></button>{/if}
         </div>
         {#if servers.length}
-          <ServerToolbar servers={displayServers} bind:state={serversFilter} shown={filteredServers.length} />
+          <ServerToolbar inventory servers={displayServers} bind:state={serversFilter} shown={filteredServers.length} />
           {#if filteredServers.length}
-            {#if selectedServerIds.length}
+            {#if myAccount?.permission !== 'read'}
               <div class="bulk-bar" role="region" aria-label="Bulk actions">
                 <strong>{selectedServerIds.length} selected</strong>
-                <button class="button ghost small" type="button" on:click={() => (selectedServerIds = [])}>Clear</button>
+                <button class="button ghost small" type="button" disabled={!selectedServerIds.length} on:click={() => (selectedServerIds = [])}>Clear</button>
                 <span class="bulk-spacer"></span>
-                <button class="button small" type="button" disabled={bulkBusy} on:click={() => void updateSelectedNodes()}><Icon name="download" size={13} /><span>Update</span></button>
-                <button class="button danger small" type="button" disabled={bulkBusy} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
+                <button class="button small" type="button" disabled={bulkBusy || !selectedServerIds.length} on:click={() => void updateSelectedNodes()}><Icon name="download" size={13} /><span>Update</span></button>
+                <button class="button danger small" type="button" disabled={bulkBusy || !selectedServerIds.length} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
               </div>
             {/if}
             <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} selectedIds={selectedServerIds} latestNode={latestNodeVersion} onSelectionChange={myAccount?.permission === 'read' ? undefined : (ids) => (selectedServerIds = ids)} />
@@ -1895,7 +1910,7 @@
 
     {:else if activePage === 'add-server'}
       <section class="page narrow" aria-labelledby="add-server-title">
-        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>Back to servers</span></button>
+        <a class="back-link" href={pageLocation('servers')} on:click={(event) => followLink(event, () => navigate('servers'))}><Icon name="arrow-left" size={15} /><span>Back to servers</span></a>
         <div class="page-heading">
           <div>
             <h1 id="add-server-title" tabindex="-1">Add a server</h1>
@@ -1906,7 +1921,7 @@
         {#if activeInstall && ['connecting', 'connected', 'preflight', 'installing', 'enrolling', 'verifying'].includes(activeInstall.currentStage)}
           <div class="active-install-banner" role="status">
             <div class="banner-left"><span class="pulse-dot"></span><span>Deployment in progress for <strong>{activeInstall.serverName}</strong> ({activeInstall.simulatedProgress}%)</span></div>
-            <button class="button small ghost" type="button" on:click={() => navigate('install-progress', activeInstall?.serverId)}><span>View live log</span><Icon name="arrow-right" size={13} /></button>
+            <a class="button small ghost" href={pageLocation('install-progress', activeInstall?.serverId)} on:click={(event) => followLink(event, () => navigate('install-progress', activeInstall?.serverId))}><span>View live log</span><Icon name="arrow-right" size={13} /></a>
           </div>
         {/if}
 
@@ -1916,7 +1931,7 @@
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
             <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
             <div class="setup-actions">
-              <button class="button ghost" type="button" on:click={() => navigate('servers')}>Cancel</button>
+              <a class="button ghost" href={pageLocation('servers')} on:click={(event) => followLink(event, () => navigate('servers'))}>Cancel</a>
               <button class="button primary" type="submit" disabled={createServerBusy || (installAuthMethod === 'password' ? !installPassword : !installKey) || (installRoute === 'proxy' && !installProxyUrl.trim()) || (installRoute === 'relay' && !installRelayId)}>
                 {#if createServerBusy}<span class="version-spinner" aria-hidden="true"></span>Connecting…{:else}Add and install server{/if}
               </button>
@@ -1932,7 +1947,7 @@
 
     {:else if activePage === 'install-progress'}
       <section class="page" aria-labelledby="install-progress-title">
-        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>Back to servers</span></button>
+        <a class="back-link" href={pageLocation('servers')} on:click={(event) => followLink(event, () => navigate('servers'))}><Icon name="arrow-left" size={15} /><span>Back to servers</span></a>
         <div class="page-heading">
           <div>
             <h1 id="install-progress-title" tabindex="-1">{!activeInstall ? 'Server installation' : activeInstall.currentStage === 'failed' ? `Could not install ${activeInstall.serverName}` : activeInstall.currentStage === 'cancelled' ? `Installation of ${activeInstall.serverName} cancelled` : `Installing ${activeInstall.serverName}`}</h1>
@@ -2092,11 +2107,11 @@
 
     {:else if activePage === 'server' && selectedServer}
       <section class="page server-page" aria-labelledby="server-title">
-        <button class="back-link" type="button" on:click={() => navigate('servers')}><Icon name="arrow-left" size={15} /><span>All servers</span></button>
+        <a class="back-link" href={pageLocation('servers')} on:click={(event) => followLink(event, () => navigate('servers'))}><Icon name="arrow-left" size={15} /><span>All servers</span></a>
         {#if selectedServer.duplicateOf}
           <div class="duplicate-banner" role="status">
             <Icon name="copy" size={16} />
-            <p>Same machine as <button class="link-button" type="button" on:click={() => navigate('server', selectedServer.duplicateOf)}>{selectedServer.duplicateOfName || 'another server'}</button>.</p>
+            <p>Same machine as <a class="link-button" href={pageLocation('server', selectedServer.duplicateOf)} on:click={(event) => followLink(event, () => navigate('server', selectedServer.duplicateOf))}>{selectedServer.duplicateOfName || 'another server'}</a>.</p>
             {#if myAccount?.permission !== 'read'}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge</button>{/if}
           </div>
         {/if}
@@ -2238,7 +2253,7 @@
         {:else if (detailTab === 'network' || detailTab === 'traffic') && (hasCapability(selectedServer, 'network') || hasCapability(selectedServer, 'traffic'))}
           <div class="tab-body">
             {#key selectedServer.id}
-              {#await lazy.NetworkPanel() then { default: NetworkPanel }}<NetworkPanel server={selectedServer} {chartData} bind:range={chartRange} timezone={currentTimezone} {theme} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
+              {#await lazy.NetworkPanel() then { default: NetworkPanel }}<NetworkPanel server={selectedServer} {chartData} loading={chartLoading} error={chartError} bind:range={chartRange} timezone={currentTimezone} {theme} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
             {/key}
           </div>
         {:else if selectedServer && detailTab !== 'metrics' && !hasCapability(selectedServer, detailTab)}
@@ -2249,7 +2264,7 @@
       </section>
 
     {:else}
-      <OverviewPage
+      <OverviewPage firingAlerts={firingAlertCount}
         servers={displayServers}
         refreshing={liveRefreshBusy}
         updatedAt={liveUpdatedAt}
@@ -2325,7 +2340,8 @@
     font-size: 12px;
     font-weight: 550;
   }
-  .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); font-size: 13px; }
+  .bulk-bar { min-height: 52px; display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); font-size: 13px; }
+  .bulk-bar strong { min-width: 80px; }
   .bulk-spacer { flex: 1; }
   /* ------------------------------------------------------------------------
      Shell

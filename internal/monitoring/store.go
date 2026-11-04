@@ -3087,7 +3087,7 @@ func (s *Store) PutRollups(ctx context.Context, rollups []Rollup) error {
 	}
 	defer stmt.Close()
 	for _, rollup := range rollups {
-		if rollup.ObservedSeconds > float64(rollup.BucketSeconds) {
+		if (rollup.Minimum != nil || rollup.Maximum != nil || rollup.WeightedMean != nil) && rollup.ObservedSeconds > float64(rollup.BucketSeconds) {
 			rollup.ObservedSeconds = float64(rollup.BucketSeconds)
 		}
 		if err := rollup.Validate(); err != nil {
