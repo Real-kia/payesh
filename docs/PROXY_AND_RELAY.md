@@ -50,6 +50,22 @@ the agent then enrolls itself with the single-use token. With *Directly when
 possible* the script tests a direct connection first. The script expires with
 the enrollment token.
 
+## One command for many servers
+
+Choose **Many servers** on the same screen to get a reusable command instead of
+a single-use one. Paste it on as many servers as you like: each run adds that
+server to the hub, named after its hostname, with its own single-use enrollment
+and (with a relay) its own relay credential. Nothing is shared between servers.
+
+The command stops working when it expires (the join command expiry setting),
+after the chosen number of servers (up to 200), or when you press **Stop** in
+the *Active commands* list. Running it again on a machine that never connected
+replaces that machine's pending entry instead of adding a duplicate. Anyone
+holding the command can add a server until then, so treat it like a password.
+Reusable commands live in the hub's memory, so restarting the hub invalidates
+them; servers already added are unaffected. `POST /api/v1/join-links`,
+`GET /api/v1/join-links` and `DELETE /api/v1/join-links/{id}` manage them.
+
 ## Reusing a relay
 
 A node becomes a relay the first time it is chosen and stays one. Relays that

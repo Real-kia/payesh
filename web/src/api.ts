@@ -175,6 +175,7 @@ export type OverviewItem = {
 };
 export type Overview = { generated_at: string; items: OverviewItem[] };
 export type RelayInfo = { server_id: string; name: string; address: string; port: number; connection_state: string; nodes: number };
+export type JoinLink = { id: string; command: string; relay?: string; created_at: string; expires_at: string; max_uses: number; uses: number };
 export type JoinScript = { command: string; script_url: string; expires_at: string; relay?: string };
 
 export type InstallRequest = {
@@ -367,6 +368,19 @@ export class ApiClient {
   /** A one-command join served by this hub, optionally through a relay node. */
   createJoinScript(serverId: string, body: { job_id: string; token: string; relay_server_id?: string; node_route?: 'auto' | 'proxy' | 'direct' }): Promise<JoinScript> {
     return this.request<JoinScript>(`/servers/${encodeURIComponent(serverId)}/join-script`, { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) });
+  }
+
+  /** One reusable command that adds every server it is run on. */
+  createJoinLink(body: { relay_server_id?: string; node_route?: 'auto' | 'proxy' | 'direct'; max_uses?: number }): Promise<JoinLink> {
+    return this.request<JoinLink>('/join-links', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(body) });
+  }
+
+  async listJoinLinks(): Promise<JoinLink[]> {
+    return (await this.request<{ items: JoinLink[] }>('/join-links')).items;
+  }
+
+  revokeJoinLink(id: string): Promise<void> {
+    return this.request<void>(`/join-links/${encodeURIComponent(id)}`, { method: 'DELETE', headers: this.mutationHeaders() });
   }
 
   getNodeTransportSettings(params: { limit?: number; cursor?: string } = {}): Promise<NodeTransportStatus> {

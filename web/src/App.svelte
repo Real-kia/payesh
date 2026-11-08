@@ -18,6 +18,7 @@
   import AlertsPage from './pages/AlertsPage.svelte';
   import PackagesPage from './pages/PackagesPage.svelte';
   import JoinCommandPanel from './components/JoinCommandPanel.svelte';
+  import MethodSwitch from './components/MethodSwitch.svelte';
   import SshCredentialFields from './components/SshCredentialFields.svelte';
   import { deleteServersConcurrently } from './lib/bulkDelete';
   import InstallRouteFields, { type InstallRoute, type NodeRoute } from './components/InstallRouteFields.svelte';
@@ -169,6 +170,12 @@
   $: webUpdate = updateProgress?.web_update ?? updateStatus?.web_update ?? null;
   $: webUpdateActive = webUpdate?.state === 'queued' || webUpdate?.state === 'running';
   $: showUpdateBanner = !PREVIEW_MODE && sessionState === 'authenticated' && !!updateStatus?.update_available && dismissedUpdate !== updateStatus.latest && !webUpdateActive;
+  // How the agent gets installed. Only the chosen method's fields are shown.
+  let installMethod: 'command' | 'ssh' = 'command';
+  const installMethods = [
+    { value: 'command' as const, label: 'Run a command', hint: 'Paste one line on the server. Nothing to enter here.', icon: 'terminal' },
+    { value: 'ssh' as const, label: 'Connect over SSH', hint: 'Payesh logs in and installs for you. Needs a password or key.', icon: 'lock' }
+  ];
   let installHost = '';
   let installPort = '22';
   let installUser = 'root';
@@ -1914,7 +1921,7 @@
         <div class="page-heading">
           <div>
             <h1 id="add-server-title" tabindex="-1">Add a server</h1>
-            <p class="lede">Connect over SSH. Payesh detects the operating system and architecture automatically.</p>
+            <p class="lede">Choose how to install Payesh. Payesh detects the operating system and architecture automatically.</p>
           </div>
         </div>
 
@@ -1925,8 +1932,11 @@
           </div>
         {/if}
 
+        <MethodSwitch bind:value={installMethod} options={installMethods} label="How to install Payesh" />
+
+        {#if installMethod === 'ssh'}
         <article class="panel method">
-          <div class="panel-heading"><div class="title"><div><h2>Install over SSH</h2><span class="muted">Payesh connects, verifies the host key, and installs the agent for you.</span></div></div></div>
+          <div class="panel-heading"><div class="title"><div><h2>Connect over SSH</h2><span class="muted">Payesh logs in, checks the host key, and installs the agent.</span></div></div></div>
           <form class="form-grid" on:submit|preventDefault={() => void createPendingServer()}>
             <label>Server name<input bind:value={newServerName} maxlength="128" placeholder="e.g. EU-Node-01" required /></label>
             <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
@@ -1939,10 +1949,9 @@
           </form>
           {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
         </article>
-
-        <div class="or-divider" aria-hidden="true"><span>or</span></div>
-
+        {:else}
         <JoinCommandPanel relays={relayCandidates} onCreated={(created) => (servers = [...servers, emptyApiServer(created)])} onRelayUsed={() => void loadRelays()} />
+        {/if}
       </section>
 
     {:else if activePage === 'install-progress'}
@@ -2196,16 +2205,17 @@
               {#if lastInstall}
                 <h2>{lastInstall.state === 'failed' ? 'The last install attempt failed' : 'The last install attempt was cancelled'}</h2>
                 <p>{lastInstall.message}</p>
-                <p class="muted">Check the SSH details below and try again.</p>
+                <p class="muted">Try again below, or switch to the command method.</p>
               {:else}
                 <h2>Waiting for the agent to install</h2>
-                <p>This server was added to Payesh, but nothing is installed on it yet, so it has not reported anything. The address above is only the one you entered.</p>
-                <p class="muted">Enter the SSH password or key below and press <strong>Install Payesh</strong>, or run the join command on the server yourself.</p>
+                <p>Payesh is not installed on this server yet, so it has nothing to show. Choose how to install it below.</p>
               {/if}
             </article>
           {/if}
+          <MethodSwitch bind:value={installMethod} options={installMethods} label="How to install Payesh" />
+          {#if installMethod === 'ssh'}
           <article class="panel server-actions">
-            <div class="panel-heading"><div class="title"><div><h2>Install over SSH</h2><span class="muted">This node has not connected yet. Install or reinstall the agent.</span></div></div></div>
+            <div class="panel-heading"><div class="title"><div><h2>Connect over SSH</h2><span class="muted">Payesh logs in and installs the agent.</span></div></div></div>
             <form class="form-grid" on:submit|preventDefault={() => void submitInstall()}>
               <SshCredentialFields bind:host={installHost} bind:port={installPort} bind:user={installUser} bind:method={installAuthMethod} bind:password={installPassword} bind:key={installKey} bind:passphrase={installKeyPassphrase} bind:fingerprint={installFingerprint} hostLabel="SSH host" showHint={false} /> <InstallRouteFields bind:route={installRoute} bind:proxyUrl={installProxyUrl} bind:nodeRoute={installNodeRoute} bind:relayServerId={installRelayId} relays={relayCandidates} />
               <div class="setup-actions">
@@ -2216,8 +2226,10 @@
             </form>
             {#if jobError}<p class="form-error" role="alert">{jobError}</p>{/if}
           </article>
+          {:else}
           {#if (selectedServer.connectionState === 'never-connected' || (selectedServer.connectionState === 'revoked' && !selectedServer.lastHeartbeat)) && myAccount?.permission !== 'read'}
             <JoinCommandPanel existing={{ id: selectedServer.id, name: selectedServer.name }} relays={relayCandidates} onRelayUsed={() => void loadRelays()} />
+          {/if}
           {/if}
         {/if}
 

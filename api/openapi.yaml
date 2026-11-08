@@ -425,12 +425,34 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [job_id, token], properties: { job_id: { type: string, maxLength: 128 }, token: { type: string, minLength: 16, maxLength: 512, writeOnly: true }, relay_server_id: { type: string, minLength: 16, maxLength: 128 }, node_route: { type: string, enum: [auto, proxy, direct], default: auto } } } } } }
       responses: { '201': { description: Join command, content: { application/json: { schema: { type: object, properties: { command: { type: string }, script_url: { type: string }, expires_at: { type: string, format: date-time }, relay: { type: string } } } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /join-links:
+    get:
+      operationId: listJoinLinks
+      summary: List reusable join commands that can still add servers
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses: { '200': { description: Open join links, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/JoinLink' } } } } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
+    post:
+      operationId: createJoinLink
+      summary: Create one reusable command that adds every server it is run on
+      description: Each run adds a server named after the machine's hostname, with its own single-use enrollment (and its own relay credential when relay_server_id is set). The link stops working at expiry, after max_uses servers, or when revoked. Running it again on a machine that never connected replaces that machine's pending entry.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { relay_server_id: { type: string, minLength: 16, maxLength: 128 }, node_route: { type: string, enum: [auto, proxy, direct], default: auto }, max_uses: { type: integer, minimum: 1, maximum: 200, default: 20 } } } } } }
+      responses: { '201': { description: Reusable join command, content: { application/json: { schema: { $ref: '#/components/schemas/JoinLink' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /join-links/{linkId}:
+    delete:
+      operationId: revokeJoinLink
+      summary: Stop a reusable join command from adding more servers
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }, { name: linkId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{48}$' } }]
+      responses: { '204': { description: Stopped }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
   /join-scripts/{scriptId}:
     get:
       operationId: getJoinScript
       summary: Download a one-time node join script (the unguessable id is the capability)
+      description: For a reusable join link id, each request adds a new server (named by the optional name query) and returns that server's own script.
       security: []
-      parameters: [{ name: scriptId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{48}$' } }]
+      parameters: [{ name: scriptId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{48}$' } }, { name: name, in: query, required: false, schema: { type: string, maxLength: 128 } }]
       responses: { '200': { description: POSIX shell script, content: { text/x-shellscript: { schema: { type: string } } } }, '404': { description: Unknown or expired } }
   /relays:
     get:
@@ -1392,6 +1414,10 @@ components:
       type: object
       required: [idempotency_key]
       properties: { idempotency_key: { type: string, minLength: 1, maxLength: 128 } }
+    JoinLink:
+      type: object
+      required: [id, command, created_at, expires_at, max_uses, uses]
+      properties: { id: { type: string }, command: { type: string }, relay: { type: string }, created_at: { type: string, format: date-time }, expires_at: { type: string, format: date-time }, max_uses: { type: integer }, uses: { type: integer } }
     EnrollmentToken:
       type: object
       required: [server_id, token, expires_at]

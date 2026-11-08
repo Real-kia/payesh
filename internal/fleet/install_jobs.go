@@ -82,6 +82,8 @@ type InstallService struct {
 	notify chan struct{}
 	// joinScripts are open one-command joins, keyed by their capability id.
 	joinScripts map[string]*joinScript
+	// joinLinks are reusable join commands, keyed by their capability id.
+	joinLinks map[string]*joinLink
 	// relayReady probes a relay credential; tests replace it.
 	relayReady func(context.Context, *netproxy.Proxy, string) error
 }

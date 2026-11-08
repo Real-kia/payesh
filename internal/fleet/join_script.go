@@ -40,6 +40,9 @@ type joinScript struct {
 	NodeRoute    string
 	ExpiresAt    time.Time
 	bundles      map[string]install.ArtifactDownload
+	// shared marks a script minted from a join link: its bundles belong to the
+	// link, and it does not count against the single-use script limit.
+	shared bool
 }
 
 type joinScriptRequest struct {
@@ -177,7 +180,13 @@ func (s *InstallService) CreateJoinScript(ctx context.Context, serverID contract
 			delete(s.joinScripts, key)
 		}
 	}
-	if len(s.joinScripts) >= maxJoinScripts {
+	single := 0
+	for _, existing := range s.joinScripts {
+		if !existing.shared {
+			single++
+		}
+	}
+	if single >= maxJoinScripts {
 		s.mu.Unlock()
 		return joinScriptResponse{}, errors.New("too many open join commands; wait for older ones to expire")
 	}
@@ -230,6 +239,9 @@ func relayPortOf(p *netproxy.Proxy) int {
 }
 
 func (j *joinScript) close() {
+	if j.shared {
+		return
+	}
 	for _, bundle := range j.bundles {
 		if bundle.Close != nil {
 			bundle.Close()
@@ -255,7 +267,17 @@ func (s *InstallService) JoinScriptDownloads() http.Handler {
 		}
 		s.mu.Lock()
 		script, ok := s.joinScripts[parts[0]]
+		link := s.joinLinks[parts[0]]
 		s.mu.Unlock()
+		if !ok && link != nil && len(parts) == 1 {
+			// A reusable link: add this caller as a new server and serve its script.
+			minted, err := s.mintFromLink(r.Context(), link, r.URL.Query().Get("name"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			script, ok = minted, true
+		}
 		if !ok || !script.ExpiresAt.After(s.now()) {
 			http.Error(w, "this join command has expired; create a new one in the dashboard", http.StatusNotFound)
 			return
@@ -494,6 +516,7 @@ func (s *InstallService) SweepExpired(now time.Time) {
 			delete(s.joinScripts, key)
 		}
 	}
+	s.sweepJoinLinks(now)
 	s.mu.Unlock()
 	if s.Downloads != nil {
 		s.Downloads.Sweep()
