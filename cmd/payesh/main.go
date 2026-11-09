@@ -335,13 +335,17 @@ func ingest(ctx context.Context, args []string) error {
 	if err := alertEngine.EnsureStarterRules(ctx, resolvedServerID); err != nil {
 		return err
 	}
-	if destinations := alertDestinationsFromEnvironment(); len(destinations) > 0 {
-		queue := alerts.NewDeliveryQueue(alerts.Notifier{}, 2)
-		defer queue.Close()
-		alertEngine.ConfigureDelivery(queue, func(context.Context, contracts.ServerID) []alerts.NotificationDestination {
-			return append([]alerts.NotificationDestination(nil), destinations...)
-		})
-	}
+	// Alerts raised by this process (the local agent's ingest pipeline) use the
+	// same destinations as the server: owner-managed ones when the server has
+	// created the secret key, plus the environment ones.
+	environment := alertDestinationsFromEnvironment()
+	alertEngine.PublicURL = strings.TrimSpace(os.Getenv("PAYESH_PUBLIC_URL"))
+	manager := alerts.NewDestinationManager(store, nil, environment)
+	manager.VaultPath = filepath.Join(filepath.Dir(*dbPath), "notification.key")
+	queue := alerts.NewDeliveryQueue(alerts.Notifier{}, 2)
+	defer queue.Close()
+	queue.Observer = manager.Observe
+	alertEngine.ConfigureDelivery(queue, manager.Provider())
 	processor, err := traffic.NewProcessor(store, alertEngine)
 	if err != nil {
 		return err

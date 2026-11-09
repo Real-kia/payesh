@@ -60,11 +60,17 @@ mode, old-history cleanup, hard-limit write pauses, and recovery. The latest
 
 These are shared workspace notifications. Users with edit access can mark
 all read; only the owner can enable or disable future storage notifications.
-They are in-app notifications. Existing webhook/Telegram alert configuration
-continues to handle monitoring alerts separately.
+They are in-app notifications. Monitoring alerts (firing, recovered, reminder)
+are delivered separately, to the **Alert destinations** configured on the same
+page: any number of webhooks (native JSON, Slack, Discord, ntfy, text-only, or a
+custom template) and Telegram bots, each with its own routing, retry policy,
+and rate limit. See [NOTIFICATION_DESTINATIONS.md](NOTIFICATION_DESTINATIONS.md).
+Destinations set through `PAYESH_ALERT_WEBHOOK_*` and `PAYESH_ALERT_TELEGRAM_*`
+keep working and appear there as read-only "managed by environment" entries.
 
 The authenticated API exposes `GET/PUT /api/v1/settings/storage` and
-`GET/POST /api/v1/notifications`. Settings writes require owner access, CSRF,
+`GET/POST /api/v1/notifications` (the in-app inbox; alert destinations are under
+`/api/v1/alerts/destinations`). Settings writes require owner access, CSRF,
 and the current revision. Notification mutations require edit access and
 CSRF. Settings reads include physical live SQLite bytes in `database_bytes`,
 retained recovery bytes in `recovery_snapshot_bytes` (zero when absent), and

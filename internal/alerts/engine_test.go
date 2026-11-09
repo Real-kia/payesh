@@ -238,7 +238,7 @@ func TestTerminalDeliveryFailureLeavesCadenceRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	queue := NewDeliveryQueue(Notifier{}, 1)
-	queue.send = func(context.Context, NotificationDestination, contracts.AlertHistoryEvent) error {
+	queue.send = func(context.Context, NotificationDestination, Notification) error {
 		return errors.New("retry policy exhausted")
 	}
 	defer queue.Close()
@@ -289,8 +289,8 @@ func TestSuccessfulDeliveryCommitsCadenceAndPreventsDuplicate(t *testing.T) {
 	}
 	sent := make(chan contracts.AlertHistoryEvent, 2)
 	queue := NewDeliveryQueue(Notifier{}, 1)
-	queue.send = func(_ context.Context, _ NotificationDestination, event contracts.AlertHistoryEvent) error {
-		sent <- event
+	queue.send = func(_ context.Context, _ NotificationDestination, notification Notification) error {
+		sent <- notification.Event
 		return nil
 	}
 	defer queue.Close()

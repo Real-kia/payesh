@@ -4,9 +4,7 @@
 package alerts
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -15,8 +13,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -66,11 +62,13 @@ type Engine struct {
 	Now           func() time.Time
 	DeliveryQueue *DeliveryQueue
 	Destinations  func(context.Context, contracts.ServerID) []NotificationDestination
-	mu            sync.Mutex
-	outageMu      sync.RWMutex
-	outages       map[contracts.ServerID]time.Time
-	deliveryMu    sync.Mutex
-	deliveries    map[string]struct{}
+	// PublicURL, when set, lets notifications link to the dashboard.
+	PublicURL  string
+	mu         sync.Mutex
+	outageMu   sync.RWMutex
+	outages    map[contracts.ServerID]time.Time
+	deliveryMu sync.Mutex
+	deliveries map[string]struct{}
 }
 
 func NewEngine(store *monitoring.Store) (*Engine, error) {
@@ -833,6 +831,13 @@ func (e *Engine) Evaluate(ctx context.Context, rule contracts.AlertRule, observa
 		}
 		notify := notification != "" && !suppressed
 		deliveryQueue, deliveryDestinations := e.deliveryTargets(ctx, event.ServerID)
+		deliveryNotification := Notification{Event: event, Kind: notification}
+		if notify && len(deliveryDestinations) > 0 {
+			// Routing needs rule, server name and tags; look them up only when
+			// a notification will actually be considered for delivery.
+			deliveryNotification = e.buildNotification(ctx, rule, state, event, notification)
+			deliveryDestinations = filterDestinations(deliveryDestinations, deliveryNotification)
+		}
 		deliveryConfigured := deliveryQueue != nil && len(deliveryDestinations) > 0
 		deferCadence := notify && state.State == "firing" && deliveryConfigured
 		if deferCadence {
@@ -860,12 +865,12 @@ func (e *Engine) Evaluate(ctx context.Context, rule contracts.AlertRule, observa
 			return Evaluation{}, err
 		}
 		if notify && deliveryConfigured {
-			notify = e.enqueue(deliveryQueue, deliveryDestinations, event, state, at, lastNotifiedBefore, reservationKey)
+			notify = e.enqueue(deliveryQueue, deliveryDestinations, deliveryNotification, state, at, lastNotifiedBefore, reservationKey)
 		} else if notify {
 			// Preserve the state-machine behavior when delivery is not configured:
 			// transition/reminder history remains cadence-bounded without inventing
 			// a destination or persisting credentials.
-			e.enqueue(deliveryQueue, deliveryDestinations, event, state, at, lastNotifiedBefore, "")
+			e.enqueue(deliveryQueue, deliveryDestinations, deliveryNotification, state, at, lastNotifiedBefore, "")
 		}
 		return Evaluation{State: state, Changed: changed, Notify: notify, Suppressed: suppressed, Notification: notification, Reason: event.Reason}, nil
 	}
@@ -955,7 +960,7 @@ func (e *Engine) releaseDelivery(key string) {
 	e.deliveryMu.Unlock()
 }
 
-func (e *Engine) enqueue(queue *DeliveryQueue, destinations []NotificationDestination, event contracts.AlertHistoryEvent, state contracts.AlertState, deliveredAt time.Time, previous *time.Time, reservationKey string) bool {
+func (e *Engine) enqueue(queue *DeliveryQueue, destinations []NotificationDestination, notification Notification, state contracts.AlertState, deliveredAt time.Time, previous *time.Time, reservationKey string) bool {
 	if queue == nil || len(destinations) == 0 {
 		e.releaseDelivery(reservationKey)
 		return false
@@ -963,7 +968,7 @@ func (e *Engine) enqueue(queue *DeliveryQueue, destinations []NotificationDestin
 	attempt := &deliveryAttempt{engine: e, reservationKey: reservationKey, state: state, deliveredAt: deliveredAt, previous: previous, remaining: len(destinations)}
 	accepted := false
 	for _, destination := range destinations {
-		err := queue.enqueue(context.Background(), destination, event, attempt.complete)
+		err := queue.enqueue(context.Background(), destination, notification, attempt.complete)
 		if err == nil {
 			accepted = true
 		} else {
@@ -1091,135 +1096,6 @@ func incidentFor(rule contracts.AlertRule, observation Observation, state contra
 	}
 	evidence := []string{fmt.Sprintf("metric observation %s at %s", rule.Expression, observation.ObservedAt.UTC().Format(time.RFC3339Nano))}
 	return contracts.IncidentSnapshot{ID: state.IncidentID, ServerID: observation.ServerID, GroupKey: group, State: "open", StartedAt: at, Summary: "alert condition sustained; evidence is bounded and observational", Events: []contracts.AlertHistoryEvent{event}, Evidence: evidence}
-}
-
-// NotificationDestination is owner-configured delivery metadata. Secret is
-// held only by the caller and is never serialized or included in errors.
-type NotificationDestination struct {
-	Kind    string
-	URL     string
-	Secret  string
-	ChatID  string
-	Enabled bool
-}
-
-type Notifier struct {
-	Client *http.Client
-}
-
-func (n Notifier) Send(ctx context.Context, destination NotificationDestination, event contracts.AlertHistoryEvent) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	// Bound the request even when a caller supplies an http.Client without a
-	// timeout; the queue must not retain a worker forever on a stalled endpoint.
-	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if !destination.Enabled || destination.URL == "" || (destination.Kind != "webhook" && destination.Kind != "telegram") {
-		return errors.New("notification destination is invalid or disabled")
-	}
-	if len(destination.Secret) > 256 {
-		return errors.New("notification secret is too long")
-	}
-	if err := validateNotificationURL(destination.URL); err != nil {
-		return err
-	}
-	payload := map[string]any{"alert_id": event.AlertID, "state": event.State, "occurred_at": event.OccurredAt.UTC().Format(time.RFC3339Nano), "reason": event.Reason}
-	endpoint := destination.URL
-	var body []byte
-	if destination.Kind == "telegram" {
-		if destination.Secret == "" || len(destination.Secret) > 256 || destination.ChatID == "" || len(destination.ChatID) > 128 {
-			return errors.New("telegram destination token and chat id are required")
-		}
-		endpoint = strings.TrimRight(destination.URL, "/") + "/bot" + url.PathEscape(destination.Secret) + "/sendMessage"
-		body, _ = json.Marshal(map[string]any{"chat_id": destination.ChatID, "text": fmt.Sprintf("Payesh alert %s: %s (%s)", event.AlertID, event.State, event.Reason)})
-	} else {
-		body, _ = json.Marshal(payload)
-	}
-	if len(body) > MaxNotificationBody {
-		return errors.New("notification body exceeds limit")
-	}
-	client := n.Client
-	if len(endpoint) > 2048 {
-		return errors.New("notification endpoint is too long")
-	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	} else {
-		// A destination is validated only once, before the request. Do not let
-		// net/http follow a redirect to a cleartext or otherwise unvalidated URL.
-		// Clone the caller's client so this safety policy does not mutate shared
-		// client state.
-		clone := *client
-		client = &clone
-	}
-	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return errors.New("notification request could not be created")
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if destination.Kind == "webhook" && destination.Secret != "" {
-		hash := hmac.New(sha256.New, []byte(destination.Secret))
-		_, _ = hash.Write(body)
-		request.Header.Set("X-Payesh-Signature", hex.EncodeToString(hash.Sum(nil)))
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		// net/http wraps failures with the request URL. Telegram URLs contain
-		// the bot token, so never return that wrapped error to callers/loggers.
-		return errors.New("notification request failed")
-	}
-	defer response.Body.Close()
-	if _, readErr := ioReadLimit(response.Body, MaxNotificationBody); readErr != nil {
-		return errors.New("notification response exceeds limit")
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("notification endpoint returned HTTP %d", response.StatusCode)
-	}
-	return nil
-}
-
-// SendWithRetry applies a bounded retry policy for transient notification
-// outages. It never retries more than five times and caps waiting at 30s, so a
-// failed destination cannot accumulate unbounded work or hold request memory.
-func (n Notifier) SendWithRetry(ctx context.Context, destination NotificationDestination, event contracts.AlertHistoryEvent) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			delay := time.Duration(1<<uint(attempt-1)) * time.Second
-			if delay > 30*time.Second {
-				delay = 30 * time.Second
-			}
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
-		}
-		if err := n.Send(ctx, destination, event); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-	}
-	return lastErr
-}
-
-func validateNotificationURL(raw string) error {
-	if len(raw) == 0 || len(raw) > 2048 {
-		return errors.New("notification URL is outside its length bound")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return errors.New("notification URL must be an HTTPS URL without credentials or fragments")
-	}
-	return nil
 }
 
 func appendBoundedEvents(events []contracts.AlertHistoryEvent, event contracts.AlertHistoryEvent) ([]contracts.AlertHistoryEvent, bool) {

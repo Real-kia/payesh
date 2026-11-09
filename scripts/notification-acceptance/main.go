@@ -18,14 +18,14 @@ func main() {
 	event := contracts.AlertHistoryEvent{ID: "notification-acceptance", AlertID: "payesh-test", State: "firing", OccurredAt: time.Now().UTC(), Reason: "notification acceptance test"}
 	destinations := []alerts.NotificationDestination{}
 	if endpoint := strings.TrimSpace(os.Getenv("PAYESH_ALERT_WEBHOOK_URL")); endpoint != "" {
-		destinations = append(destinations, alerts.NotificationDestination{Kind: "webhook", URL: endpoint, Secret: os.Getenv("PAYESH_ALERT_WEBHOOK_SECRET"), Enabled: true})
+		destinations = append(destinations, alerts.NotificationDestination{Kind: "webhook", URL: endpoint, Secret: os.Getenv("PAYESH_ALERT_WEBHOOK_SECRET"), Enabled: true, AllowPrivateNetwork: true, MaxAttempts: 5})
 	}
 	if token := strings.TrimSpace(os.Getenv("PAYESH_ALERT_TELEGRAM_TOKEN")); token != "" {
 		apiURL := strings.TrimSpace(os.Getenv("PAYESH_ALERT_TELEGRAM_API_URL"))
 		if apiURL == "" {
 			apiURL = "https://api.telegram.org"
 		}
-		destinations = append(destinations, alerts.NotificationDestination{Kind: "telegram", URL: apiURL, Secret: token, ChatID: strings.TrimSpace(os.Getenv("PAYESH_ALERT_TELEGRAM_CHAT_ID")), Enabled: true})
+		destinations = append(destinations, alerts.NotificationDestination{Kind: "telegram", URL: apiURL, Secret: token, ChatID: strings.TrimSpace(os.Getenv("PAYESH_ALERT_TELEGRAM_CHAT_ID")), Enabled: true, AllowPrivateNetwork: true, MaxAttempts: 5})
 	}
 	if len(destinations) == 0 {
 		fmt.Fprintln(os.Stderr, "no notification destination configured")

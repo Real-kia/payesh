@@ -83,7 +83,7 @@ func TestNotifierDoesNotLeakSecretsOrFollowRedirects(t *testing.T) {
 
 func TestDeliveryQueueReportsTerminalFailureWithoutDestinationSecrets(t *testing.T) {
 	queue := NewDeliveryQueue(Notifier{}, 1)
-	queue.send = func(context.Context, NotificationDestination, contracts.AlertHistoryEvent) error {
+	queue.send = func(context.Context, NotificationDestination, Notification) error {
 		return errors.New("terminal delivery failure")
 	}
 	defer queue.Close()

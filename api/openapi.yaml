@@ -527,6 +527,65 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleUpdateRequest' } } } }
       responses: { '200': { description: Rule replaced, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRule' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /alerts/destinations:
+    get:
+      operationId: listNotificationDestinations
+      summary: List alert notification destinations
+      description: Owner-configured webhook and Telegram destinations plus any configured through environment variables (managed, read-only). URLs, secrets and header values are never returned.
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses: { '200': { description: Destinations, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestinationPage' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '503': { $ref: '#/components/responses/ServiceUnavailable' } }
+    post:
+      operationId: createNotificationDestination
+      summary: Create an alert notification destination
+      description: Owner only. The URL must be HTTPS unless plain HTTP is explicitly allowed together with private network access. Loopback, private, link-local and cloud metadata addresses are blocked unless allow_private_network is set; metadata addresses are always blocked.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestinationRequest' } } } }
+      responses: { '201': { description: Destination created, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestination' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /alerts/destinations/preview:
+    post:
+      operationId: previewNotificationPayload
+      summary: Render a payload for a sample alert
+      description: Shows the body a payload format or custom template would send for a sample firing alert, so a template can be checked before it is saved.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPreviewRequest' } } } }
+      responses: { '200': { description: Rendered sample payload, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPreview' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /alerts/destinations/{destinationId}:
+    parameters: [{ name: destinationId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
+    get:
+      operationId: getNotificationDestination
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses: { '200': { description: Destination, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestination' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '404': { $ref: '#/components/responses/NotFound' } }
+    patch:
+      operationId: updateNotificationDestination
+      summary: Change, enable or disable a destination
+      description: Owner only. Omitted fields keep their value, including the URL, secret and headers. A null header value keeps that header; a header left out is removed. Environment-managed destinations cannot be changed.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestinationUpdate' } } } }
+      responses: { '200': { description: Destination updated, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestination' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+    put:
+      operationId: replaceNotificationDestination
+      description: Same partial-update behavior as PATCH.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestinationUpdate' } } } }
+      responses: { '200': { description: Destination updated, content: { application/json: { schema: { $ref: '#/components/schemas/NotificationDestination' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+    delete:
+      operationId: deleteNotificationDestination
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      responses: { '204': { description: Destination deleted }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /alerts/destinations/{destinationId}/test:
+    parameters: [{ name: destinationId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }]
+    post:
+      operationId: testNotificationDestination
+      summary: Send a test notification
+      description: Owner only. Makes one delivery attempt (no retries) with a sample notification, records it as the destination's last delivery, and returns the outcome. Limited to one test every few seconds per destination.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      responses: { '200': { description: Delivery outcome (ok is false when the destination failed), content: { application/json: { schema: { $ref: '#/components/schemas/NotificationTestResult' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '429': { description: Tests are too frequent, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } } }
   /alerts:
     get:
       operationId: listAlerts
@@ -1470,6 +1529,100 @@ components:
       type: object
       required: [entry, sequence]
       properties: { entry: { $ref: '#/components/schemas/LogEntry' }, sequence: { $ref: '#/components/schemas/DecimalUint64' }, dropped_events: { type: integer, minimum: 0, maximum: 10000 } }
+    NotificationFilter:
+      type: object
+      description: Routing. Empty or omitted lists match everything; non-empty lists are any-of and combine with AND.
+      properties:
+        kinds: { type: array, maxItems: 32, items: { type: string, enum: [firing, recovered, reminder] } }
+        tags: { type: array, maxItems: 32, items: { type: string, maxLength: 32 }, description: Match servers carrying any of these tags (case-insensitive). }
+        rules: { type: array, maxItems: 32, items: { type: string, maxLength: 128 }, description: Match an alert rule by ID or name. }
+        servers: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }
+    NotificationDestinationRequest:
+      type: object
+      required: [kind, url]
+      properties:
+        name: { type: string, maxLength: 80 }
+        kind: { type: string, enum: [webhook, telegram] }
+        url: { type: string, maxLength: 2048, writeOnly: true, description: "HTTPS endpoint (Telegram: the API base, default https://api.telegram.org). Write-only; it can contain a token." }
+        secret: { type: string, maxLength: 256, writeOnly: true, description: "Webhook: HMAC key for X-Payesh-Signature. Telegram: the bot token. Write-only." }
+        chat_id: { type: string, maxLength: 128 }
+        headers: { type: object, maxProperties: 10, writeOnly: true, additionalProperties: { type: string, nullable: true, maxLength: 1024 }, description: "Static request headers such as Authorization. Write-only; null keeps the stored value." }
+        format: { type: string, enum: [payesh, template, slack, discord, ntfy, text], default: payesh }
+        template: { type: string, maxLength: 4096, description: Go text/template, required when format is template. Fields are documented in docs/NOTIFICATION_DESTINATIONS.md. }
+        allow_insecure_http: { type: boolean, default: false, description: Permit http:// URLs. Only valid with allow_private_network, and only reaches private addresses. }
+        allow_private_network: { type: boolean, default: false, description: Permit loopback, private and link-local addresses. Cloud metadata addresses stay blocked. }
+        timeout_seconds: { type: integer, minimum: 1, maximum: 30, default: 10 }
+        max_attempts: { type: integer, minimum: 1, maximum: 5, default: 3 }
+        retry_backoff_seconds: { type: integer, minimum: 1, maximum: 30, default: 1 }
+        max_per_minute: { type: integer, minimum: 1, maximum: 120, default: 30, description: Over this rate, notifications are grouped into one digest message. }
+        filter: { $ref: '#/components/schemas/NotificationFilter' }
+        enabled: { type: boolean, default: true }
+    NotificationDestinationUpdate:
+      type: object
+      minProperties: 1
+      description: Partial update. kind cannot be changed.
+      properties:
+        name: { type: string, maxLength: 80 }
+        url: { type: string, maxLength: 2048, writeOnly: true }
+        secret: { type: string, maxLength: 256, writeOnly: true, description: Empty string clears the secret. }
+        chat_id: { type: string, maxLength: 128 }
+        headers: { type: object, maxProperties: 10, writeOnly: true, additionalProperties: { type: string, nullable: true, maxLength: 1024 } }
+        format: { type: string, enum: [payesh, template, slack, discord, ntfy, text] }
+        template: { type: string, maxLength: 4096 }
+        allow_insecure_http: { type: boolean }
+        allow_private_network: { type: boolean }
+        timeout_seconds: { type: integer, minimum: 1, maximum: 30 }
+        max_attempts: { type: integer, minimum: 1, maximum: 5 }
+        retry_backoff_seconds: { type: integer, minimum: 1, maximum: 30 }
+        max_per_minute: { type: integer, minimum: 1, maximum: 120 }
+        filter: { $ref: '#/components/schemas/NotificationFilter' }
+        enabled: { type: boolean }
+    NotificationDeliveryStatus:
+      type: object
+      required: [at, ok, status]
+      properties: { at: { type: string, format: date-time }, ok: { type: boolean }, status: { type: string, maxLength: 64, description: "For example HTTP 204 or failed." }, error: { type: string, maxLength: 200, description: Short classification such as timeout or connection refused; never the URL or credentials. } }
+    NotificationDestination:
+      type: object
+      required: [id, name, kind, url_preview, has_secret, header_names, format, allow_insecure_http, allow_private_network, timeout_seconds, max_attempts, retry_backoff_seconds, max_per_minute, filter, enabled, managed]
+      properties:
+        id: { type: string, maxLength: 128 }
+        name: { type: string }
+        kind: { type: string, enum: [webhook, telegram] }
+        url_preview: { type: string, description: Scheme and host only; the path and query are never returned. }
+        has_secret: { type: boolean }
+        chat_id: { type: string }
+        header_names: { type: array, maxItems: 10, items: { type: string, maxLength: 64 } }
+        format: { type: string, enum: [payesh, template, slack, discord, ntfy, text] }
+        template: { type: string }
+        allow_insecure_http: { type: boolean }
+        allow_private_network: { type: boolean }
+        timeout_seconds: { type: integer }
+        max_attempts: { type: integer }
+        retry_backoff_seconds: { type: integer }
+        max_per_minute: { type: integer }
+        filter: { $ref: '#/components/schemas/NotificationFilter' }
+        enabled: { type: boolean }
+        managed: { type: boolean, description: True for destinations configured through PAYESH_ALERT_* environment variables; they are read-only. }
+        secrets_unreadable: { type: boolean, description: The stored secrets cannot be decrypted (the key file changed); re-enter the URL and secrets. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_delivery: { $ref: '#/components/schemas/NotificationDeliveryStatus' }
+    NotificationDestinationPage:
+      type: object
+      required: [items, limit]
+      properties: { items: { type: array, maxItems: 40, items: { $ref: '#/components/schemas/NotificationDestination' } }, limit: { type: integer, description: Maximum number of owner-managed destinations. } }
+    NotificationTestResult:
+      type: object
+      required: [ok, status, duration_ms]
+      properties: { ok: { type: boolean }, status: { type: string }, error: { type: string }, duration_ms: { type: integer, format: int64 } }
+    NotificationPreviewRequest:
+      type: object
+      required: [format]
+      properties: { kind: { type: string, enum: [webhook, telegram], default: webhook }, format: { type: string, enum: [payesh, template, slack, discord, ntfy, text] }, template: { type: string, maxLength: 4096 } }
+    NotificationPreview:
+      type: object
+      required: [body, content_type]
+      properties: { body: { type: string }, content_type: { type: string } }
     AlertRuleRequest:
       type: object
       required: [name, expression, idempotency_key]

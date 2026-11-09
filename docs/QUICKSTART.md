@@ -284,7 +284,10 @@ This writes every archive plus `manifest.json` and `SHA256SUMS` under
 
 ### Notification acceptance
 
-Webhook and Telegram credentials stay in the environment only:
+Day-to-day, manage alert destinations in **Settings → Notifications** (see
+[NOTIFICATION_DESTINATIONS.md](NOTIFICATION_DESTINATIONS.md)). This acceptance
+command exercises the same notifier from the shell. Webhook and Telegram
+credentials stay in the environment only:
 
 ```sh
 PAYESH_ALERT_WEBHOOK_URL=https://hooks.example.com/payesh \

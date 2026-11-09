@@ -118,6 +118,22 @@ export type TrafficPeriod = {
 export type StorageSettings = { max_database_bytes: number; sample_seconds: number; pressure_sample_seconds: number; adaptive_sampling: boolean; notifications_enabled: boolean; relay_cleanup_days?: number; join_command_expiry_hours?: number; revision: string; pressure_state: string };
 export type StorageStatus = { settings: StorageSettings; database_bytes: number; recovery_snapshot_bytes: number; effective_sample_seconds: number };
 export type StorageNotification = { id: string; kind: string; message: string; created_at: string; read: boolean };
+export type DestinationFilter = { kinds?: string[]; tags?: string[]; rules?: string[]; servers?: string[] };
+export type DestinationDelivery = { at: string; ok: boolean; status: string; error?: string };
+export type NotificationDestination = {
+  id: string; name: string; kind: 'webhook' | 'telegram'; url_preview: string; has_secret: boolean; chat_id?: string; header_names: string[];
+  format: string; template?: string; allow_insecure_http: boolean; allow_private_network: boolean;
+  timeout_seconds: number; max_attempts: number; retry_backoff_seconds: number; max_per_minute: number;
+  filter: DestinationFilter; enabled: boolean; managed: boolean; secrets_unreadable?: boolean; last_delivery?: DestinationDelivery;
+};
+/** Write-only fields (url, secret, headers) are only ever sent, never returned. */
+export type DestinationInput = Partial<{
+  name: string; kind: string; url: string; secret: string; chat_id: string; headers: Record<string, string | null>;
+  format: string; template: string; allow_insecure_http: boolean; allow_private_network: boolean;
+  timeout_seconds: number; max_attempts: number; retry_backoff_seconds: number; max_per_minute: number;
+  filter: DestinationFilter; enabled: boolean;
+}>;
+export type DestinationTestResult = { ok: boolean; status: string; error?: string; duration_ms: number };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
 export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
 
@@ -508,6 +524,13 @@ export class ApiClient {
   saveStorageSettings(settings: StorageSettings): Promise<StorageStatus> { return this.request<StorageStatus>('/settings/storage', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify(settings) }); }
   getNotifications(): Promise<{items: StorageNotification[]}> { return this.request<{items: StorageNotification[]}>('/notifications'); }
   markNotificationsRead(): Promise<void> { return this.request<void>('/notifications', { method: 'POST', headers: this.mutationHeaders() }); }
+
+  listDestinations(): Promise<{ items: NotificationDestination[]; limit: number }> { return this.request('/alerts/destinations'); }
+  createDestination(input: DestinationInput): Promise<NotificationDestination> { return this.request('/alerts/destinations', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(input) }); }
+  updateDestination(id: string, input: DestinationInput): Promise<NotificationDestination> { return this.request(`/alerts/destinations/${encodeURIComponent(id)}`, { method: 'PATCH', headers: this.mutationHeaders(), body: JSON.stringify(input) }); }
+  deleteDestination(id: string): Promise<void> { return this.request(`/alerts/destinations/${encodeURIComponent(id)}`, { method: 'DELETE', headers: this.mutationHeaders() }); }
+  testDestination(id: string): Promise<DestinationTestResult> { return this.request(`/alerts/destinations/${encodeURIComponent(id)}/test`, { method: 'POST', headers: this.mutationHeaders() }); }
+  previewDestination(input: { kind?: string; format: string; template?: string }): Promise<{ body: string; content_type: string }> { return this.request('/alerts/destinations/preview', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify(input) }); }
 
   queryTrafficUsage(serverId: string, params: { from: string; to: string } & QueryOptions): Promise<TrafficUsage> {
     return this.request<TrafficUsage>(`/servers/${encodeURIComponent(serverId)}/traffic/usage${queryString({ from: params.from, to: params.to })}`, { signal: params.signal });

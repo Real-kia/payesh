@@ -115,13 +115,8 @@ func main() {
 	// stay in memory. Configure delivery before either API mode is selected so
 	// bearer-token deployments receive the same alert notifications as browser
 	// deployments.
-	destinations := alertDestinationsFromEnvironment()
-	var deliveryQueue *alerts.DeliveryQueue
-	if len(destinations) > 0 {
-		deliveryQueue = alerts.NewDeliveryQueue(alerts.Notifier{}, 2)
-		alertEngine.ConfigureDelivery(deliveryQueue, func(context.Context, contracts.ServerID) []alerts.NotificationDestination {
-			return append([]alerts.NotificationDestination(nil), destinations...)
-		})
+	destinationManager, deliveryQueue := configureAlertDelivery(store, alertEngine, *dbPath, alertDestinationsFromEnvironment())
+	if deliveryQueue != nil {
 		defer deliveryQueue.Close()
 	}
 	// Derived traffic/alert work is durable but may be blocked behind a missing
@@ -420,7 +415,7 @@ func main() {
 			}
 			bandwidthService = handlerService{handler: proxy}
 		}
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx), NodeTransportSettings: nodePorts.Handler()})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, NotificationDestinations: destinationManager, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx), NodeTransportSettings: nodePorts.Handler()})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)
@@ -652,6 +647,32 @@ func installArtifactsReady(paths map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// configureAlertDelivery starts the notification queue and connects it to the
+// alert engine. Destinations come from the owner-managed encrypted store and
+// from environment variables (shown read-only). If the secret key cannot be
+// opened, delivery falls back to the environment destinations alone and the
+// destinations API is unavailable; the server still starts.
+func configureAlertDelivery(store *monitoring.Store, engine *alerts.Engine, dbPath string, environment []alerts.NotificationDestination) (*alerts.DestinationManager, *alerts.DeliveryQueue) {
+	engine.PublicURL = strings.TrimSpace(os.Getenv("PAYESH_PUBLIC_URL"))
+	vault, err := alerts.OpenVault(filepath.Join(filepath.Dir(dbPath), "notification.key"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "notification destinations are unavailable (secret key):", err)
+		if len(environment) == 0 {
+			return nil, nil
+		}
+		queue := alerts.NewDeliveryQueue(alerts.Notifier{}, 2)
+		engine.ConfigureDelivery(queue, func(context.Context, contracts.ServerID) []alerts.NotificationDestination {
+			return append([]alerts.NotificationDestination(nil), environment...)
+		})
+		return nil, queue
+	}
+	manager := alerts.NewDestinationManager(store, vault, environment)
+	queue := alerts.NewDeliveryQueue(alerts.Notifier{}, 2)
+	queue.Observer = manager.Observe
+	engine.ConfigureDelivery(queue, manager.Provider())
+	return manager, queue
 }
 
 func alertDestinationsFromEnvironment() []alerts.NotificationDestination {

@@ -77,9 +77,10 @@ accepts only API tokens (not the browser session).
 | `get_traffic_periods`, `get_traffic_forecast` | Traffic usage and end-of-period estimate |
 | `list_log_sources`, `query_logs` | Log sources and log search |
 | `list_active_alerts`, `get_alert_history`, `get_incident`, `list_alert_rules`, `list_maintenance_windows` | Alerting state and history |
+| `list_notification_destinations`, `test_notification_destination` | Where alerts are delivered, and a real test send (owner) |
 | `list_packages`, `list_server_packages` | Package catalog and installations |
 | `get_job`, `get_update_status` | Job progress and update state |
-| `api_request` | Any other REST call (the only tool that can make changes) |
+| `api_request` | Any other REST call (the only tool that can change configuration) |
 
 The OpenAPI document is exposed as the `payesh://openapi.yaml` resource. Every
 tool call runs as a normal REST request with the token, so an agent can never

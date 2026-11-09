@@ -63,6 +63,22 @@ var additiveTables = []additiveTable{
   PRIMARY KEY (server_id, tag),
   FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
 )`},
+	// Owner-configured alert notification destinations. Secrets, headers and
+	// the destination URL live only in the encrypted secret_blob; config_json
+	// holds the non-secret delivery options.
+	{name: "alert_destinations", ddl: `CREATE TABLE IF NOT EXISTS alert_destinations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  secret_blob BLOB NOT NULL DEFAULT x'',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_attempt_at TEXT NOT NULL DEFAULT '',
+  last_ok INTEGER NOT NULL DEFAULT 0,
+  last_status TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT ''
+)`},
 	// Relay credentials. Only the password hash is stored; the plaintext lives
 	// in the target node's configuration (node grants) or in memory for the
 	// length of one installation (install grants).

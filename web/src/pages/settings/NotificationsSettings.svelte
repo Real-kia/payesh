@@ -2,15 +2,20 @@
   import Icon from '../../Icon.svelte';
   import { formatDateTimeInTz } from '../../timezone';
   import type { StorageNotification } from '../../api';
+  import type { ConfirmOptions } from '../../lib/dialogs';
+  import AlertDestinations from './AlertDestinations.svelte';
 
-  let { items, busy, error, canEdit, timezone, onRefresh, onMarkRead }: {
+  let { items, busy, error, canEdit, isOwner, timezone, onRefresh, onMarkRead, onConfirm, onAuthExpired }: {
     items: StorageNotification[];
     busy: boolean;
     error: string;
     canEdit: boolean;
+    isOwner: boolean;
     timezone: string;
     onRefresh: () => void;
     onMarkRead: () => void;
+    onConfirm: (options: ConfirmOptions) => void;
+    onAuthExpired: () => void;
   } = $props();
 
   const unread = $derived(items.filter((item) => !item.read).length);
@@ -31,7 +36,7 @@
       {#if canEdit}<button class="button ghost small" type="button" disabled={!unread || busy} onclick={onMarkRead}><Icon name="check" size={13} />Mark all read</button>{/if}
     </div>
   </div>
-  <div class="notification-explainer"><strong>What are notifications?</strong><span>This inbox contains storage pressure messages such as warnings, cleanup notices, and recovery updates. Alert rule states and incidents are managed on the Alerts page.</span></div>
+  <div class="notification-explainer"><strong>What is this inbox?</strong><span>Storage pressure messages such as warnings, cleanup notices, and recovery updates. Alert rule states and incidents are managed on the Alerts page; use <em>Alert destinations</em> below to send alerts to a webhook, Slack, Discord, ntfy or Telegram.</span></div>
   <div class="delivery"><div><strong>In-app notifications</strong><small>Storage warnings and recovery updates appear in this inbox.</small></div><span class="enabled">Enabled</span></div>
   {#if error}<p class="form-error" role="alert">{error}</p>{/if}
   <div class="list">
@@ -51,6 +56,8 @@
     {/each}
   </div>
 </article>
+
+<AlertDestinations {isOwner} {timezone} {onConfirm} {onAuthExpired} />
 
 <style>
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }

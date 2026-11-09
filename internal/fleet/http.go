@@ -41,6 +41,7 @@ type API struct {
 	secureCookies         bool
 	trustedProxies        []*net.IPNet
 	alerts                http.Handler
+	destinations          http.Handler
 	traffic               http.Handler
 	modules               http.Handler
 	processMonitoring     http.Handler
@@ -85,6 +86,9 @@ type Options struct {
 	// When supplied, its routes are wrapped in the same browser session/CSRF
 	// boundary as the monitoring API.
 	AlertService *alerts.Service
+	// NotificationDestinations owns the owner-managed alert notification
+	// destinations. The routes are unavailable when this is nil.
+	NotificationDestinations *alerts.DestinationManager
 	// TrafficService optionally owns allowance configuration and the same
 	// bounded period reads. GET remains available through package-03 when this
 	// is nil; production browser mode supplies the package-05 service so POST
@@ -213,6 +217,9 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 		nodeSettingsHandler = sessions.Middleware(options.NodeTransportSettings)
 	}
 	result := &API{nodeTransportSettings: nodeSettingsHandler, sessions: sessions, store: store, monitoring: sessions.Middleware(readAPI.Handler()), alerts: alertHandler, traffic: trafficHandler, modules: moduleHandler, processMonitoring: processHandler, cpuControl: cpuControlHandler, bandwidth: bandwidthHandler, portTraffic: portTrafficHandler, jobs: sessions.Middleware(newJobHTTP(store)), updates: updateHandler, install: installHandler, installDownloads: installDownloads, joinScript: joinScriptHandler, joinScriptDownloads: joinScriptDownloads, joinLinks: joinLinksHandler, relays: relaysHandler, tags: sessions.Middleware(tagsHandler(store)), enrollment: enrollmentHandler, enrollmentToken: enrollmentTokenHandler, enrollmentAuthority: options.EnrollmentAuthority, httpsSettings: httpsSettingsHandler, secureCookies: options.SecureCookies, trustedProxies: trustedProxies}
+	if options.NotificationDestinations != nil {
+		result.destinations = result.destinationsHandler(options.NotificationDestinations)
+	}
 	result.mcp = &mcp.Server{API: http.HandlerFunc(result.serveHTTP), OpenAPI: api.OpenAPI, Version: version.Value}
 	return result, nil
 }
@@ -295,6 +302,14 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 		a.sessions.Middleware(http.HandlerFunc(a.deleteServer)).ServeHTTP(w, r)
+		return
+	}
+	if isDestinationsPath(r.URL.Path) {
+		if a.destinations == nil {
+			writeFleetError(w, http.StatusServiceUnavailable, "destinations_unavailable", "notification destinations are unavailable", true)
+			return
+		}
+		a.sessions.Middleware(a.destinations).ServeHTTP(w, r)
 		return
 	}
 	if a.alerts != nil && (isFleetResourcePath(r.URL.Path, "/api/v1/alerts") || isFleetResourcePath(r.URL.Path, "/api/v1/maintenance-windows") || strings.HasPrefix(r.URL.Path, "/api/v1/incidents/")) {
