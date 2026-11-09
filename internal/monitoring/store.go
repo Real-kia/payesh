@@ -1120,6 +1120,35 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name,address=CASE WHEN excluded.addr
 	return err
 }
 
+// UpdateServerInventory records the address, platform and architecture detected
+// during installation without rewriting any other column. A node may already
+// have connected and reported capabilities, freshness and a heartbeat by the
+// time the install job finishes, and a full read-modify-write would race with
+// (and re-validate) that state.
+func (s *Store) UpdateServerInventory(ctx context.Context, serverID contracts.ServerID, address, platform, architecture string) error {
+	if !validStoreServerID(serverID) {
+		return errors.New("server_id must be a bounded URL-safe identifier")
+	}
+	if len(address) > 255 || len(platform) > 32 || len(architecture) > 32 {
+		return errors.New("server identity field exceeds limit")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE servers SET
+		address=CASE WHEN ?<>'' THEN ? ELSE address END,
+		platform=CASE WHEN ?<>'' THEN ? ELSE platform END,
+		architecture=CASE WHEN ?<>'' THEN ? ELSE architecture END
+		WHERE id=?`,
+		address, address, platform, platform, architecture, architecture, string(serverID))
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // EnsureServer creates the local server record once and preserves all durable
 // state when an agent restarts. Service bootstrap uses this instead of
 // UpsertServer so labels, revisions, freshness, and capabilities are not
@@ -1497,7 +1526,7 @@ func validateServer(server contracts.Server) error {
 		return errors.New("server capabilities exceed limit")
 	}
 	for _, capability := range server.Capabilities {
-		if len(capability) == 0 || len(capability) > 64 || !isSafeIdentifier(capability) {
+		if len(capability) == 0 || len(capability) > 64 || !isSafeCapability(capability) {
 			return errors.New("invalid server capability")
 		}
 	}
@@ -1511,6 +1540,12 @@ func isSafeIdentifier(value string) bool {
 		}
 	}
 	return value != ""
+}
+
+// isSafeCapability accepts identifier characters plus ':' and '+', because
+// nodes report versioned capabilities such as "node-version:0.6.2".
+func isSafeCapability(value string) bool {
+	return isSafeIdentifier(strings.NewReplacer(":", "", "+", "").Replace(value)) && value[0] != ':' && value[0] != '+'
 }
 
 func isSafeMetricName(value string) bool {

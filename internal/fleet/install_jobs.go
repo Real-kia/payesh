@@ -527,12 +527,7 @@ func (s *InstallService) RunOnce(ctx context.Context, id string) (outcome contra
 		return s.fail(ctx, latest, "install_failed", message, true)
 	}
 	if server, found, lookupErr := s.Store.GetServer(ctx, job.TargetServerID); lookupErr == nil && found {
-		server.Address = opts.Endpoint.Host
-		server.Platform = "linux"
-		if result.Preflight.Architecture != "" {
-			server.Architecture = result.Preflight.Architecture
-		}
-		if updateErr := s.Store.UpsertServer(ctx, server); updateErr != nil {
+		if updateErr := s.Store.UpdateServerInventory(ctx, server.ID, opts.Endpoint.Host, "linux", result.Preflight.Architecture); updateErr != nil {
 			progressMu.Lock()
 			latest := currentJob
 			progressMu.Unlock()

@@ -1166,3 +1166,27 @@ func TestCounterRollupCrossBoundaryDurationSurvivesStorage(t *testing.T) {
 		t.Fatalf("cross-boundary rate denominator was clipped: %+v", stored[0])
 	}
 }
+
+func TestUpdateServerInventoryAfterNodeReportsVersionedCapability(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := testServer()
+	server.Capabilities = []string{"metrics", "node-version:0.6.2"}
+	if err := store.UpsertServer(ctx, server); err != nil {
+		t.Fatalf("versioned capability must validate: %v", err)
+	}
+	if err := store.UpdateServerInventory(ctx, server.ID, "203.0.113.7", "linux", "arm64"); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.GetServer(ctx, server.ID)
+	if err != nil || !found {
+		t.Fatalf("get: %v %v", found, err)
+	}
+	if got.Address != "203.0.113.7" || got.Architecture != "arm64" || got.Platform != "linux" || len(got.Capabilities) != 2 {
+		t.Fatalf("unexpected inventory: %+v", got)
+	}
+}
