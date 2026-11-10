@@ -35,6 +35,8 @@ export class ApiError extends Error {
 }
 
 export type Server = {
+  can_delete?: boolean;
+  deletion_blocked_reason?: string;
   id: string;
   name: string;
   address?: string;

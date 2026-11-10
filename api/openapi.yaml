@@ -298,7 +298,8 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
     delete:
       operationId: deleteServer
-      summary: Permanently delete a managed node and its stored data
+      summary: Permanently delete a node or disconnected former master and its stored data
+      description: The current installation is protected by server identity, even when disconnected. Former masters can be deleted only when the current identity is known.
       security:
         - SessionCookie: []
           CSRFToken: []
@@ -1335,6 +1336,8 @@ components:
         connection_state: { type: string, enum: [connected, disconnected, never-connected, revoked] }
         freshness_state: { type: string, enum: [fresh, stale, unknown] }
         freshness_reason: { type: string, maxLength: 256 }
+        can_delete: { type: boolean, description: Whether this record can be deleted from this installation }
+        deletion_blocked_reason: { type: string, description: Explanation when deletion is protected }
         configuration_revision: { $ref: '#/components/schemas/DecimalUint64' }
         country_code:
           type: string

@@ -28,6 +28,8 @@ export type ServerCapacity = {
 };
 
 export type PreviewServer = {
+  canDelete?: boolean;
+  deletionBlockedReason?: string;
   id: string;
   name: string;
   countryCode?: string;

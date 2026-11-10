@@ -95,7 +95,16 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	store, err := monitoring.OpenStore(ctx, *dbPath, monitoring.StoreOptions{MaxBytes: monitoring.DefaultDatabaseLimit, ManagedPaths: []string{"/var/log/payesh"}})
+	localServerID := contracts.ServerID(strings.TrimSpace(os.Getenv("PAYESH_SERVER_ID")))
+	if localServerID == "" {
+		identity, identityErr := collector.LoadOrCreateServerID(filepath.Join(filepath.Dir(*dbPath), "server-id"))
+		if identityErr != nil {
+			fmt.Fprintln(os.Stderr, "resolve local server identity:", identityErr)
+			os.Exit(1)
+		}
+		localServerID = identity
+	}
+	store, err := monitoring.OpenStore(ctx, *dbPath, monitoring.StoreOptions{LocalServerID: localServerID, MaxBytes: monitoring.DefaultDatabaseLimit, ManagedPaths: []string{"/var/log/payesh"}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open store:", err)
 		os.Exit(1)
@@ -354,17 +363,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configure module trust registry:", registryErr)
 			os.Exit(1)
 		}
-		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir(), LocalServerID: contracts.ServerID(strings.TrimSpace(os.Getenv("PAYESH_SERVER_ID"))), CoreVersion: version.Value, LifecycleMu: &sync.RWMutex{}}
+		moduleManager := &modules.Manager{Store: store, Trust: moduleRegistry, RootDir: moduleRootDir(), LocalServerID: localServerID, CoreVersion: version.Value, LifecycleMu: &sync.RWMutex{}}
 		if socket := strings.TrimSpace(os.Getenv("PAYESH_PRIVD_SOCKET")); socket != "" {
 			moduleManager.Executor = privdModuleExecutor{client: privd.Client{SocketPath: socket}}
 		}
-		if moduleManager.LocalServerID == "" {
-			if identity, err := collector.LoadOrCreateServerID(filepath.Join(filepath.Dir(*dbPath), "server-id")); err == nil {
-				moduleManager.LocalServerID = identity
-			} else {
-				fmt.Fprintln(os.Stderr, "resolve local package identity:", err)
-			}
-		}
+
 		go store.RunLocalAddressReporter(ctx, moduleManager.LocalServerID)
 		updateScheduler.Executor = &updater.FleetExecutor{
 			Store: store, Producer: nodeHub, LocalServerID: moduleManager.LocalServerID,

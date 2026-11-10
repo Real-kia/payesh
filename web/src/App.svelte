@@ -20,6 +20,7 @@
   import JoinCommandPanel from './components/JoinCommandPanel.svelte';
   import MethodSwitch from './components/MethodSwitch.svelte';
   import SshCredentialFields from './components/SshCredentialFields.svelte';
+  import { canDeleteServer } from './lib/serverDeletion';
   import { deleteServersConcurrently } from './lib/bulkDelete';
   import InstallRouteFields, { type InstallRoute, type NodeRoute } from './components/InstallRouteFields.svelte';
   import { relayOptions, rememberRelay } from './lib/relays';
@@ -359,7 +360,7 @@
   }
 
   function promptDeleteServer(server: PreviewServer = selectedServer) {
-    if (!server || server.role !== 'node' || deleteServerBusy) return;
+    if (!server || !canDeleteServer(server) || deleteServerBusy) return;
     openConfirmModal({
       title: `Delete ${server.name}?`,
       description: `Permanently delete ${server.name} and all associated metrics, logs, and monitoring history. This action cannot be undone.`,
@@ -393,7 +394,7 @@
   // still has a generated name ("server 12"), gives it the stale record's name.
   function promptMergeDuplicate(server: PreviewServer) {
     const live = servers.find((entry) => entry.id === server.duplicateOf);
-    if (!live || deleteServerBusy) return;
+    if (!live || !canDeleteServer(server) || deleteServerBusy) return;
     const rename = /^server \d+$/i.test(live.name) && server.name !== live.name;
     openConfirmModal({
       title: `Merge into ${live.name}?`,
@@ -1122,7 +1123,7 @@
   }
 
   function promptDeleteSelected() {
-    const targets = servers.filter((server) => selectedServerIds.includes(server.id) && server.role === 'node');
+    const targets = servers.filter((server) => selectedServerIds.includes(server.id) && canDeleteServer(server));
     if (!targets.length || bulkBusy) return;
     openConfirmModal({
       title: `Delete ${targets.length} server${targets.length === 1 ? '' : 's'}?`,
@@ -1400,6 +1401,7 @@
   function emptyApiServer(server: ApiServer): PreviewServer {
     const caps = (server.capabilities && server.capabilities.length > 0) ? server.capabilities : ['metrics', 'traffic'];
     return {
+      canDelete: server.can_delete, deletionBlockedReason: server.deletion_blocked_reason,
       id: server.id, name: server.name, countryCode: server.country_code, address: server.address, duplicateOf: server.duplicate_of, duplicateOfName: server.duplicate_of_name, tags: server.tags ?? [], addresses: server.addresses ?? [], role: server.role, architecture: server.architecture,
       platform: server.platform, capabilities: [...caps], version: server.version ?? '—',
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
@@ -1542,25 +1544,41 @@
     liveUpdatedAt = Date.now();
   }
 
-  // Two requests per refresh however many servers: the server list (state)
-  // and the overview (numbers). The hub caches both; nodes are never asked.
-  async function refreshMonitoring(): Promise<void> {
-    if (liveRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || !['overview', 'monitoring', 'servers'].includes(activePage) || document.hidden) return;
+  // State and values settle independently so a slow list cannot hold up metrics.
+  async function refreshMonitoring(refreshServers = true, parentSignal?: AbortSignal): Promise<void> {
+    if (parentSignal?.aborted || liveRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || (refreshServers && !['overview', 'monitoring', 'servers'].includes(activePage)) || document.hidden) return;
     liveRefreshBusy = true;
     const controller = new AbortController();
+    const onParentAbort = () => controller.abort();
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
     const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const [page, overview] = await Promise.all([apiClient.listServers({ signal: controller.signal }), apiClient.getOverview({ signal: controller.signal })]);
-      if (controller.signal.aborted) return;
-      const existing = new Map(servers.map((server) => [server.id, server]));
-      servers = page.items.map((item) => {
-        const previous = existing.get(item.id);
-        const fresh = emptyApiServer(item);
-        return previous ? { ...fresh, metrics: previous.metrics, latestMetricAt: previous.latestMetricAt, traffic: previous.traffic, metricHistory: previous.metricHistory } : fresh;
-      });
-      applyOverview(overview);
-    } catch (error) { if (error instanceof ApiError && error.authExpired) authExpired = true; }
-    finally { window.clearTimeout(timeout); liveRefreshBusy = false; }
+      const reads: Promise<void>[] = [apiClient.getOverview({ signal: controller.signal }).then((overview) => {
+        if (controller.signal.aborted) return;
+        applyOverview(overview);
+        partialWarning = '';
+      }).catch((error) => {
+        if (parentSignal?.aborted) return;
+        partialWarning = controller.signal.aborted
+          ? 'Loading live metrics timed out. Retry to load the latest values.'
+          : `Live metrics could not be loaded. ${error instanceof Error ? error.message : 'Please retry.'}`;
+        if (error instanceof ApiError && error.authExpired) authExpired = true;
+      })];
+      if (refreshServers) reads.push(apiClient.listServers({ signal: controller.signal }).then((page) => {
+        if (controller.signal.aborted) return;
+        const existing = new Map(servers.map((server) => [server.id, server]));
+        servers = page.items.map((item) => {
+          const previous = existing.get(item.id);
+          const fresh = emptyApiServer(item);
+          return previous ? { ...fresh, metrics: previous.metrics, capacity: previous.capacity, latestMetricAt: previous.latestMetricAt, traffic: previous.traffic, metricHistory: previous.metricHistory } : fresh;
+        });
+      }).catch((error) => {
+        if (parentSignal?.aborted) return;
+        if (error instanceof ApiError && error.authExpired) authExpired = true;
+        if (!partialWarning) partialWarning = 'Server status could not be refreshed. Showing the last loaded values.';
+      }));
+      await Promise.all(reads);
+    } finally { window.clearTimeout(timeout); parentSignal?.removeEventListener('abort', onParentAbort); liveRefreshBusy = false; }
   }
 
   let selectedRefreshController: AbortController | null = null;
@@ -1675,13 +1693,7 @@
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
       void loadNotifications();
-      try {
-        const overview = await apiClient.getOverview({ signal: controller.signal });
-        if (!controller.signal.aborted) applyOverview(overview);
-      } catch (error) {
-        if (!controller.signal.aborted) partialWarning = 'Live values could not be loaded yet; they refresh automatically.';
-        if (error instanceof ApiError && error.authExpired) throw error;
-      }
+      await refreshMonitoring(false, controller.signal);
     } catch (error) {
       if (controller.signal.aborted) return;
       apiError = error instanceof Error ? error.message : 'Unable to connect to Payesh API.';
@@ -1852,7 +1864,7 @@
       {#if showUpdateBanner && updateStatus}
         <div class="partial-warning update-banner" role="status"><Icon name="download" size={15} /><span>Payesh v{updateStatus.latest} is available{updateStatus.current && updateStatus.current !== 'dev' ? ` (installed: v${updateStatus.current})` : ''}. <button class="link-button" type="button" on:click={openUpdateSettings}>View update</button></span><button class="link-button" type="button" aria-label="Dismiss update notice" on:click={dismissUpdateBanner}>Dismiss</button></div>
       {/if}
-      {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span></div>{/if}
+      {#if partialWarning}<div class="partial-warning" role="status"><Icon name="alert-triangle" size={15} /><span>{partialWarning}</span><button class="button small" type="button" disabled={liveRefreshBusy} on:click={() => void refreshMonitoring(false)}>Retry</button></div>{/if}
       {#if insecureConnection && !PREVIEW_MODE && sessionState === 'authenticated'}
         <div class="partial-warning" role="status"><Icon name="lock" size={15} /><span>This connection is not encrypted (no SSL). <button class="link-button" type="button" on:click={() => openSettings('tls')}>Add a domain</button> to turn on HTTPS automatically.</span></div>
       {/if}
@@ -1902,8 +1914,8 @@
                 <strong>{selectedServerIds.length} selected</strong>
                 <button class="button ghost small" type="button" disabled={!selectedServerIds.length} on:click={() => (selectedServerIds = [])}>Clear</button>
                 <span class="bulk-spacer"></span>
-                <button class="button small" type="button" disabled={bulkBusy || !selectedServerIds.length} on:click={() => void updateSelectedNodes()}><Icon name="download" size={13} /><span>Update</span></button>
-                <button class="button danger small" type="button" disabled={bulkBusy || !selectedServerIds.length} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
+                <button class="button small" type="button" disabled={bulkBusy || !servers.some((server) => selectedServerIds.includes(server.id) && server.role === 'node' && server.connectionState === 'connected')} on:click={() => void updateSelectedNodes()}><Icon name="download" size={13} /><span>Update</span></button>
+                <button class="button danger small" type="button" disabled={bulkBusy || !servers.some((server) => selectedServerIds.includes(server.id) && canDeleteServer(server))} on:click={promptDeleteSelected}><Icon name="trash" size={13} /><span>Delete</span></button>
               </div>
             {/if}
             <ServerTable servers={filteredServers} timezone={currentTimezone} onSelect={selectServer} selectedIds={selectedServerIds} latestNode={latestNodeVersion} onSelectionChange={myAccount?.permission === 'read' ? undefined : (ids) => (selectedServerIds = ids)} />
@@ -2121,7 +2133,7 @@
           <div class="duplicate-banner" role="status">
             <Icon name="copy" size={16} />
             <p>Same machine as <a class="link-button" href={pageLocation('server', selectedServer.duplicateOf)} on:click={(event) => followLink(event, () => navigate('server', selectedServer.duplicateOf))}>{selectedServer.duplicateOfName || 'another server'}</a>.</p>
-            {#if myAccount?.permission !== 'read'}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge</button>{/if}
+            {#if myAccount?.permission !== 'read' && canDeleteServer(selectedServer)}<button class="button small" type="button" disabled={deleteServerBusy} on:click={() => promptMergeDuplicate(selectedServer)}>Merge</button>{/if}
           </div>
         {/if}
 
@@ -2150,13 +2162,14 @@
             </div>
           </div>
           <div class="server-heading-actions">
-            {#if !PREVIEW_MODE && selectedServer.role === 'node' && myAccount?.permission !== 'read'}
-              <button class="button danger small" type="button" disabled={deleteServerBusy} on:click={() => promptDeleteServer()}>
+            {#if !PREVIEW_MODE && myAccount?.permission !== 'read'}
+              <button class="button danger small" type="button" disabled={deleteServerBusy || !canDeleteServer(selectedServer)} title={selectedServer.deletionBlockedReason} on:click={() => promptDeleteServer()}>
                 <Icon name="trash" size={14} />
                 <span>{deleteServerBusy ? 'Deleting…' : 'Delete server'}</span>
               </button>
             {/if}
           </div>
+          {#if !PREVIEW_MODE && selectedServer.deletionBlockedReason}<p class="lede">{selectedServer.deletionBlockedReason}</p>{/if}
           {#if nodeUpdateError}<p class="form-error" role="alert">{nodeUpdateError}</p>{/if}
         </div>
 

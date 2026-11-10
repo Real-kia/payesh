@@ -41,15 +41,15 @@ func (s *Store) DeleteServerAsync(ctx context.Context, serverID contracts.Server
 	if !validStoreServerID(serverID) {
 		return errors.New("server_id must be a bounded URL-safe identifier")
 	}
-	var role, revision string
-	err := s.db.QueryRowContext(ctx, `SELECT role,configuration_revision FROM servers WHERE id=?`, string(serverID)).Scan(&role, &revision)
+	var role, revision, connection string
+	err := s.db.QueryRowContext(ctx, `SELECT role,configuration_revision,connection_state FROM servers WHERE id=?`, string(serverID)).Scan(&role, &revision, &connection)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sql.ErrNoRows
 	}
 	if err != nil {
 		return err
 	}
-	if role != "node" {
+	if s.deletionBlockReason(contracts.Server{ID: serverID, Role: role, ConnectionState: connection}) != "" {
 		return errors.New("server_role_not_deletable")
 	}
 	if revision != strconv.FormatUint(expectedRevision, 10) {
@@ -70,7 +70,7 @@ func (s *Store) purgeServer(serverID contracts.ServerID) {
 	failure := func() error {
 		for _, table := range purgeTables {
 			for {
-				result, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` WHERE server_id=? LIMIT ?)`, id, purgeChunkRows)
+				result, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` WHERE server_id=? LIMIT ?) AND EXISTS (SELECT 1 FROM servers WHERE id=? AND `+deletionPredicate+`)`, id, purgeChunkRows, id, string(s.localServerID), string(s.localServerID))
 				if err != nil {
 					return err
 				}
@@ -85,7 +85,7 @@ func (s *Store) purgeServer(serverID contracts.ServerID) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
-		_, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=? AND role='node'`, id)
+		_, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=? AND `+deletionPredicate, id, string(s.localServerID), string(s.localServerID))
 		return err
 	}()
 	if failure != nil {

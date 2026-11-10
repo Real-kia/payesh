@@ -422,27 +422,37 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("server-delete: server=%s duration_ms=%d lookup_ms=%d revocation_ms=%d deletion_ms=%d error=%q", id, time.Since(started).Milliseconds(), lookupTime.Milliseconds(), revokeTime.Milliseconds(), deleteTime.Milliseconds(), message)
 	}()
-	if a.enrollmentAuthority != nil {
-		stepStarted := time.Now()
-		server, found, lookupErr := a.store.GetServer(r.Context(), contracts.ServerID(id))
-		lookupTime = time.Since(stepStarted)
-		if lookupErr != nil {
-			failure = lookupErr
-			writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not inspect server", true)
+	stepStarted := time.Now()
+	server, found, lookupErr := a.store.GetServer(r.Context(), contracts.ServerID(id))
+	lookupTime = time.Since(stepStarted)
+	if lookupErr != nil {
+		failure = lookupErr
+		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not inspect server", true)
+		return
+	}
+	if !found {
+		writeFleetError(w, http.StatusNotFound, "not_found", "server not found", false)
+		return
+	}
+	if !server.CanDelete {
+		writeFleetError(w, http.StatusConflict, "server_role_not_deletable", server.DeletionBlockedReason, false)
+		return
+	}
+	if server.ConfigurationRevision != request.ExpectedRevision {
+		writeFleetError(w, http.StatusConflict, "revision_conflict", "server changed; reload before deleting", false)
+		return
+	}
+	if a.enrollmentAuthority != nil && server.Role == "node" {
+		stepStarted = time.Now()
+		revokeErr := a.enrollmentAuthority.RevokeServer(contracts.ServerID(id))
+		revokeTime = time.Since(stepStarted)
+		if revokeErr != nil {
+			failure = revokeErr
+			writeFleetError(w, http.StatusServiceUnavailable, "revocation_failed", "could not revoke node identity", true)
 			return
 		}
-		if found && server.Role == "node" && server.ConfigurationRevision == request.ExpectedRevision {
-			stepStarted = time.Now()
-			revokeErr := a.enrollmentAuthority.RevokeServer(contracts.ServerID(id))
-			revokeTime = time.Since(stepStarted)
-			if revokeErr != nil {
-				failure = revokeErr
-				writeFleetError(w, http.StatusServiceUnavailable, "revocation_failed", "could not revoke node identity", true)
-				return
-			}
-		}
 	}
-	stepStarted := time.Now()
+	stepStarted = time.Now()
 	err := a.store.DeleteServerAsync(r.Context(), contracts.ServerID(id), request.ExpectedRevision)
 	deleteTime = time.Since(stepStarted)
 	failure = err
@@ -454,7 +464,7 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
 	case err.Error() == "configuration_revision_conflict":
 		writeFleetError(w, http.StatusConflict, "revision_conflict", "server changed; reload before deleting", false)
 	case err.Error() == "server_role_not_deletable":
-		writeFleetError(w, http.StatusConflict, "server_role_not_deletable", "the local hub or standalone server cannot be deleted here", false)
+		writeFleetError(w, http.StatusConflict, "server_role_not_deletable", "the current master is protected; only nodes and disconnected former masters can be deleted", false)
 	default:
 		writeFleetError(w, http.StatusInternalServerError, "storage_error", "could not delete server", true)
 	}
@@ -500,6 +510,7 @@ func (a *API) createPendingServer(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	server.CanDelete = true // A newly generated node is never the local installation.
 	_ = json.NewEncoder(w).Encode(server)
 }
 

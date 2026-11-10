@@ -74,12 +74,15 @@ var ErrRangeMetadataFull = errors.New("collector range metadata authority is ful
 var memoryStoreID uint64
 
 type StoreOptions struct {
-	MaxBytes     int64
-	ManagedPaths []string
+	// LocalServerID protects this installation from deletion regardless of role.
+	LocalServerID contracts.ServerID
+	MaxBytes      int64
+	ManagedPaths  []string
 }
 
 type Store struct {
-	db *sql.DB
+	localServerID contracts.ServerID
+	db            *sql.DB
 	// reader is a small pool of query-only connections for dashboard and API
 	// reads. WAL lets them run while db (the single writer) is ingesting, so
 	// open browser tabs never queue behind node writes. In-memory stores use db.
@@ -706,7 +709,7 @@ func OpenStore(ctx context.Context, path string, options StoreOptions) (*Store, 
 			managedPaths = append(managedPaths, backupDirectory)
 		}
 	}
-	store := &Store{db: db, path: storePath, maxBytes: options.MaxBytes, managedPaths: managedPaths}
+	store := &Store{localServerID: options.LocalServerID, db: db, path: storePath, maxBytes: options.MaxBytes, managedPaths: managedPaths}
 	if err := store.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -1334,16 +1337,51 @@ func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (con
 	if s.isDeleting(string(serverID)) {
 		return contracts.Server{}, false, nil
 	}
-	return server, true, nil
+	return s.withDeletionPolicy(server), true, nil
 }
 
-// DeleteServer permanently removes a managed node and its cascade-owned data.
-// The running hub/standalone identity requires its dedicated uninstall flow.
-func (s *Store) DeleteServer(ctx context.Context, serverID contracts.ServerID, expectedRevision uint64) error {
-	if !validStoreServerID(serverID) {
-		return errors.New("server_id must be a bounded URL-safe identifier")
+// deletionPredicate also guards the final delete against role/state changes.
+const deletionPredicate = `id<>? AND (role='node' OR (?<>'' AND role IN ('hub','standalone') AND connection_state<>'connected'))`
+
+func (s *Store) deletionBlockReason(server contracts.Server) string {
+	if server.ID == s.localServerID {
+		return "This is the current master. Remove this installation through its uninstall flow."
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=? AND role='node' AND configuration_revision=?`, string(serverID), strconv.FormatUint(expectedRevision, 10))
+	if server.Role == "node" {
+		return ""
+	}
+	if s.localServerID == "" {
+		return "The current master identity could not be verified. Master deletion is unavailable."
+	}
+	if server.Role != "hub" && server.Role != "standalone" {
+		return "This server role cannot be deleted here."
+	}
+	if server.ConnectionState == "connected" {
+		return "Disconnect this former master before deleting its record."
+	}
+	return ""
+}
+
+func (s *Store) withDeletionPolicy(server contracts.Server) contracts.Server {
+	server.DeletionBlockedReason = s.deletionBlockReason(server)
+	server.CanDelete = server.DeletionBlockedReason == ""
+	return server
+}
+
+// DeleteServer permanently removes a managed server and its cascade-owned data.
+// The current installation remains protected even when its heartbeat is stale.
+func (s *Store) DeleteServer(ctx context.Context, serverID contracts.ServerID, expectedRevision uint64) error {
+	server, found, err := s.GetServer(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	if !server.CanDelete {
+		return errors.New("server_role_not_deletable")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=? AND configuration_revision=? AND `+deletionPredicate, string(serverID), strconv.FormatUint(expectedRevision, 10), string(s.localServerID), string(s.localServerID))
 	if err != nil {
 		return err
 	}
@@ -1353,16 +1391,6 @@ func (s *Store) DeleteServer(ctx context.Context, serverID contracts.ServerID, e
 	}
 	if changed == 1 {
 		return nil
-	}
-	server, found, err := s.GetServer(ctx, serverID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return sql.ErrNoRows
-	}
-	if server.Role != "node" {
-		return errors.New("server_role_not_deletable")
 	}
 	return errors.New("configuration_revision_conflict")
 }
@@ -1429,7 +1457,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 			page.NextCursor = encodeServerCursor(serverCursor{Name: last.Name, ID: string(last.ID)})
 			break
 		}
-		page.Items = append(page.Items, server)
+		page.Items = append(page.Items, s.withDeletionPolicy(server))
 	}
 	return page, rows.Err()
 }

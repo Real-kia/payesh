@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { canDeleteServer } from '../lib/serverDeletion';
   import { followLink } from '../lib/navigation';
   import { serverLabel } from '../lib/flags';
   import Icon from '../Icon.svelte';
@@ -18,9 +19,9 @@
     onSelectionChange?: (ids: string[]) => void;
   } = $props();
 
-  // Only nodes can be updated or deleted, so the hub row has no checkbox.
+  // Nodes support updates; deletable former masters support bulk removal.
   const selectable = $derived(!!onSelectionChange);
-  const selectableIds = $derived(servers.filter((server) => server.role === 'node').map((server) => server.id));
+  const selectableIds = $derived(servers.filter((server) => server.role === 'node' || canDeleteServer(server)).map((server) => server.id));
   const allSelected = $derived(selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id)));
   const someSelected = $derived(selectedIds.some((id) => selectableIds.includes(id)));
 
@@ -95,7 +96,7 @@
   <div class="server-list">
     {#each paged as server, index (server.id)}
       <div class="row-wrap" class:checked={selectedIds.includes(server.id)}>
-      {#if selectable && server.role === 'node'}
+      {#if selectable && (server.role === 'node' || canDeleteServer(server))}
         <input class="row-check" type="checkbox" aria-label={`Select ${serverLabel(server)}`} checked={selectedIds.includes(server.id)} onchange={() => toggle(server.id)} />
       {/if}
       <a href={`/servers/${encodeURIComponent(server.id)}`} class="server-row" onclick={(event) => followLink(event, () => onSelect(server))} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>

@@ -31,6 +31,8 @@ type ServerID string
 type CollectorEpoch string
 
 type Server struct {
+	CanDelete             bool       `json:"can_delete"`
+	DeletionBlockedReason string     `json:"deletion_blocked_reason,omitempty"`
 	ID                    ServerID   `json:"id"`
 	Name                  string     `json:"name"`
 	Address               string     `json:"address,omitempty"`

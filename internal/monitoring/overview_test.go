@@ -141,3 +141,50 @@ func TestNodeAddressesAreNormalizedAndMerged(t *testing.T) {
 		t.Fatal("no addresses should stay empty")
 	}
 }
+
+func TestOverviewOrdersRecentSamplesAndExcludesHistory(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertServer(ctx, testServer()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	// Insertion order and decimal-string sequence order both differ from time
+	// order. Old and future samples must not become the current card value.
+	for _, row := range []struct {
+		sequence string
+		offset   time.Duration
+		cpu      int
+	}{
+		{"10", -15 * time.Second, 30},
+		{"0", -time.Hour, 99},
+		{"11", time.Hour, 100},
+		{"8", -30 * time.Second, 10},
+		{"9", -15 * time.Second, 20},
+	} {
+		at := FormatPersistedTime(now.Add(row.offset))
+		_, err := store.db.ExecContext(ctx, `INSERT INTO metric_samples(server_id,collector_epoch,sequence,observed_at,received_at,values_json,counters_json) VALUES (?,'epoch-local-0001',?,?,?,json_object('cpu.utilization',?),'{}')`, string(testServer().ID), row.sequence, at, at, row.cpu)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ids := range [][]string{nil, {string(testServer().ID)}} {
+		overview, err := store.QueryOverview(ctx, now, ids)
+		if err != nil || len(overview.Items) != 1 {
+			t.Fatalf("overview=%+v err=%v", overview, err)
+		}
+		item := overview.Items[0]
+		if item.CPU == nil || *item.CPU != 30 || len(item.Series.T) != 3 {
+			t.Fatalf("wrong current value or time window: %+v", item)
+		}
+		for i, want := range []float64{10, 20, 30} {
+			if item.Series.CPU[i] == nil || *item.Series.CPU[i] != want {
+				t.Fatalf("series[%d]=%v want=%v", i, item.Series.CPU[i], want)
+			}
+		}
+	}
+}

@@ -3,11 +3,13 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/modules"
@@ -366,5 +368,68 @@ func TestModuleInstallDoesNotCollideWithServerInstallRoute(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 from module service, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteFormerMasterAndProtectCurrentMaster(t *testing.T) {
+	ctx := context.Background()
+	currentID := contracts.ServerID("server-current-master-0001")
+	formerID := contracts.ServerID("server-former-master-00001")
+	dbPath := filepath.Join(t.TempDir(), "fleet.db")
+	store, err := monitoring.OpenStore(ctx, dbPath, monitoring.StoreOptions{LocalServerID: currentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := NewAPI(store, "0123456789abcdef-bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []contracts.ServerID{currentID, formerID} {
+		if err := store.UpsertServer(ctx, contracts.Server{ID: id, Name: "master", Role: "hub", Architecture: "amd64", Platform: "linux", ConnectionState: "disconnected", FreshnessState: "stale", ConfigurationRevision: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		id       contracts.ServerID
+		revision string
+		status   int
+	}{
+		{currentID, "3", http.StatusConflict},
+		{formerID, "4", http.StatusConflict},
+		{formerID, "3", http.StatusNoContent},
+	} {
+		request := httptest.NewRequest(http.MethodDelete, "/api/v1/servers/"+string(tc.id), bytes.NewBufferString(`{"expected_revision":"`+tc.revision+`"}`))
+		response := httptest.NewRecorder()
+		api.deleteServer(response, request)
+		if response.Code != tc.status {
+			t.Fatalf("delete %s revision %s: status=%d body=%s", tc.id, tc.revision, response.Code, response.Body.String())
+		}
+		if tc.id == currentID && !bytes.Contains(response.Body.Bytes(), []byte("current master")) {
+			t.Fatalf("missing protection explanation: %s", response.Body.String())
+		}
+	}
+	// Wait until the background purge has finished before closing the store.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE id=?`, string(formerID)).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("former master was not purged")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, found, err := store.GetServer(ctx, currentID); err != nil || !found {
+		t.Fatalf("current master removed: found=%v err=%v", found, err)
 	}
 }

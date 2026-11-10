@@ -86,8 +86,14 @@ type overviewRow struct {
 	diskUsed     sql.NullString
 }
 
-// QueryOverview builds the overview for ids (all servers when empty).
-func (s *Store) QueryOverview(ctx context.Context, now time.Time, ids []string) (Overview, error) {
+// overviewQuery deliberately selects a bounded time range before decoding JSON.
+// Ordering by server_id in SQL makes SQLite prefer a full-history scan of the
+// server-first index. Sort only the recent rows in Go instead.
+func overviewQuery(now time.Time, ids []string) (string, []any) {
+	index := "metric_samples_retention"
+	if len(ids) > 0 {
+		index = "metric_samples_time"
+	}
 	query := `SELECT server_id,collector_epoch,sequence,observed_at,
  COALESCE(json_extract(values_json,'$."cpu.utilization"'),json_extract(values_json,'$.cpu')),
  COALESCE(json_extract(values_json,'$."memory.used_percent"'),json_extract(values_json,'$.memory')),
@@ -98,15 +104,20 @@ func (s *Store) QueryOverview(ctx context.Context, now time.Time, ids []string) 
  json_extract(values_json,'$."cpu.cores"'),
  json_extract(counters_json,'$."memory.total_bytes"'),json_extract(counters_json,'$."memory.used_bytes"'),
  json_extract(counters_json,'$."disk.root.total_bytes"'),json_extract(counters_json,'$."disk.root.used_bytes"')
-FROM metric_samples WHERE observed_at>=?`
-	args := []any{FormatPersistedTime(now.Add(-overviewWindow))}
+FROM metric_samples INDEXED BY ` + index + ` WHERE observed_at>=? AND observed_at<=?`
+	args := []any{FormatPersistedTime(now.Add(-overviewWindow)), FormatPersistedTime(now)}
 	if len(ids) > 0 {
 		query += ` AND server_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `)`
 		for _, id := range ids {
 			args = append(args, id)
 		}
 	}
-	query += ` ORDER BY server_id, observed_at, length(sequence), sequence`
+	return query, args
+}
+
+// QueryOverview builds the overview for ids (all servers when empty).
+func (s *Store) QueryOverview(ctx context.Context, now time.Time, ids []string) (Overview, error) {
+	query, args := overviewQuery(now, ids)
 	rows, err := s.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return Overview{}, err
@@ -141,7 +152,14 @@ FROM metric_samples WHERE observed_at>=?`
 	sort.Strings(order)
 	overview := Overview{GeneratedAt: now.UTC(), Items: make([]OverviewItem, 0, len(order))}
 	for _, id := range order {
-		item := buildOverviewItem(id, byServer[id])
+		recent := byServer[id]
+		sort.SliceStable(recent, func(i, j int) bool {
+			if recent[i].observed.Equal(recent[j].observed) {
+				return recent[i].sequence < recent[j].sequence
+			}
+			return recent[i].observed.Before(recent[j].observed)
+		})
+		item := buildOverviewItem(id, recent)
 		item.Billing = billing[id]
 		overview.Items = append(overview.Items, item)
 	}
