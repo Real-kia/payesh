@@ -45,7 +45,11 @@ type installationJournal struct {
 }
 
 func installationPaths() []string {
-	paths := []string{"/etc/payesh", InstallationScopePath, "/usr/share/payesh/web-assets", "/var/lib/payesh/install-state.json", "/var/lib/payesh/payesh.db"}
+	// The database is deliberately not snapshotted. Copying a multi-gigabyte
+	// database (plus a VACUUM) on a small host can exhaust disk and I/O. Schema
+	// changes are additive and a rollback keeps newer data, so a failed update
+	// restores only binaries, configuration and units.
+	paths := []string{"/etc/payesh", InstallationScopePath, "/usr/share/payesh/web-assets", "/var/lib/payesh/install-state.json"}
 	for _, name := range []string{"payesh", "payesh-agent", "payesh-server", "payesh-install", "payesh-privd", "payesh-updater-watchdog"} {
 		paths = append(paths, "/usr/bin/"+name)
 	}

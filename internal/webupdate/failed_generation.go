@@ -12,10 +12,11 @@ import (
 	"path/filepath"
 )
 
-// Raw database/WAL files are retained together with node replay identities.
-// They are recovery evidence, never opened or automatically merged by rollback.
+// Node replay identities and the agent spool are retained as recovery evidence,
+// never opened or automatically merged by rollback. The database itself is
+// not captured or replaced by an update, so rollback leaves it in place.
 func failedGenerationNames() []string {
-	return []string{"payesh.db", "payesh.db-wal", "payesh.db-shm", "agent.spool", "node-identity.json", "node-identity.json.transport.json", "server-id", "hub-ca.pem"}
+	return []string{"agent.spool", "node-identity.json", "node-identity.json.transport.json", "server-id", "hub-ca.pem"}
 }
 
 type failedGenerationFile struct {

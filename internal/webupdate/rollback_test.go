@@ -93,14 +93,16 @@ func TestInstalledLayoutRollbackRestoresVersionConfigStateServicesAndSQLite(t *t
 	if _, err := os.Stat(txn.path("/usr/bin/payesh-server")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("newly added candidate artifact was not removed")
 	}
-	db, err := sql.Open("sqlite", "file:"+txn.path("/var/lib/payesh/payesh.db")+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
+	// The database is never snapshotted, so rollback must leave it exactly as
+	// the running generation wrote it.
+	for suffix, want := range map[string]string{"": "damaged-candidate", "-wal": "stale-wal"} {
+		got, err := os.ReadFile(txn.path("/var/lib/payesh/payesh.db" + suffix))
+		if err != nil || string(got) != want {
+			t.Fatalf("rollback touched payesh.db%s: got=%q err=%v", suffix, got, err)
+		}
 	}
-	defer db.Close()
-	var value string
-	if err := db.QueryRow("SELECT value FROM snapshot").Scan(&value); err != nil || value != "old-data" {
-		t.Fatalf("restored data=%q err=%v", value, err)
+	if _, err := os.Lstat(filepath.Join(txn.dir(), "files", "var/lib/payesh/payesh.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database was copied into the snapshot: %v", err)
 	}
 	if !reflect.DeepEqual(*calls, []string{"stop", "stop", "reload", "start"}) {
 		t.Fatalf("service sequence=%v", *calls)
@@ -120,7 +122,7 @@ func TestRollbackRetainsFailedGenerationBeforeRestoring(t *testing.T) {
 	if err := txn.MarkActivating(); err != nil {
 		t.Fatal(err)
 	}
-	for name, data := range map[string]string{"payesh.db": "candidate-data", "payesh.db-wal": "candidate-wal", "payesh.db-shm": "candidate-shm", "agent.spool": "candidate-spool", "node-identity.json": "candidate-identity"} {
+	for name, data := range map[string]string{"agent.spool": "candidate-spool", "node-identity.json": "candidate-identity"} {
 		if err := os.WriteFile(txn.path("/var/lib/payesh/"+name), []byte(data), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -128,17 +130,20 @@ func TestRollbackRetainsFailedGenerationBeforeRestoring(t *testing.T) {
 	if err := txn.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"payesh.db": "candidate-data", "payesh.db-wal": "candidate-wal", "payesh.db-shm": "candidate-shm", "agent.spool": "candidate-spool", "node-identity.json": "candidate-identity"} {
+	for name, want := range map[string]string{"agent.spool": "candidate-spool", "node-identity.json": "candidate-identity"} {
 		got, err := os.ReadFile(filepath.Join(txn.dir(), "failed-generation", name))
 		if err != nil || string(got) != want {
 			t.Fatalf("lost failed-generation %s: got=%q err=%v", name, got, err)
 		}
 	}
+	if _, err := os.Lstat(filepath.Join(txn.dir(), "failed-generation", "payesh.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database was copied into the failed-generation archive: %v", err)
+	}
 	if err := txn.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "payesh.db"))
-	if err != nil || string(got) != "candidate-data" {
+	got, err := os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "node-identity.json"))
+	if err != nil || string(got) != "candidate-identity" {
 		t.Fatalf("retry overwrote retained candidate: %q %v", got, err)
 	}
 }
@@ -152,16 +157,16 @@ func TestRollbackRefusesRestoreWhenFailedGenerationCannotBeCaptured(t *testing.T
 	if err := txn.MarkActivating(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(txn.path("/var/lib/payesh/payesh.db"), []byte("candidate-data"), 0600); err != nil {
+	if err := os.WriteFile(txn.path("/var/lib/payesh/node-identity.json"), []byte("candidate-data"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(txn.path("/var/lib/payesh/payesh.db"), txn.path("/var/lib/payesh/agent.spool")); err != nil {
+	if err := os.Symlink(txn.path("/var/lib/payesh/node-identity.json"), txn.path("/var/lib/payesh/agent.spool")); err != nil {
 		t.Fatal(err)
 	}
 	if err := txn.Rollback(ctx); err == nil {
 		t.Fatal("restore proceeded without preserving failed generation")
 	}
-	got, err := os.ReadFile(txn.path("/var/lib/payesh/payesh.db"))
+	got, err := os.ReadFile(txn.path("/var/lib/payesh/node-identity.json"))
 	if err != nil || string(got) != "candidate-data" {
 		t.Fatalf("candidate overwritten on capture failure: %q %v", got, err)
 	}
@@ -174,7 +179,7 @@ func TestRollbackRefusesRestoreWhenFailedGenerationCannotBeCaptured(t *testing.T
 	if recovered, err := txn.Recover(ctx); err != nil || !recovered {
 		t.Fatalf("capture failure could not resume: %v %v", recovered, err)
 	}
-	got, err = os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "payesh.db"))
+	got, err = os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "node-identity.json"))
 	if err != nil || string(got) != "candidate-data" {
 		t.Fatalf("retry lost original failed data: %q %v", got, err)
 	}
@@ -189,7 +194,7 @@ func TestRollbackRetryVerifiesArchiveInsteadOfRecapturingRestoredData(t *testing
 	if err := txn.MarkActivating(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(txn.path("/var/lib/payesh/payesh.db"), []byte("candidate-data"), 0600); err != nil {
+	if err := os.WriteFile(txn.path("/var/lib/payesh/node-identity.json"), []byte("candidate-data"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	service := txn.Services
@@ -202,7 +207,7 @@ func TestRollbackRetryVerifiesArchiveInsteadOfRecapturingRestoredData(t *testing
 	if err := txn.Rollback(ctx); err == nil {
 		t.Fatal("injected restore interruption ignored")
 	}
-	archive := filepath.Join(txn.dir(), "failed-generation", "payesh.db")
+	archive := filepath.Join(txn.dir(), "failed-generation", "node-identity.json")
 	if err := os.Chmod(archive, 0666); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +246,7 @@ func TestRollbackRestartRetryRetainsSamplesWrittenByPartiallyStartedServices(t *
 	if err := txn.MarkActivating(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(txn.path("/var/lib/payesh/payesh.db"), []byte("candidate-data"), 0600); err != nil {
+	if err := os.WriteFile(txn.path("/var/lib/payesh/node-identity.json"), []byte("candidate-data"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	service := txn.Services
@@ -289,7 +294,7 @@ func TestRollbackRestartRetryRetainsSamplesWrittenByPartiallyStartedServices(t *
 	if !reflect.DeepEqual(*calls, []string{"stop", "stop", "reload", "start", "reload", "start"}) {
 		t.Fatalf("retry stopped or re-restored a running generation: %v", *calls)
 	}
-	archive, err := os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "payesh.db"))
+	archive, err := os.ReadFile(filepath.Join(txn.dir(), "failed-generation", "node-identity.json"))
 	if err != nil || string(archive) != "candidate-data" {
 		t.Fatalf("retry changed candidate evidence: %q %v", archive, err)
 	}
@@ -317,7 +322,7 @@ func TestRollbackInsufficientPreservationHeadroomLeavesCandidateUntouched(t *tes
 	}
 }
 
-func TestRollbackArchiveRecoversCandidateSampleCommittedOnlyToWAL(t *testing.T) {
+func TestRollbackNeverCopiesOrReplacesTheLiveDatabase(t *testing.T) {
 	txn, _, _ := rollbackFixture(t)
 	ctx := context.Background()
 	if err := txn.Prepare(ctx); err != nil {
@@ -326,77 +331,30 @@ func TestRollbackArchiveRecoversCandidateSampleCommittedOnlyToWAL(t *testing.T) 
 	if err := txn.MarkActivating(); err != nil {
 		t.Fatal(err)
 	}
-	// Generate a quiescent raw database/WAL pair elsewhere. Closing this writer
-	// cannot checkpoint or remove the copied candidate files under test.
-	producer := filepath.Join(t.TempDir(), "producer.db")
-	db, err := sql.Open("sqlite", "file:"+producer)
+	// Writes made by the running generation, including WAL-only commits, must
+	// survive a rollback untouched and must not be duplicated on disk.
+	db, err := sql.Open("sqlite", "file:"+txn.path("/var/lib/payesh/payesh.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE evidence(value TEXT); PRAGMA wal_checkpoint(TRUNCATE); INSERT INTO evidence VALUES('wal-only-candidate-sample')`); err != nil {
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO snapshot VALUES('written-after-update')`); err != nil {
 		t.Fatal(err)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		data, err := os.ReadFile(producer + suffix)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if suffix == "-wal" && len(data) <= 32 {
-			t.Fatal("fixture has no committed WAL frames")
-		}
-		if err := os.WriteFile(txn.path("/var/lib/payesh/payesh.db"+suffix), data, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	plain := filepath.Join(t.TempDir(), "without-wal.db")
-	body, err := os.ReadFile(txn.path("/var/lib/payesh/payesh.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(plain, body, 0600); err != nil {
-		t.Fatal(err)
-	}
-	withoutWAL, err := sql.Open("sqlite", "file:"+plain+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var checkpointed int
-	err = withoutWAL.QueryRow(`SELECT COUNT(*) FROM evidence`).Scan(&checkpointed)
-	closeErr := withoutWAL.Close()
-	if err != nil || closeErr != nil || checkpointed != 0 {
-		t.Fatalf("sample was not WAL-only: count=%d err=%v close=%v", checkpointed, err, closeErr)
 	}
 	if err := txn.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(txn.dir(), "failed-generation")
-	replay := filepath.Join(t.TempDir(), "replay.db")
-	for _, suffix := range []string{"", "-wal"} {
-		data, err := os.ReadFile(filepath.Join(archive, "payesh.db"+suffix))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(replay+suffix, data, 0600); err != nil {
-			t.Fatal(err)
-		}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM snapshot WHERE value IN ('old-data','written-after-update')`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("rollback lost database rows: count=%d err=%v", count, err)
 	}
-	recovered, err := sql.Open("sqlite", "file:"+replay+"?mode=rw")
-	if err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	defer recovered.Close()
-	var value string
-	if err := recovered.QueryRow(`SELECT value FROM evidence`).Scan(&value); err != nil || value != "wal-only-candidate-sample" {
-		t.Fatalf("archived WAL sample=%q err=%v", value, err)
-	}
-	// Inspection uses a copy; the retained evidence still passes verification.
-	if err := txn.verifyFailedGeneration(ctx, archive); err != nil {
-		t.Fatal(err)
+	for _, p := range []string{filepath.Join(txn.dir(), "files", "var/lib/payesh/payesh.db"), filepath.Join(txn.dir(), "failed-generation", "payesh.db"), filepath.Join(txn.dir(), "failed-generation", "payesh.db-wal")} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("database copied to %s: %v", p, err)
+		}
 	}
 }
 
@@ -580,34 +538,6 @@ func TestCommittedActivationSurvivesResultPublicationGap(t *testing.T) {
 	done, err := RunFleet(ctx, dir, req, "1.2.0", func(context.Context, string) error { t.Fatal("committed activation was repeated"); return nil }, func(context.Context, string) error { return nil })
 	if err != nil || !done {
 		t.Fatalf("completion recovery done=%v err=%v", done, err)
-	}
-}
-
-func TestRollbackRemovesCandidateDatabaseSidecarsWhenNoPreviousDatabase(t *testing.T) {
-	txn, _, _ := rollbackFixture(t)
-	ctx := context.Background()
-	db := txn.path("/var/lib/payesh/payesh.db")
-	if err := os.Remove(db); err != nil {
-		t.Fatal(err)
-	}
-	if err := txn.Prepare(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := txn.MarkActivating(); err != nil {
-		t.Fatal(err)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.WriteFile(db+suffix, []byte("candidate"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := txn.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if _, err := os.Lstat(db + suffix); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("candidate %s remains: %v", suffix, err)
-		}
 	}
 }
 
