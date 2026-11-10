@@ -1598,28 +1598,43 @@
     selectedRefreshKey = key;
     chartLoading = true;
     chartError = '';
-    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    const current = () => activePage === 'server' && selectedServerId === id && !controller.signal.aborted;
+    const update = (apply: (server: PreviewServer) => PreviewServer) => { servers = servers.map((previous) => (previous.id === id ? apply(previous) : previous)); };
+    const emptyChart: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
+    const fail = (error: unknown) => {
+      if (error instanceof ApiError && error.authExpired) authExpired = true;
+      throw error;
+    };
+    // Each read lands as soon as it arrives so a slow one never hides samples.
     try {
-      const [item, query, latestQuery, trafficQuery] = await Promise.all([
-        apiClient.getServer(id, { signal: controller.signal }),
-        apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '24h' ? 'hour' : 'raw', signal: controller.signal }),
-        range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { ...alignedWindow(120_000), resolution: 'raw', signal: controller.signal }),
-        apiClient.queryTraffic(id, { ...rangeWindow('24h'), signal: controller.signal }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; return null; })
+      await Promise.all([
+        apiClient.getServer(id, { signal: controller.signal }).then((item) => {
+          if (!current()) return;
+          if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && item.connection_state === 'connected') saveActiveInstall(null);
+          update((previous) => ({ ...previous, ...emptyApiServer(item), metrics: previous.metrics, capacity: previous.capacity, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory }));
+        }).catch(fail),
+        Promise.all([
+          apiClient.queryMetrics(id, { ...rangeWindow(range), resolution: range === '24h' ? 'hour' : 'raw', signal: controller.signal }),
+          range === '15m' ? Promise.resolve(null) : apiClient.queryMetrics(id, { ...alignedWindow(120_000), resolution: 'raw', signal: controller.signal })
+        ]).then(([query, latestQuery]) => {
+          if (!current()) return;
+          update((previous) => {
+            const updated = { ...previous };
+            applyMetric(latestQuery ?? query, updated);
+            const ranges = updated.metricHistory?.ranges ?? { '15m': emptyChart, '1h': emptyChart, '24h': emptyChart };
+            const nextChart = metricChart(query);
+            updated.metricHistory = { ranges: { ...ranges, [range]: range === '15m' && ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], nextChart, 15 * 60) : nextChart, ...(latestQuery ? { '15m': ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], metricChart(latestQuery), 15 * 60) : metricChart(latestQuery) } : {}) } };
+            return updated;
+          });
+          chartLoading = false;
+        }).catch(fail),
+        apiClient.queryTraffic(id, { ...rangeWindow('24h'), signal: controller.signal }).then((trafficQuery) => {
+          const period = trafficQuery.periods[0];
+          if (!current() || !period) return;
+          update((previous) => ({ ...previous, traffic: { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity } }));
+        }).catch((error) => { if (error instanceof ApiError && error.authExpired) authExpired = true; })
       ]);
-      if (activePage !== 'server' || selectedServerId !== id || controller.signal.aborted) return;
-      if (activeInstall?.serverId === id && activeInstall.currentStage === 'failed' && item.connection_state === 'connected') saveActiveInstall(null);
-      servers = servers.map((previous) => {
-        if (previous.id !== id) return previous;
-        const updated = { ...previous, ...emptyApiServer(item), metrics: previous.metrics, capacity: previous.capacity, traffic: previous.traffic, latestMetricAt: previous.latestMetricAt, metricHistory: previous.metricHistory };
-        applyMetric(latestQuery ?? query, updated);
-        const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
-        const ranges = updated.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
-        const nextChart = metricChart(query);
-        updated.metricHistory = { ranges: { ...ranges, [range]: range === '15m' && ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], nextChart, 15 * 60) : nextChart, ...(latestQuery ? { '15m': ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], metricChart(latestQuery), 15 * 60) : metricChart(latestQuery) } : {}) } };
-        const period = trafficQuery?.periods[0];
-        if (period) updated.traffic = { scope: period.scope, from: period.from, to: period.to, timezone: period.timezone, allowanceBytes: period.allowance_bytes, direction: period.direction, countedBytes: period.counted_bytes, continuity: period.continuity };
-        return updated;
-      });
     } catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
       if (selectedRefreshController === controller && selectedServerId === id) chartError = 'History could not be loaded. Please retry shortly.';
