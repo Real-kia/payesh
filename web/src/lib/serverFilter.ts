@@ -38,11 +38,11 @@ export function filterServers(servers: PreviewServer[], state: ServerFilterState
 export function loadFilter(key: string): ServerFilterState {
   try {
     const saved = JSON.parse(localStorage.getItem(`payesh.filter.${key}`) ?? 'null');
-    if (saved && typeof saved === 'object') return { ...defaultFilter, ...saved, query: '' };
+    if (saved && typeof saved === 'object') return { ...defaultFilter, ...saved };
   } catch { /* storage unavailable */ }
   return { ...defaultFilter };
 }
 
 export function saveFilter(key: string, state: ServerFilterState): void {
-  try { localStorage.setItem(`payesh.filter.${key}`, JSON.stringify({ ...state, query: '' })); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(`payesh.filter.${key}`, JSON.stringify(state)); } catch { /* storage unavailable */ }
 }
