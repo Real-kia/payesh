@@ -1699,10 +1699,9 @@ func (s *Store) IngestSamples(ctx context.Context, serverID contracts.ServerID, 
 		}
 	}
 	if len(materializationSamples) > 0 || len(gaps) > 0 {
-		if err := s.materializeRollups(ctx, serverID, materializationSamples); err != nil {
-			// Rollups are a recoverable derived view. Never turn a successful
-			// durable sample commit into a failed acknowledgement because the
-			// storage budget or a transient SQLite error blocked recomputation.
+		// Only mark the affected buckets dirty here. The rollup worker rebuilds
+		// each dirty bucket once per pass instead of once per ingested sample.
+		if err := s.queueIngestRollupTargets(ctx, serverID, materializationSamples); err != nil {
 			result.RollupsPending = true
 			return result, nil
 		}
@@ -1967,7 +1966,7 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 		targets[target] = struct{}{}
 	}
 	for _, sample := range samples {
-		for _, seconds := range []int{60, 3600} {
+		for _, seconds := range rollupTierSeconds {
 			bucket := sample.ObservedAt.UTC().Truncate(time.Duration(seconds) * time.Second)
 			for _, delta := range []int{-1, 0, 1} {
 				targets[rollupTarget{start: bucket.Add(time.Duration(delta*seconds) * time.Second), seconds: seconds}] = struct{}{}
@@ -1982,7 +1981,7 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 			return err
 		}
 		if found {
-			for _, seconds := range []int{60, 3600} {
+			for _, seconds := range rollupTierSeconds {
 				targets[rollupTarget{start: nextSample.ObservedAt.UTC().Truncate(time.Duration(seconds) * time.Second), seconds: seconds}] = struct{}{}
 			}
 		}
@@ -2025,7 +2024,7 @@ func (s *Store) materializeRollups(ctx context.Context, serverID contracts.Serve
 		rollups := BuildRollupsWithGaps(serverID, window, gaps, target.seconds)
 		selected := make([]Rollup, 0, len(rollups))
 		for _, rollup := range rollups {
-			if !rollup.BucketStart.Equal(target.start) {
+			if !rollup.BucketStart.Equal(target.start) || rollupMetricSkipped(rollup.Metric) {
 				continue
 			}
 			if truncated || gapsTruncated {
@@ -2080,12 +2079,93 @@ func (s *Store) queuedRollupTargets(ctx context.Context, serverID contracts.Serv
 			return nil, err
 		}
 		parsed, err := time.Parse(time.RFC3339Nano, start)
-		if err != nil || (seconds != 60 && seconds != 3600) {
+		if err != nil || !validRollupSeconds(seconds) {
 			return nil, errors.New("invalid queued rollup target")
 		}
 		result = append(result, rollupTarget{start: parsed, seconds: seconds})
 	}
 	return result, rows.Err()
+}
+
+// queueIngestRollupTargets marks the buckets touched by new samples as dirty:
+// each sample's own bucket and the previous one (its gauge duration changes),
+// plus the bucket of the following stored sample for late arrivals.
+func (s *Store) queueIngestRollupTargets(ctx context.Context, serverID contracts.ServerID, samples []contracts.MetricSample) error {
+	set := make(map[rollupTarget]struct{}, len(samples)*4)
+	for _, sample := range samples {
+		for _, seconds := range rollupTierSeconds {
+			duration := time.Duration(seconds) * time.Second
+			bucket := sample.ObservedAt.UTC().Truncate(duration)
+			set[rollupTarget{start: bucket, seconds: seconds}] = struct{}{}
+			set[rollupTarget{start: bucket.Add(-duration), seconds: seconds}] = struct{}{}
+		}
+		next, found, err := s.nextRollupSample(ctx, serverID, sample)
+		if err != nil {
+			return err
+		}
+		if found {
+			for _, seconds := range rollupTierSeconds {
+				set[rollupTarget{start: next.ObservedAt.UTC().Truncate(time.Duration(seconds) * time.Second), seconds: seconds}] = struct{}{}
+			}
+		}
+	}
+	targets := make([]rollupTarget, 0, len(set))
+	for target := range set {
+		targets = append(targets, target)
+	}
+	return s.enqueueRollupTargets(ctx, serverID, targets)
+}
+
+// RunRollupWorker rebuilds dirty rollup buckets in the background until ctx
+// ends. Reads also drain a server's queue, so results are never stale.
+func (s *Store) RunRollupWorker(ctx context.Context, interval time.Duration, report func(error)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.drainRollupQueue(ctx); err != nil && ctx.Err() == nil && report != nil {
+				report(err)
+			}
+		}
+	}
+}
+
+func (s *Store) drainRollupQueue(ctx context.Context) error {
+	rows, err := s.readDB().QueryContext(ctx, `SELECT DISTINCT server_id FROM rollup_rebuild_queue`)
+	if err != nil {
+		return err
+	}
+	var servers []contracts.ServerID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		servers = append(servers, contracts.ServerID(id))
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, id := range servers {
+		for round := 0; round < 10; round++ {
+			if err := s.materializeRollups(ctx, id, nil); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				break
+			}
+			var pending bool
+			if err := s.readDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM rollup_rebuild_queue WHERE server_id=?)`, string(id)).Scan(&pending); err != nil || !pending {
+				break
+			}
+		}
+	}
+	return firstErr
 }
 
 func (s *Store) enqueueRollupTargets(ctx context.Context, serverID contracts.ServerID, targets []rollupTarget) error {
@@ -2118,7 +2198,7 @@ func (s *Store) queueRollupRecovery(ctx context.Context, serverID contracts.Serv
 		if !found {
 			continue
 		}
-		for _, seconds := range []int{60, 3600} {
+		for _, seconds := range rollupTierSeconds {
 			targets = append(targets, rollupTarget{start: next.ObservedAt.UTC().Truncate(time.Duration(seconds) * time.Second), seconds: seconds})
 		}
 	}
@@ -2134,7 +2214,7 @@ func (s *Store) queueRollupRecovery(ctx context.Context, serverID contracts.Serv
 			return err
 		}
 		parsed, err := time.Parse(time.RFC3339Nano, start)
-		if err != nil || (seconds != 60 && seconds != 3600) {
+		if err != nil || !validRollupSeconds(seconds) {
 			_ = rows.Close()
 			return errors.New("invalid persisted rollup target")
 		}
@@ -2153,7 +2233,7 @@ func (s *Store) queueRollupRecovery(ctx context.Context, serverID contracts.Serv
 func rollupTargetsForSamples(samples []contracts.MetricSample) []rollupTarget {
 	set := make(map[rollupTarget]struct{}, len(samples)*6)
 	for _, sample := range samples {
-		for _, seconds := range []int{60, 3600} {
+		for _, seconds := range rollupTierSeconds {
 			bucket := sample.ObservedAt.UTC().Truncate(time.Duration(seconds) * time.Second)
 			for _, delta := range []int{-1, 0, 1} {
 				set[rollupTarget{start: bucket.Add(time.Duration(delta*seconds) * time.Second), seconds: seconds}] = struct{}{}
@@ -2214,7 +2294,7 @@ func (s *Store) nextRollupSample(ctx context.Context, serverID contracts.ServerI
 }
 
 func (s *Store) queryRollupSamples(ctx context.Context, serverID contracts.ServerID, bucketStart time.Time, bucketSeconds int) ([]contracts.MetricSample, bool, error) {
-	if bucketSeconds != 60 && bucketSeconds != 3600 {
+	if !validRollupSeconds(bucketSeconds) {
 		return nil, false, errors.New("rollup bucket must be minute or hour")
 	}
 	const selectMetrics = `SELECT server_id,collector_epoch,sequence,observed_at,received_at,COALESCE(timestamp_uncertainty,''),values_json,COALESCE(counters_json,'{}'),COALESCE(units_json,'{}'),COALESCE(validity_json,'{}') FROM metric_samples WHERE server_id=?`
@@ -3182,7 +3262,7 @@ func (s *Store) QueryRollups(ctx context.Context, serverID contracts.ServerID, f
 	if serverID == "" {
 		return nil, "", false, errors.New("server_id is required")
 	}
-	if bucketSeconds != 60 && bucketSeconds != 3600 {
+	if !validRollupSeconds(bucketSeconds) {
 		return nil, "", false, errors.New("rollup bucket must be minute or hour")
 	}
 	// A prior ingestion may have durably accepted raw samples while the
@@ -3397,7 +3477,7 @@ func (s *Store) Prune(ctx context.Context, now time.Time, policy RetentionPolicy
 		name  string
 	}{{policy.MinuteRollupAge, &stats.MinuteRollups, "minute"}, {policy.HourRollupAge, &stats.HourRollups, "hour"}} {
 		for i := 0; i < 100; i++ {
-			result, err := s.db.ExecContext(ctx, `DELETE FROM metric_rollups WHERE rowid IN (SELECT rowid FROM metric_rollups WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?)`, map[string]int{"minute": 60, "hour": 3600}[item.name], FormatPersistedTime(now.Add(-item.age)), policy.BatchSize)
+			result, err := s.db.ExecContext(ctx, `DELETE FROM metric_rollups WHERE rowid IN (SELECT rowid FROM metric_rollups WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?)`, map[string]int{"minute": MidRollupSeconds, "hour": HourRollupSeconds}[item.name], FormatPersistedTime(now.Add(-item.age)), policy.BatchSize)
 			if err != nil {
 				return stats, err
 			}
@@ -3408,7 +3488,7 @@ func (s *Store) Prune(ctx context.Context, now time.Time, policy RetentionPolicy
 			}
 		}
 		for i := 0; i < 100; i++ {
-			result, err := s.db.ExecContext(ctx, `DELETE FROM rollup_rebuild_queue WHERE rowid IN (SELECT rowid FROM rollup_rebuild_queue WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?)`, map[string]int{"minute": 60, "hour": 3600}[item.name], FormatPersistedTime(now.Add(-item.age)), policy.BatchSize)
+			result, err := s.db.ExecContext(ctx, `DELETE FROM rollup_rebuild_queue WHERE rowid IN (SELECT rowid FROM rollup_rebuild_queue WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?)`, map[string]int{"minute": MidRollupSeconds, "hour": HourRollupSeconds}[item.name], FormatPersistedTime(now.Add(-item.age)), policy.BatchSize)
 			if err != nil {
 				return stats, err
 			}

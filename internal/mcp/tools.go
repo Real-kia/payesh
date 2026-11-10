@@ -61,7 +61,7 @@ var tools = []tool{
 		Description: "Get one server's details, capabilities, and connection and freshness state."},
 	{Name: "get_metrics", Title: "Query metrics", Method: http.MethodGet, Path: "/api/v1/servers/{server_id}/metrics", RecentWindow: time.Hour,
 		Params: []param{serverID, from, to,
-			{Name: "resolution", Type: "string", Enum: []string{"raw", "minute", "hour"}, Description: "raw samples (default) or minute/hour rollups. Use rollups for ranges longer than a few hours."},
+			{Name: "resolution", Type: "string", Enum: []string{"raw", "5m", "hour"}, Description: "raw samples (default, last 24 hours) or 5-minute/hourly rollups. Use rollups for ranges longer than a few hours."},
 			limit, cursor, {Name: "gaps_cursor", Type: "string", Description: "gaps_next_cursor from a previous raw page."}},
 		Description: "Query CPU, memory, disk, load, and network metrics for a server. Defaults to the last hour. Coverage gaps are reported separately and are not zero values."},
 	{Name: "list_processes", Title: "List processes", Method: http.MethodGet, Path: "/api/v1/servers/{server_id}/processes",

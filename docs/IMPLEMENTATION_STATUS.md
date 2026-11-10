@@ -197,7 +197,7 @@ See [known limitations](KNOWN_LIMITATIONS.md) for scope boundaries.
   pressure checks, bounded file/journal logs and live tails, protected local API
   reads, CLI commands, and systemd/OpenRC service definitions. Omitted agent
   epoch flags generate a fresh epoch per process start; ingestion materializes
-  affected minute/hour rollups and preserves cross-bucket counter intervals.
+  affected 5-minute/hour rollups (rebuilt in the background) and preserves cross-bucket counter intervals.
   Late endpoint buckets are recomputed; raw ingestion acknowledgements remain
   successful when derived writes are pressured, with a durable rebuild queue
   for recovery. Current billing periods remain writable under history pressure,

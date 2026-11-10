@@ -212,7 +212,7 @@ func TestStoreIngestIsDurableAndIdempotent(t *testing.T) {
 	if err := store.PutRollups(ctx, rollups); err != nil {
 		t.Fatal(err)
 	}
-	storedRollups, next, truncated, err := store.QueryRollups(ctx, testServer().ID, observed.Add(-time.Minute), observed.Add(time.Minute), 60, 200, "")
+	storedRollups, next, truncated, err := store.QueryRollups(ctx, testServer().ID, observed.Add(-5*time.Minute), observed.Add(5*time.Minute), MidRollupSeconds, 200, "")
 	if err != nil || next != "" || truncated || len(storedRollups) == 0 {
 		t.Fatalf("durable rollups unavailable: %#v next=%q truncated=%v err=%v", storedRollups, next, truncated, err)
 	}
@@ -407,7 +407,7 @@ func TestIngestRecomputesLateSampleEndpointBucket(t *testing.T) {
 	if _, err := store.IngestNodeBatch(ctx, server.ID, []contracts.NodeMetricSample{late}, nil, base.Add(2*time.Hour+time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	rollups, _, _, err := store.QueryRollups(ctx, server.ID, base.Add(2*time.Hour).Truncate(time.Minute), base.Add(2*time.Hour+time.Minute), 60, MaxPageItems, "")
+	rollups, _, _, err := store.QueryRollups(ctx, server.ID, base.Add(2*time.Hour).Truncate(5*time.Minute), base.Add(2*time.Hour+5*time.Minute), MidRollupSeconds, MaxPageItems, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestIngestAcknowledgesDurableSamplesWhenRollupsArePressured(t *testing.T) {
 	store.maxBytes = usage + 1
 	base := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
 	result, err := store.IngestNodeBatch(ctx, server.ID, []contracts.NodeMetricSample{testNodeSample(0, base, 1, "100")}, nil, base.Add(time.Second))
-	if err != nil || result.Inserted != 1 || !result.RollupsPending {
+	if err != nil || result.Inserted != 1 {
 		t.Fatalf("durable ingest was reported failed under rollup pressure: result=%#v err=%v", result, err)
 	}
 	page, err := store.QueryMetrics(ctx, server.ID, base.Add(-time.Minute), base.Add(time.Minute), MaxPageItems, "")
@@ -449,7 +449,7 @@ func TestIngestAcknowledgesDurableSamplesWhenRollupsArePressured(t *testing.T) {
 		t.Fatalf("durable raw sample was not retained: %#v err=%v", page, err)
 	}
 	store.maxBytes = 1 << 62
-	rollups, _, _, err := store.QueryRollups(ctx, server.ID, base.Truncate(time.Minute), base.Add(time.Minute), 60, MaxPageItems, "")
+	rollups, _, _, err := store.QueryRollups(ctx, server.ID, base.Truncate(5*time.Minute), base.Add(5*time.Minute), MidRollupSeconds, MaxPageItems, "")
 	if err != nil {
 		t.Fatalf("queued rollup retry failed: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestIngestMaterializesPersistedRollups(t *testing.T) {
 	if err := store.UpsertServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
-	base := time.Date(2026, 9, 9, 10, 0, 50, 0, time.UTC)
+	base := time.Date(2026, 9, 9, 10, 4, 50, 0, time.UTC)
 	samples := []contracts.NodeMetricSample{
 		testNodeSample(0, base, 0, "100"),
 		testNodeSample(1, base.Add(20*time.Second), 0, "160"),
@@ -502,7 +502,7 @@ func TestIngestMaterializesPersistedRollups(t *testing.T) {
 	if _, err := store.IngestNodeBatch(ctx, server.ID, samples, nil, base.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	rollups, next, truncated, err := store.QueryRollups(ctx, server.ID, base.Truncate(time.Minute), base.Add(2*time.Minute), 60, MaxPageItems, "")
+	rollups, next, truncated, err := store.QueryRollups(ctx, server.ID, base.Truncate(5*time.Minute), base.Add(10*time.Minute), MidRollupSeconds, MaxPageItems, "")
 	if err != nil || next != "" || truncated {
 		t.Fatalf("persisted rollup query failed: %#v next=%q truncated=%v err=%v", rollups, next, truncated, err)
 	}
@@ -518,7 +518,7 @@ func TestIngestMaterializesPersistedRollups(t *testing.T) {
 	if _, err := store.IngestNodeBatch(ctx, server.ID, nil, []contracts.CoverageGap{{CollectorEpoch: "epoch-local-0001", FromSequence: 1, ToSequence: 2, Reason: "transport-disconnect"}}, base.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	rollups, _, _, err = store.QueryRollups(ctx, server.ID, base.Truncate(time.Minute), base.Add(2*time.Minute), 60, MaxPageItems, "")
+	rollups, _, _, err = store.QueryRollups(ctx, server.ID, base.Truncate(5*time.Minute), base.Add(10*time.Minute), MidRollupSeconds, MaxPageItems, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestAPIReturnsPersistedRollupsForRollupResolution(t *testing.T) {
 	}
 	observed := time.Date(2026, 9, 9, 10, 0, 10, 0, time.UTC)
 	minimum, maximum, mean := 20.0, 20.0, 20.0
-	if err := store.PutRollups(ctx, []Rollup{{ServerID: server.ID, Metric: "cpu.utilization", BucketStart: observed.Truncate(time.Minute), BucketSeconds: 60, SampleCount: 1, ObservedSeconds: 1, Minimum: &minimum, Maximum: &maximum, WeightedMean: &mean, Coverage: "complete"}}); err != nil {
+	if err := store.PutRollups(ctx, []Rollup{{ServerID: server.ID, Metric: "cpu.utilization", BucketStart: observed.Truncate(5 * time.Minute), BucketSeconds: MidRollupSeconds, SampleCount: 1, ObservedSeconds: 1, Minimum: &minimum, Maximum: &maximum, WeightedMean: &mean, Coverage: "complete"}}); err != nil {
 		t.Fatal(err)
 	}
 	api, err := NewAPI(store, "secret-token")
@@ -1149,16 +1149,16 @@ func TestCounterRollupCrossBoundaryDurationSurvivesStorage(t *testing.T) {
 	if err := store.EnsureServer(ctx, server); err != nil {
 		t.Fatal(err)
 	}
-	base := time.Date(2026, 1, 1, 0, 0, 50, 0, time.UTC)
+	base := time.Date(2026, 1, 1, 0, 4, 50, 0, time.UTC)
 	var samples []contracts.MetricSample
 	for i, offset := range []int{0, 20, 35, 50, 65} {
 		samples = append(samples, contracts.MetricSample{ServerID: server.ID, CollectorEpoch: "epoch-boundary-duration", Sequence: uint64(i), ObservedAt: base.Add(time.Duration(offset) * time.Second), Counters: map[string]string{"net.billing.rx_bytes": strconv.Itoa(offset * 100)}})
 	}
-	rollups := BuildRollups(server.ID, samples, 60)
+	rollups := BuildRollups(server.ID, samples, MidRollupSeconds)
 	if err := store.PutRollups(ctx, rollups); err != nil {
 		t.Fatal(err)
 	}
-	stored, _, _, err := store.QueryRollups(ctx, server.ID, base.Truncate(time.Minute).Add(time.Minute), base.Add(2*time.Minute), 60, 200, "")
+	stored, _, _, err := store.QueryRollups(ctx, server.ID, base.Truncate(5*time.Minute).Add(5*time.Minute), base.Add(10*time.Minute), MidRollupSeconds, 200, "")
 	if err != nil || len(stored) != 1 {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
@@ -1188,5 +1188,60 @@ func TestUpdateServerInventoryAfterNodeReportsVersionedCapability(t *testing.T) 
 	}
 	if got.Address != "203.0.113.7" || got.Architecture != "arm64" || got.Platform != "linux" || len(got.Capabilities) != 2 {
 		t.Fatalf("unexpected inventory: %+v", got)
+	}
+}
+
+func TestIngestQueuesRollupsForWorkerAndSkipsUnchartedMetrics(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := testServer()
+	if err := store.UpsertServer(ctx, server); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 9, 10, 1, 0, 0, time.UTC)
+	var samples []contracts.NodeMetricSample
+	for i := 0; i < 10; i++ {
+		sample := testNodeSample(uint64(i), base.Add(time.Duration(i)*15*time.Second), 1, "100")
+		sample.Values["cpu.cores"] = 4
+		sample.Values["disk.io.read_ops"] = 1
+		sample.Units["cpu.cores"] = "count"
+		sample.Units["disk.io.read_ops"] = "count"
+		sample.Validity["cpu.cores"] = "valid"
+		sample.Validity["disk.io.read_ops"] = "valid"
+		samples = append(samples, sample)
+	}
+	if _, err := store.IngestNodeBatch(ctx, server.ID, samples, nil, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var stored, queued int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metric_rollups`).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("ingest wrote rollups inline: %d err=%v", stored, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollup_rebuild_queue`).Scan(&queued); err != nil || queued == 0 || queued > 4 {
+		t.Fatalf("expected a few deduplicated dirty buckets, got %d err=%v", queued, err)
+	}
+	if err := store.drainRollupQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollup_rebuild_queue`).Scan(&queued); err != nil || queued != 0 {
+		t.Fatalf("worker left %d dirty buckets err=%v", queued, err)
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT DISTINCT metric FROM metric_rollups`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var metric string
+		_ = rows.Scan(&metric)
+		seen[metric] = true
+	}
+	if !seen["cpu.utilization"] || seen["cpu.cores"] || seen["disk.io.read_ops"] {
+		t.Fatalf("unexpected rollup metrics: %v", seen)
 	}
 }

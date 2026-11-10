@@ -482,7 +482,7 @@ func queryMetrics(ctx context.Context, args []string) error {
 	serverID := flags.String("server-id", string(monitoring.DefaultServerID), "server id")
 	fromValue := flags.String("from", "", "RFC3339 lower bound")
 	toValue := flags.String("to", "", "RFC3339 upper bound")
-	resolution := flags.String("resolution", "raw", "raw, minute, or hour")
+	resolution := flags.String("resolution", "raw", "raw, 5m, or hour")
 	limit := flags.Int("limit", monitoring.MaxPageItems, "maximum result count (1..200)")
 	cursor := flags.String("cursor", "", "opaque cursor")
 	gapsCursor := flags.String("gaps-cursor", "", "opaque coverage-gap cursor")
@@ -501,10 +501,10 @@ func queryMetrics(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	if *resolution == "minute" || *resolution == "hour" {
-		seconds := 60
+	if *resolution == "5m" || *resolution == "minute" || *resolution == "hour" {
+		seconds := monitoring.MidRollupSeconds
 		if *resolution == "hour" {
-			seconds = 3600
+			seconds = monitoring.HourRollupSeconds
 		}
 		rollups, nextCursor, truncated, err := store.QueryRollups(ctx, contracts.ServerID(*serverID), from, to, seconds, *limit, *cursor)
 		if err != nil {
@@ -513,7 +513,7 @@ func queryMetrics(ctx context.Context, args []string) error {
 		page := monitoring.MetricPage{Samples: make([]contracts.MetricSample, 0), Rollups: rollups, Coverage: monitoring.CoverageForSamples(nil, rollups), NextCursor: nextCursor, Truncated: truncated}
 		return writeJSON(os.Stdout, page)
 	} else if *resolution != "raw" {
-		return errors.New("resolution must be raw, minute, or hour")
+		return errors.New("resolution must be raw, 5m, or hour")
 	}
 	page, err := store.QueryMetricsWithGapCursor(ctx, contracts.ServerID(*serverID), from, to, *limit, *cursor, *gapsCursor)
 	if err != nil {

@@ -47,14 +47,14 @@ Mutating operations either create a durable `Job` or require a bounded
 `idempotency_key` (header or request field) plus an expected revision where
 state can conflict. Metric and log queries cap pages at 200 items, accept an
 opaque cursor, and limit the requested time range to 31 days. Raw history must
-use pagination; callers should select minute/hour rollups for longer periods.
+use pagination; callers should select 5m/hour rollups for longer periods.
 All collection endpoints use a page object capped at 200 items with an
 optional `next_cursor`; the root contract caps requests and responses at 1 MiB.
 
 Raw metric coverage gaps use a separate `gaps_cursor`/`gaps_next_cursor`, so
 gap pagination does not repeat or depend on the raw sample page.
 
-Metric responses carry either raw samples or minute/hour `Rollup` records with
+Metric responses carry either raw samples or 5-minute/hourly `Rollup` records with
 sample count, observed duration, extrema, weighted mean, and counter delta.
 Traffic periods include timezone, allowance, direction, counted bytes, and
 continuity. Logs support bounded history and a capped NDJSON live tail with

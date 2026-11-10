@@ -138,6 +138,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, "retry pending sample processing:", err)
 		}
 	})
+	// Rollup buckets are rebuilt in the background, once per dirty bucket,
+	// instead of on every ingested sample.
+	rollupWorkerDone := make(chan struct{})
+	go func() {
+		defer close(rollupWorkerDone)
+		store.RunRollupWorker(ctx, 30*time.Second, func(err error) {
+			if !monitoring.IsBusyError(err) {
+				fmt.Fprintln(os.Stderr, "rollup worker:", err)
+			}
+		})
+	}()
 	// Server flags come from public lookup services, so the owner can turn
 	// them off with PAYESH_COUNTRY_LOOKUP=false. Failures only hide the flag.
 	if countryLookup {
@@ -207,6 +218,7 @@ func main() {
 			<-installWorkerDone
 		}
 		<-postProcessDone
+		<-rollupWorkerDone
 		<-retentionDone
 		_ = store.Close()
 	}()

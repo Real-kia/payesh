@@ -11,6 +11,40 @@ import (
 	"github.com/Real-kia/payesh/internal/contracts"
 )
 
+// Rollups come in two tiers: 5-minute buckets for recent history and hourly
+// buckets for long-term history. Raw samples cover the most recent day.
+const (
+	MidRollupSeconds  = 300
+	HourRollupSeconds = 3600
+)
+
+var rollupTierSeconds = []int{MidRollupSeconds, HourRollupSeconds}
+
+func validRollupSeconds(seconds int) bool {
+	// 60 stays valid for callers that aggregate by minute; stored tiers are
+	// MidRollupSeconds and HourRollupSeconds.
+	return seconds == 60 || seconds == MidRollupSeconds || seconds == HourRollupSeconds
+}
+
+// rollupMetricSkipped reports metrics that are not worth a stored rollup:
+// constants (capacity, uptime) and high-volume counters nothing charts. Raw
+// samples keep every metric for the full-resolution window.
+func rollupMetricSkipped(metric string) bool {
+	switch metric {
+	case "cpu.cores", "uptime.seconds", "memory.total_bytes", "memory.swap_total_bytes", "disk.root.total_bytes", "disk.root.free_bytes":
+		return true
+	}
+	for _, prefix := range []string{"disk.io.", "disk.root.inodes_"} {
+		if strings.HasPrefix(metric, prefix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(metric, "net.") && !strings.HasPrefix(metric, "net.billing.") {
+		return !(strings.HasSuffix(metric, ".rx_bytes") || strings.HasSuffix(metric, ".tx_bytes"))
+	}
+	return false
+}
+
 type Rollup struct {
 	ServerID        contracts.ServerID `json:"server_id"`
 	Metric          string             `json:"metric"`
@@ -29,8 +63,8 @@ func (r Rollup) Validate() error {
 	if r.ServerID == "" || r.Metric == "" || r.BucketStart.IsZero() {
 		return errors.New("rollup identity is required")
 	}
-	if r.BucketSeconds != 60 && r.BucketSeconds != 3600 {
-		return errors.New("rollup bucket must be minute or hour")
+	if !validRollupSeconds(r.BucketSeconds) {
+		return errors.New("rollup bucket must be 5 minutes or 1 hour")
 	}
 	maxDuration := float64(r.BucketSeconds) + 1e-3
 	// Gauge coverage is clipped to the bucket. A counter delta retains the
@@ -69,7 +103,7 @@ func BuildRollups(serverID contracts.ServerID, samples []contracts.MetricSample,
 // buckets. A counter delta may be numerically monotonic and still be uncertain
 // when samples were missing between its endpoints.
 func BuildRollupsWithGaps(serverID contracts.ServerID, samples []contracts.MetricSample, gaps []contracts.CoverageGap, bucketSeconds int) []Rollup {
-	if len(samples) == 0 || (bucketSeconds != 60 && bucketSeconds != 3600) {
+	if len(samples) == 0 || !validRollupSeconds(bucketSeconds) {
 		return []Rollup{}
 	}
 	ordered := append([]contracts.MetricSample(nil), samples...)

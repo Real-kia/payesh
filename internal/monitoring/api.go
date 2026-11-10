@@ -214,14 +214,14 @@ func (a *API) queryMetrics(w http.ResponseWriter, r *http.Request, serverID cont
 		return
 	}
 	resolution := r.URL.Query().Get("resolution")
-	if resolution != "" && resolution != "raw" && resolution != "minute" && resolution != "hour" {
-		writeAPIError(w, http.StatusBadRequest, "invalid_resolution", "resolution must be raw, minute, or hour", false)
+	if resolution != "" && resolution != "raw" && resolution != "5m" && resolution != "minute" && resolution != "hour" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_resolution", "resolution must be raw, 5m, or hour", false)
 		return
 	}
-	if resolution == "minute" || resolution == "hour" {
-		seconds := 60
+	if resolution == "5m" || resolution == "minute" || resolution == "hour" {
+		seconds := MidRollupSeconds
 		if resolution == "hour" {
-			seconds = 3600
+			seconds = HourRollupSeconds
 		}
 		rollups, nextCursor, truncated, err := a.Store.QueryRollups(r.Context(), serverID, from, to, seconds, limit, r.URL.Query().Get("cursor"))
 		if err != nil {

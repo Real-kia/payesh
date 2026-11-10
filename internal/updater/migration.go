@@ -950,7 +950,7 @@ func parseMigrationSample(sample *contracts.MetricSample, serverID, epoch, seque
 }
 
 func validateExportRollup(r ExportRollup) error {
-	if r.ServerID == "" || r.Metric == "" || r.BucketStart.IsZero() || (r.BucketSeconds != 60 && r.BucketSeconds != 3600) || r.SampleCount < 1 || r.ObservedSeconds < 0 || r.Coverage == "" {
+	if r.ServerID == "" || r.Metric == "" || r.BucketStart.IsZero() || (r.BucketSeconds != 60 && r.BucketSeconds != 300 && r.BucketSeconds != 3600) || r.SampleCount < 1 || r.ObservedSeconds < 0 || r.Coverage == "" {
 		return errors.New("updater: invalid export rollup")
 	}
 	return nil

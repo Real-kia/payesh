@@ -353,7 +353,7 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/From' }
         - { $ref: '#/components/parameters/To' }
-        - { name: resolution, in: query, schema: { type: string, enum: [raw, minute, hour] } }
+        - { name: resolution, in: query, schema: { type: string, enum: [raw, 5m, minute, hour] } }
         - { name: limit, in: query, description: 'Maximum samples returned.', schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
         - { name: cursor, in: query, description: 'Opaque pagination cursor.', schema: { type: string, maxLength: 256 } }
         - { name: gaps_cursor, in: query, description: 'Opaque coverage-gap pagination cursor.', schema: { type: string, maxLength: 256 } }

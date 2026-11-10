@@ -298,7 +298,7 @@ func TestPruneBoundsRetirementAuthorityAndFailsClosedForEpochChurn(t *testing.T)
 		t.Fatal(err)
 	}
 	oldRollupStart := now.Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano)
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO metric_rollups(server_id,metric,bucket_start,bucket_seconds,sample_count,observed_seconds,minimum,maximum,weighted_mean,counter_delta,coverage) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, string(server.ID), "cpu.utilization", oldRollupStart, 60, 1, 60, 1, 1, 1, nil, "complete"); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO metric_rollups(server_id,metric,bucket_start,bucket_seconds,sample_count,observed_seconds,minimum,maximum,weighted_mean,counter_delta,coverage) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, string(server.ID), "cpu.utilization", oldRollupStart, MidRollupSeconds, 1, 60, 1, 1, 1, nil, "complete"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Prune(ctx, now, RetentionPolicy{FullResolutionAge: 24 * time.Hour, MetadataAge: time.Hour, MetadataMaxRows: 4, BatchSize: 200}); !errors.Is(err, ErrCollectorEpochAuthorityFull) {
@@ -358,7 +358,7 @@ func TestPruneBoundsRetirementAuthorityAndFailsClosedForEpochChurn(t *testing.T)
 		t.Fatalf("rejected churn grew permanent authority: before=%d after=%d", retiredCount, afterRejected)
 	}
 	var oldRollups int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metric_rollups WHERE bucket_seconds=60 AND bucket_start=?`, oldRollupStart).Scan(&oldRollups); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metric_rollups WHERE bucket_seconds=300 AND bucket_start=?`, oldRollupStart).Scan(&oldRollups); err != nil {
 		t.Fatal(err)
 	}
 	if oldRollups != 0 {
