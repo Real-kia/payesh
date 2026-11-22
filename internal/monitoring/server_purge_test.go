@@ -162,3 +162,72 @@ func TestPurgePreservesReconnectedFormerMaster(t *testing.T) {
 		t.Fatalf("reconnected master's history removed: %d", history)
 	}
 }
+
+func TestDeleteExpiredOfflineNode(t *testing.T) {
+	ctx := context.Background()
+	localID := contracts.ServerID("offline-test-local-node")
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{LocalServerID: localID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	expired := now.Add(-24 * time.Hour)
+	recent := now.Add(-time.Hour)
+	target := contracts.ServerID("offline-test-expired-node")
+	for _, tc := range []struct {
+		id          contracts.ServerID
+		role, state string
+		heartbeat   *time.Time
+	}{
+		{target, "node", "disconnected", &expired},
+		{"offline-test-frozen-node", "node", "disconnected", &expired},
+		{localID, "node", "disconnected", &expired},
+		{"offline-test-former-hub", "hub", "disconnected", &expired},
+		{"offline-test-reconnected", "node", "connected", &expired},
+		{"offline-test-recent-node", "node", "disconnected", &recent},
+		{"offline-test-pending-node", "node", "never-connected", nil},
+	} {
+		if err := store.UpsertServer(ctx, contracts.Server{
+			ID: tc.id, Name: string(tc.id), Role: tc.role, Architecture: "amd64", Platform: "linux",
+			ConnectionState: tc.state, FreshnessState: "stale", LastHeartbeat: tc.heartbeat,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO metric_rollups(server_id,metric,bucket_start,bucket_seconds,sample_count,observed_seconds,coverage)
+VALUES (?,'cpu',?,60,1,60,'full')`, target, FormatPersistedTime(expired)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO server_authority(server_id,generation,owner_id,state,updated_at)
+VALUES ('offline-test-frozen-node',1,'offline-test-owner','frozen',?)`, FormatPersistedTime(expired)); err != nil {
+		t.Fatal(err)
+	}
+	checkDelete := func(hours int, want contracts.ServerID) {
+		t.Helper()
+		if id, err := store.DeleteExpiredOfflineNode(ctx, now, hours); err != nil || id != want {
+			t.Fatalf("cleanup with %d hours returned %q, %v; want %q", hours, id, err, want)
+		}
+	}
+	checkDelete(0, "")
+	checkDelete(24, "")
+
+	settings := DefaultStorageSettings()
+	settings.OfflineNodeCleanupHours = 24
+	if err := store.SaveStorageSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := store.StorageSettings(ctx)
+	if err != nil || saved.OfflineNodeCleanupHours != 24 {
+		t.Fatalf("saved timeout = %d, %v", saved.OfflineNodeCleanupHours, err)
+	}
+	checkDelete(12, "")
+	checkDelete(24, target)
+	checkDelete(24, "")
+
+	var history int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metric_rollups WHERE server_id=?`, target).Scan(&history); err != nil || history != 0 {
+		t.Fatalf("deleted node retained %d history rows, %v", history, err)
+	}
+}

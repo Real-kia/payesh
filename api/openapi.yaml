@@ -1806,6 +1806,7 @@ components:
         adaptive_sampling: { type: boolean }
         notifications_enabled: { type: boolean }
         relay_cleanup_days: { type: integer, minimum: 0, maximum: 3650, default: 30, description: Relay access a node has not used for this many days is removed; 0 keeps it. }
+        offline_node_cleanup_hours: { type: integer, minimum: 0, maximum: 87600, default: 0, description: Permanently delete disconnected nodes after this many hours without a heartbeat. Zero disables cleanup. }
         join_command_expiry_hours: { type: integer, minimum: 1, maximum: 720, default: 24, description: Lifetime of one-line join commands and pairing tokens in hours. }
         revision: { $ref: '#/components/schemas/DecimalUint64' }
         pressure_state: { type: string, enum: [normal, warning, saving] }

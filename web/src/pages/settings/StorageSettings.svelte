@@ -21,6 +21,7 @@
   let notificationsEnabled = $state(true);
   let relayCleanupDays = $state(30);
   let joinCommandExpiryHours = $state(24);
+  let offlineNodeCleanupHours = $state(0);
   let busy = $state(false);
   let refreshBusy = false;
   let error = $state('');
@@ -40,6 +41,7 @@
     notificationsEnabled = status.settings.notifications_enabled;
     relayCleanupDays = status.settings.relay_cleanup_days ?? 30;
     joinCommandExpiryHours = status.settings.join_command_expiry_hours ?? 24;
+    offlineNodeCleanupHours = status.settings.offline_node_cleanup_hours ?? 0;
   }
 
   async function load(): Promise<void> {
@@ -57,9 +59,9 @@
     if (!storageStatus) return;
     busy = true; error = ''; saved = '';
     try {
-      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: notificationsEnabled, relay_cleanup_days: relayCleanupDays, join_command_expiry_hours: joinCommandExpiryHours });
+      storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: notificationsEnabled, relay_cleanup_days: relayCleanupDays, join_command_expiry_hours: joinCommandExpiryHours, offline_node_cleanup_hours: offlineNodeCleanupHours });
       saved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
-      onSaved('Storage & sampling updated', `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${notificationsEnabled ? 'Enabled' : 'Disabled'}\n• One-line command expiry: ${joinCommandExpiryHours} hours\n\nCollection settings take effect on the next sampling cycle.`);
+      onSaved('Storage & sampling updated', `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${notificationsEnabled ? 'Enabled' : 'Disabled'}\n• One-line command expiry: ${joinCommandExpiryHours} hours\n• Delete unreachable nodes after: ${offlineNodeCleanupHours ? `${offlineNodeCleanupHours} hours` : 'Off'}\n\nCollection settings take effect on the next sampling cycle.`);
       onNotificationsChanged();
     } catch (err) {
       if (err instanceof ApiError && err.authExpired) onAuthExpired();
@@ -113,6 +115,10 @@
       <label>Storage notifications<select bind:value={notificationsEnabled} disabled={busy || !isOwner}><option value={true}>Enabled</option><option value={false}>Disabled</option></select></label>
       <label>Remove unused relay access after (days, 0 = never)<input type="number" min="0" max="3650" step="1" required bind:value={relayCleanupDays} disabled={busy || !isOwner} /></label>
       <label>One-line command expiry (hours)<input type="number" min="1" max="720" step="1" required bind:value={joinCommandExpiryHours} disabled={busy || !isOwner} /></label>
+      <label>Delete unreachable nodes after (hours, 0 = off)
+        <input type="number" min="0" max="87600" step="1" required bind:value={offlineNodeCleanupHours} disabled={busy || !isOwner} />
+        <small class="muted">Permanently deletes disconnected nodes and their history after this many hours without a heartbeat. The hub and nodes awaiting their first connection are protected.</small>
+      </label>
       {#if isOwner}<div class="setup-actions"><button class="button primary" type="submit" disabled={busy || PREVIEW_MODE}>{busy ? 'Saving…' : 'Save settings'}</button></div>{/if}
     </form>
   {:else if busy}

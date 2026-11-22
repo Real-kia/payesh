@@ -12,6 +12,7 @@ import (
 )
 
 const DefaultDatabaseLimit int64 = 1000000000
+const maxOfflineNodeCleanupHours = 87600
 
 var ErrSettingsConflict = errors.New("storage settings changed; reload and retry")
 
@@ -26,9 +27,10 @@ type StorageSettings struct {
 	RelayCleanupDays int `json:"relay_cleanup_days"`
 	// JoinCommandExpiryHours sets the lifetime of one-line join commands
 	// and enrollment pairing tokens in hours (default: 24 = 1 day).
-	JoinCommandExpiryHours int    `json:"join_command_expiry_hours"`
-	Revision               int64  `json:"revision,string"`
-	PressureState          string `json:"pressure_state"`
+	JoinCommandExpiryHours  int    `json:"join_command_expiry_hours"`
+	OfflineNodeCleanupHours int    `json:"offline_node_cleanup_hours"`
+	Revision                int64  `json:"revision,string"`
+	PressureState           string `json:"pressure_state"`
 }
 type StorageStatus struct {
 	Settings               StorageSettings `json:"settings"`
@@ -57,6 +59,9 @@ func (p *StorageSettings) Validate() error {
 	if p.RelayCleanupDays < 0 || p.RelayCleanupDays > 3650 {
 		return errors.New("relay cleanup must be 0–3650 days")
 	}
+	if p.OfflineNodeCleanupHours < 0 || p.OfflineNodeCleanupHours > maxOfflineNodeCleanupHours {
+		return errors.New("offline node cleanup must be 0–87600 hours")
+	}
 	if p.JoinCommandExpiryHours <= 0 {
 		p.JoinCommandExpiryHours = 24
 	}
@@ -72,7 +77,7 @@ func (s *Store) initStorageSettings(ctx context.Context) error {
 }
 func (s *Store) StorageSettings(ctx context.Context) (StorageSettings, bool, error) {
 	p := DefaultStorageSettings()
-	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,relay_cleanup_days,join_command_expiry_hours,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.RelayCleanupDays, &p.JoinCommandExpiryHours, &p.Revision, &p.PressureState)
+	err := s.db.QueryRowContext(ctx, `SELECT max_bytes,sample_seconds,pressure_seconds,adaptive,notifications,relay_cleanup_days,join_command_expiry_hours,offline_node_cleanup_hours,revision,pressure_state FROM storage_settings WHERE singleton=1`).Scan(&p.MaxDatabaseBytes, &p.SampleSeconds, &p.PressureSampleSeconds, &p.AdaptiveSampling, &p.NotificationsEnabled, &p.RelayCleanupDays, &p.JoinCommandExpiryHours, &p.OfflineNodeCleanupHours, &p.Revision, &p.PressureState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, false, nil
 	}
@@ -98,7 +103,7 @@ func (s *Store) SaveStorageSettings(ctx context.Context, p StorageSettings) erro
 		}
 		p.Revision = 1
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,relay_cleanup_days=?,join_command_expiry_hours=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.RelayCleanupDays, p.JoinCommandExpiryHours, p.Revision)
+	result, err := s.db.ExecContext(ctx, `UPDATE storage_settings SET max_bytes=?,sample_seconds=?,pressure_seconds=?,adaptive=?,notifications=?,relay_cleanup_days=?,join_command_expiry_hours=?,offline_node_cleanup_hours=?,revision=revision+1 WHERE singleton=1 AND revision=?`, p.MaxDatabaseBytes, p.SampleSeconds, p.PressureSampleSeconds, p.AdaptiveSampling, p.NotificationsEnabled, p.RelayCleanupDays, p.JoinCommandExpiryHours, p.OfflineNodeCleanupHours, p.Revision)
 	if err != nil {
 		return err
 	}

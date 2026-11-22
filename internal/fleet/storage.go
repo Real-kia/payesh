@@ -23,15 +23,29 @@ func (a *API) storageSettings(w http.ResponseWriter, r *http.Request) {
 			writeFleetError(w, 403, "owner_required", "only the owner can change storage settings", false)
 			return
 		}
-		var request monitoring.StorageSettings
+		var request struct {
+			monitoring.StorageSettings
+			OfflineNodeCleanupHours *int `json:"offline_node_cleanup_hours"`
+		}
 		if !decode(w, r, &request) {
 			return
 		}
-		if err := request.Validate(); err != nil {
+		settings := request.StorageSettings
+		if request.OfflineNodeCleanupHours != nil {
+			settings.OfflineNodeCleanupHours = *request.OfflineNodeCleanupHours
+		} else {
+			current, _, err := a.store.StorageSettings(r.Context())
+			if err != nil {
+				writeFleetError(w, 503, "storage_unavailable", "storage settings could not be loaded", true)
+				return
+			}
+			settings.OfflineNodeCleanupHours = current.OfflineNodeCleanupHours
+		}
+		if err := settings.Validate(); err != nil {
 			writeFleetError(w, 400, "invalid_settings", err.Error(), false)
 			return
 		}
-		if err := a.store.SaveStorageSettings(r.Context(), request); err != nil {
+		if err := a.store.SaveStorageSettings(r.Context(), settings); err != nil {
 			if errors.Is(err, monitoring.ErrSettingsConflict) {
 				writeFleetError(w, 409, "settings_conflict", err.Error(), true)
 			} else {

@@ -78,6 +78,14 @@ The owner can configure the database limit (default 1 GB), normal sampling
 and in-app notifications. See [storage and notifications](STORAGE_AND_NOTIFICATIONS.md)
 for cleanup thresholds, node compatibility, and retention behavior.
 
+**Delete unreachable nodes after** is an owner setting in **Storage & sampling**.
+Enter a whole number of hours since the last heartbeat. The default, **0**,
+disables automatic deletion. Payesh checks disconnected nodes at startup and about every five minutes,
+removing up to ten per pass. Eligible nodes and their history are permanently deleted, including
+nodes that already exceed the timeout when the setting is enabled. The hub
+and nodes awaiting their first connection are protected. Cleanup also skips
+nodes with frozen or relinquished cutover authority.
+
 ## Server country flags
 
 The hub shows a country flag before each server name. It finds the country by

@@ -101,6 +101,7 @@ var additiveColumns = []additiveColumn{
 	{table: "storage_settings", column: "relay_cleanup_days", ddl: `ALTER TABLE storage_settings ADD COLUMN relay_cleanup_days INTEGER NOT NULL DEFAULT 30`},
 	// Lifetime of one-line join commands and pairing tokens in hours (default: 24 = 1 day).
 	{table: "storage_settings", column: "join_command_expiry_hours", ddl: `ALTER TABLE storage_settings ADD COLUMN join_command_expiry_hours INTEGER NOT NULL DEFAULT 24`},
+	{table: "storage_settings", column: "offline_node_cleanup_hours", ddl: `ALTER TABLE storage_settings ADD COLUMN offline_node_cleanup_hours INTEGER NOT NULL DEFAULT 0`},
 	// When a node was last seen connecting through the relay.
 	// Addresses the node reports on its own interfaces, separated by U+001F.
 	{table: "server_locations", column: "addresses", ddl: `ALTER TABLE server_locations ADD COLUMN addresses TEXT NOT NULL DEFAULT ''`},

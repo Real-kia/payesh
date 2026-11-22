@@ -62,6 +62,30 @@ func (s *Store) DeleteServerAsync(ctx context.Context, serverID contracts.Server
 	return nil
 }
 
+// DeleteExpiredOfflineNode atomically checks eligibility and deletes one node
+// with its history. A heartbeat or settings change committed first takes precedence.
+func (s *Store) DeleteExpiredOfflineNode(ctx context.Context, now time.Time, timeoutHours int) (contracts.ServerID, error) {
+	if timeoutHours <= 0 || timeoutHours > maxOfflineNodeCleanupHours || s.localServerID == "" {
+		return "", nil
+	}
+	cutoff := FormatPersistedTime(now.Add(-time.Duration(timeoutHours) * time.Hour))
+	var id contracts.ServerID
+	err := s.db.QueryRowContext(ctx, `DELETE FROM servers WHERE id=(
+		SELECT id FROM servers
+		WHERE role='node' AND id<>? AND connection_state='disconnected' AND last_heartbeat<=?
+		AND NOT EXISTS (
+			SELECT 1 FROM server_authority WHERE server_id=servers.id AND state<>'active'
+		)
+		ORDER BY last_heartbeat, id LIMIT 1
+	) AND EXISTS (
+		SELECT 1 FROM storage_settings WHERE singleton=1 AND offline_node_cleanup_hours=?
+	) RETURNING id`, s.localServerID, cutoff, timeoutHours).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 func (s *Store) purgeServer(serverID contracts.ServerID) {
 	started := time.Now()
 	id := string(serverID)

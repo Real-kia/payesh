@@ -74,6 +74,7 @@ func TestStorageSettingsRequireOwnerAndCSRF(t *testing.T) {
 		t.Fatal("fresh status omitted additive recovery field")
 	}
 	status.Settings.SampleSeconds = 10
+	status.Settings.OfflineNodeCleanupHours = 24
 	body, _ := json.Marshal(status.Settings)
 	if w := call("PUT", path, owner, "", body); w.Code != 403 {
 		t.Fatal("CSRF bypass", w.Code)
@@ -86,6 +87,24 @@ func TestStorageSettingsRequireOwnerAndCSRF(t *testing.T) {
 	}
 	if w := call("PUT", path, owner, csrf, body); w.Code != 409 {
 		t.Fatal("stale settings accepted", w.Code)
+	}
+	saved, _, err := store.StorageSettings(t.Context())
+	if err != nil || saved.OfflineNodeCleanupHours != 24 {
+		t.Fatalf("saved offline cleanup timeout = %d, %v", saved.OfflineNodeCleanupHours, err)
+	}
+	body, _ = json.Marshal(saved)
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "offline_node_cleanup_hours")
+	body, _ = json.Marshal(legacy)
+	w = call("PUT", path, owner, csrf, body)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || status.Settings.OfflineNodeCleanupHours != 24 {
+		t.Fatalf("legacy request changed cleanup timeout: %s, %v", w.Body.String(), err)
 	}
 	if w := call("GET", "/api/v1/notifications", "", "", nil); w.Code != 401 {
 		t.Fatal("notifications leaked")

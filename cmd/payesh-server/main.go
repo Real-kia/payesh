@@ -170,6 +170,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "database compacted: %d MB -> %d MB; incremental vacuum enabled\n", result.BeforeBytes>>20, result.AfterBytes>>20)
 		}
 	}()
+	var enrollmentAuthority *transport.CertificateAuthority
+	var nodeHub *nodehub.Hub
+	if nodeConfig.Enabled() || *bootstrapSecret != "" {
+		enrollmentAuthority, err = transport.NewPersistentCertificateAuthority(time.Now().UTC(), store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configure enrollment authority:", err)
+			os.Exit(1)
+		}
+		nodeHub, err = nodehub.NewHub(enrollmentAuthority, store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configure node transport hub:", err)
+			os.Exit(1)
+		}
+	}
 	retentionDone := make(chan struct{})
 	go func() {
 		defer close(retentionDone)
@@ -177,7 +191,8 @@ func main() {
 			pruneCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			now := time.Now().UTC()
-			if refreshErr := store.RefreshServerStates(pruneCtx, now); refreshErr != nil && pruneCtx.Err() == nil {
+			refreshErr := store.RefreshServerStates(pruneCtx, now)
+			if refreshErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "refresh server states:", refreshErr)
 			}
 			if livenessErr := evaluateUnreachable(pruneCtx, store, alertEngine, now); livenessErr != nil && pruneCtx.Err() == nil {
@@ -191,6 +206,11 @@ func main() {
 			}
 			if _, pruneErr := store.Prune(pruneCtx, now, monitoring.DefaultRetentionPolicy()); pruneErr != nil && pruneCtx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "retention prune:", pruneErr)
+			}
+			if refreshErr == nil && ctx.Err() == nil {
+				cleanupCtx, cancelCleanup := context.WithTimeout(ctx, 30*time.Second)
+				defer cancelCleanup()
+				cleanUpOfflineNodes(cleanupCtx, store, enrollmentAuthority, now)
 			}
 		}
 		// Apply age limits once at startup, then keep the work bounded and
@@ -229,24 +249,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "create traffic service:", trafficErr)
 		os.Exit(1)
 	}
-	var enrollmentAuthority *transport.CertificateAuthority
-	var nodeHub *nodehub.Hub
 	var updateScheduler *updater.Scheduler
 	var installService *fleet.InstallService
 	var nodeServer *http.Server
 	var nodePorts *nodehub.NodePorts
-	if nodeConfig.Enabled() || *bootstrapSecret != "" {
-		enrollmentAuthority, err = transport.NewPersistentCertificateAuthority(time.Now().UTC(), store)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "configure enrollment authority:", err)
-			os.Exit(1)
-		}
-		nodeHub, err = nodehub.NewHub(enrollmentAuthority, store)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "configure node transport hub:", err)
-			os.Exit(1)
-		}
-	}
 	if nodeHub != nil {
 		nodeServer = &http.Server{Handler: nodeTransportHandler(nodeHub), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: serverErrorLog(os.Stderr)}
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequestClientCert, NextProtos: []string{"http/1.1"}, GetCertificate: httpsManager.GetCertificate}
@@ -806,6 +812,37 @@ func certificateSHA256(path string) string {
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return hex.EncodeToString(sum[:])
+}
+
+func cleanUpOfflineNodes(ctx context.Context, store *monitoring.Store, authority *transport.CertificateAuthority, now time.Time) {
+	settings, _, err := store.StorageSettings(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, "offline node cleanup settings:", err)
+		}
+		return
+	}
+	if settings.OfflineNodeCleanupHours == 0 {
+		return
+	}
+	for range 10 {
+		id, err := store.DeleteExpiredOfflineNode(ctx, now, settings.OfflineNodeCleanupHours)
+		if err != nil {
+			if ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "offline node cleanup:", err)
+			}
+			return
+		}
+		if id == "" {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "offline node cleanup: deleted", id)
+		if authority != nil {
+			if err := authority.RevokeServer(id); err != nil {
+				fmt.Fprintln(os.Stderr, "offline node cleanup: revoke deleted node identity:", err)
+			}
+		}
+	}
 }
 
 // runHousekeeping removes what the hub created for joins and relays once it
