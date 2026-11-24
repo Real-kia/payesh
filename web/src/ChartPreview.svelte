@@ -5,7 +5,7 @@
   import { chartColors, areaFill, hoverValues } from './lib/chart';
   import type { PreviewChartData, PreviewChartRange } from './preview/fixtures';
 
-  let { label = 'Resource chart', range = '15m', data, timezone = 'UTC', metric = 'both' }: { label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string; metric?: 'cpu' | 'memory' | 'swap' | 'both' } = $props();
+  let { label = 'Resource chart', range = '15m', data, timezone = 'UTC', metric = 'both', fit = false }: { fit?: boolean; label?: string; range?: PreviewChartRange; data: PreviewChartData; timezone?: string; metric?: 'cpu' | 'memory' | 'swap' | 'both' } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
 
@@ -19,6 +19,17 @@
     plot?.setData(updated);
   });
 
+  // Zoom the Y axis to the visible data (never beyond 0–100%) so small swings
+  // stay readable; the default stays the honest full 0–100% scale.
+  function fitRange(_u: uPlot, min: number | null, max: number | null): [number, number] {
+    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) return [0, 100];
+    const span = Math.max(max - min, 4);
+    const mid = (max + min) / 2;
+    const lo = Math.max(0, mid - span * 0.65);
+    const hi = Math.min(100, mid + span * 0.65);
+    return hi - lo < 1 ? [0, 100] : [lo, hi];
+  }
+
   onMount(() => {
     if (data.coverage === 'unavailable' || data.timestamps.length === 0) return;
     const { muted, line, surface, read } = chartColors(host);
@@ -31,7 +42,7 @@
       width: Math.max(240, host.clientWidth || 760),
       height: 220,
       plugins: [hoverValues(timezone)],
-      scales: { x: { time: true }, y: { range: [0, 100] } },
+      scales: { x: { time: true }, y: { range: fit ? fitRange : [0, 100] } },
       axes: [
         {
           stroke: muted,

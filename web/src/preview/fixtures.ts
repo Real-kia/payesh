@@ -44,6 +44,7 @@ export type PreviewServer = {
   platform: string;
   capabilities: string[];
   version: string;
+  agentVersion?: string;
   lastHeartbeat: string | null;
   connectionState: ConnectionState;
   freshnessState: FreshnessState;

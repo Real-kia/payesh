@@ -31,15 +31,42 @@ const MaxDurableJobs = 10000
 // CreateJob durably creates a bounded job. A retry with the same operation
 // identity returns the original row; reuse for different input fails closed.
 func (s *Store) CreateJob(ctx context.Context, job contracts.Job, requestHash string, now time.Time) (contracts.Job, bool, error) {
-	if err := validateJob(job, requestHash, now); err != nil {
-		return contracts.Job{}, false, err
-	}
+	return s.CreateJobGroup(ctx, job, requestHash, nil, now)
+}
+
+type JobRegistration struct {
+	Job         contracts.Job
+	RequestHash string
+}
+
+// CreateJobGroup publishes a parent and its targets in one transaction.
+func (s *Store) CreateJobGroup(ctx context.Context, job contracts.Job, requestHash string, children []JobRegistration, now time.Time) (contracts.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return contracts.Job{}, false, err
 	}
 	defer tx.Rollback()
+	parent, created, err := createJobTx(ctx, tx, job, requestHash, now)
+	if err != nil {
+		return contracts.Job{}, false, err
+	}
+	if created {
+		for _, child := range children {
+			if _, _, err := createJobTx(ctx, tx, child.Job, child.RequestHash, now); err != nil {
+				return contracts.Job{}, false, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return contracts.Job{}, false, err
+	}
+	return parent, created, nil
+}
 
+func createJobTx(ctx context.Context, tx *sql.Tx, job contracts.Job, requestHash string, now time.Time) (contracts.Job, bool, error) {
+	if err := validateJob(job, requestHash, now); err != nil {
+		return contracts.Job{}, false, err
+	}
 	existing, found, err := getJobByOperationTx(ctx, tx, job.Kind, job.TargetServerID, job.IdempotencyKey)
 	if err != nil {
 		return contracts.Job{}, false, err
@@ -84,9 +111,7 @@ func (s *Store) CreateJob(ctx context.Context, job contracts.Job, requestHash st
 	if err != nil {
 		return contracts.Job{}, false, fmt.Errorf("insert job: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return contracts.Job{}, false, err
-	}
+	job.UpdatedAt = now.UTC()
 	return job, true, nil
 }
 
@@ -104,7 +129,19 @@ func (s *Store) ListJobsByKind(ctx context.Context, kind string) ([]contracts.Jo
 	if !validJobText(kind) {
 		return nil, errors.New("invalid job kind")
 	}
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE kind=? ORDER BY created_at,id LIMIT ?`, kind, MaxDurableJobs)
+	return s.queryJobs(ctx, jobSelect+` WHERE kind=? ORDER BY created_at,id LIMIT ?`, kind, MaxDurableJobs)
+}
+
+// ListUpdateTargets loads only a rollout's children in durable execution order.
+func (s *Store) ListUpdateTargets(ctx context.Context, parentID string) ([]contracts.Job, error) {
+	if !validJobText(parentID) {
+		return nil, errors.New("invalid rollout job ID")
+	}
+	return s.queryJobs(ctx, jobSelect+` WHERE kind='update-node' AND idempotency_key>=? AND idempotency_key<? ORDER BY id`, parentID+":", parentID+";")
+}
+
+func (s *Store) queryJobs(ctx context.Context, query string, args ...any) ([]contracts.Job, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +257,18 @@ func (s *Store) ClaimEnrollmentJob(ctx context.Context, jobID string, serverID c
 
 // TransitionJob performs the worker-side compare-and-swap state update.
 func (s *Store) TransitionJob(ctx context.Context, id string, expectedRevision uint64, state contracts.JobState, progress uint8, jobError *contracts.Error, now time.Time) (contracts.Job, error) {
+	return s.transitionJob(ctx, id, expectedRevision, state, progress, jobError, nil, now)
+}
+
+func (s *Store) TransitionRolloutJob(ctx context.Context, job contracts.Job, state contracts.JobState, progress uint8, reason *contracts.Error, now time.Time) (contracts.Job, error) {
+	if job.Kind != "update" || job.Action == nil || !job.ExpiresAt.After(now) ||
+		!(job.State == contracts.JobRunning && state == contracts.JobPaused || job.State == contracts.JobPaused && state == contracts.JobRunning) {
+		return contracts.Job{}, ErrJobRevisionConflict
+	}
+	return s.transitionJob(ctx, job.ID, job.Revision, state, progress, reason, job.Action, now)
+}
+
+func (s *Store) transitionJob(ctx context.Context, id string, expectedRevision uint64, state contracts.JobState, progress uint8, jobError *contracts.Error, action *contracts.ActionRequest, now time.Time) (contracts.Job, error) {
 	if !validJobText(id) || !validJobState(state) || progress > 100 || now.IsZero() {
 		return contracts.Job{}, errors.New("invalid job transition")
 	}
@@ -227,8 +276,12 @@ func (s *Store) TransitionJob(ctx context.Context, id string, expectedRevision u
 	if err != nil {
 		return contracts.Job{}, err
 	}
+	actionJSON, err := marshalAction(action)
+	if err != nil {
+		return contracts.Job{}, err
+	}
 	next := expectedRevision + 1
-	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET state=?,revision=?,progress=?,error_json=?,updated_at=? WHERE id=? AND revision=?`, string(state), strconv.FormatUint(next, 10), progress, errorJSON, FormatPersistedTime(now), id, strconv.FormatUint(expectedRevision, 10))
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET state=?,revision=?,progress=?,error_json=?,updated_at=?,action_json=COALESCE(?,action_json) WHERE id=? AND revision=?`, string(state), strconv.FormatUint(next, 10), progress, errorJSON, FormatPersistedTime(now), actionJSON, id, strconv.FormatUint(expectedRevision, 10))
 	if err != nil {
 		return contracts.Job{}, err
 	}
@@ -243,6 +296,30 @@ func (s *Store) TransitionJob(ctx context.Context, id string, expectedRevision u
 	}
 	job, _, err := s.GetJob(ctx, id)
 	return job, err
+}
+
+// ClaimUpdateTarget serializes active rollouts on a server. Queued targets
+// from other rollouts do not reserve the server while waiting for their turn.
+func (s *Store) ClaimUpdateTarget(ctx context.Context, parent, child contracts.Job, coreActionID string, now time.Time) (contracts.Job, error) {
+	stamp := FormatPersistedTime(now)
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs AS child SET state='running',revision=?,error_json=NULL,updated_at=?
+		WHERE id=? AND revision=? AND state IN ('queued','running') AND child.cancel_requested=0 AND child.expires_at>?
+		  AND EXISTS (SELECT 1 FROM jobs parent WHERE parent.id=? AND parent.kind='update' AND parent.state='running' AND parent.cancel_requested=0 AND parent.expires_at>?)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM jobs other WHERE other.target_server_id=child.target_server_id AND other.id<>child.id
+		      AND (other.state IN ('running','cancelling','recovery-required') OR (other.state='queued' AND other.kind<>'update-node'))
+		      AND NOT (other.id=? AND other.kind='core-update-action' AND json_extract(other.action_json,'$.action') IS 'core.update')
+		  )`,
+		strconv.FormatUint(child.Revision+1, 10), stamp, child.ID, strconv.FormatUint(child.Revision, 10), stamp,
+		parent.ID, stamp, coreActionID)
+	if err != nil {
+		return contracts.Job{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return contracts.Job{}, ErrJobRevisionConflict
+	}
+	child.State, child.Revision, child.UpdatedAt, child.Error = contracts.JobRunning, child.Revision+1, now, nil
+	return child, nil
 }
 
 // RequestJobCancellation records an idempotent cancellation result and uses
@@ -310,6 +387,13 @@ func (s *Store) RequestJobCancellation(ctx context.Context, id, idempotencyKey s
 			return contracts.Job{}, err
 		}
 	}
+	if job.Kind == "update" && job.State == contracts.JobCancelled {
+		_, err = tx.ExecContext(ctx, `UPDATE jobs SET state=?,cancel_requested=1,progress=100,revision=CAST(CAST(revision AS INTEGER)+1 AS TEXT),updated_at=? WHERE kind='update-node' AND state=? AND idempotency_key>=? AND idempotency_key<?`,
+			string(contracts.JobCancelled), FormatPersistedTime(now), string(contracts.JobQueued), job.ID+":", job.ID+";")
+		if err != nil {
+			return contracts.Job{}, err
+		}
+	}
 	encoded, err := json.Marshal(job)
 	if err != nil {
 		return contracts.Job{}, err
@@ -323,17 +407,17 @@ func (s *Store) RequestJobCancellation(ctx context.Context, id, idempotencyKey s
 	return job, nil
 }
 
-const jobSelect = `SELECT id,kind,state,revision,idempotency_key,target_server_id,expires_at,cancel_requested,progress,error_json,action_json,result_json FROM jobs`
+const jobSelect = `SELECT id,kind,state,revision,idempotency_key,target_server_id,expires_at,cancel_requested,progress,error_json,action_json,result_json,updated_at FROM jobs`
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanJob(row rowScanner) (contracts.Job, bool, error) {
 	var job contracts.Job
-	var state, revision, expiresAt string
+	var state, revision, expiresAt, updatedAt string
 	var target sql.NullString
 	var cancel int
 	var errorJSON, actionJSON, resultJSON sql.NullString
-	err := row.Scan(&job.ID, &job.Kind, &state, &revision, &job.IdempotencyKey, &target, &expiresAt, &cancel, &job.Progress, &errorJSON, &actionJSON, &resultJSON)
+	err := row.Scan(&job.ID, &job.Kind, &state, &revision, &job.IdempotencyKey, &target, &expiresAt, &cancel, &job.Progress, &errorJSON, &actionJSON, &resultJSON, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Job{}, false, nil
 	}
@@ -346,6 +430,9 @@ func scanJob(row rowScanner) (contracts.Job, bool, error) {
 	job.Revision, err = strconv.ParseUint(revision, 10, 64)
 	if err == nil {
 		job.ExpiresAt, err = time.Parse(persistedTimeLayout, expiresAt)
+	}
+	if err == nil {
+		job.UpdatedAt, err = time.Parse(persistedTimeLayout, updatedAt)
 	}
 	if err == nil && errorJSON.Valid {
 		job.Error = &contracts.Error{}
@@ -382,14 +469,14 @@ func validateJob(job contracts.Job, requestHash string, now time.Time) error {
 func validJobText(value string) bool { return value != "" && len(value) <= 128 }
 func validJobState(state contracts.JobState) bool {
 	switch state {
-	case contracts.JobQueued, contracts.JobRunning, contracts.JobCancelling, contracts.JobSucceeded, contracts.JobFailed, contracts.JobCancelled, contracts.JobRecoveryRequired:
+	case contracts.JobQueued, contracts.JobRunning, contracts.JobPaused, contracts.JobSkipped, contracts.JobCancelling, contracts.JobSucceeded, contracts.JobFailed, contracts.JobCancelled, contracts.JobRecoveryRequired:
 		return true
 	default:
 		return false
 	}
 }
 func terminalJobState(state contracts.JobState) bool {
-	return state == contracts.JobSucceeded || state == contracts.JobFailed || state == contracts.JobCancelled || state == contracts.JobRecoveryRequired
+	return state == contracts.JobSkipped || state == contracts.JobSucceeded || state == contracts.JobFailed || state == contracts.JobCancelled || state == contracts.JobRecoveryRequired
 }
 func nullableServerID(id contracts.ServerID) any {
 	return string(id)
@@ -500,8 +587,10 @@ func (s *Store) LeaseNextActionJob(ctx context.Context, serverID contracts.Serve
 	   AND child.cancel_requested=0 AND parent.cancel_requested=0
 	   AND child.expires_at>? AND parent.expires_at>?
 	   AND node.connection_state<>'revoked'
+	   AND COALESCE(json_extract(parent.action_json,'$.arguments.window_start')<=?,1)
+	   AND COALESCE(json_extract(parent.action_json,'$.arguments.window_end')>?,1)
 	 ))
-	) ORDER BY created_at,id LIMIT 1`, string(serverID), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), FormatPersistedTime(now), FormatPersistedTime(now), FormatPersistedTime(now))
+	) ORDER BY created_at,id LIMIT 1`, string(serverID), FormatPersistedTime(now), string(contracts.JobQueued), string(contracts.JobRunning), FormatPersistedTime(now), FormatPersistedTime(now), FormatPersistedTime(now), FormatPersistedTime(now), FormatPersistedTime(now))
 	job, found, err := scanJob(row)
 	if err != nil || !found {
 		return JobLease{}, found, err

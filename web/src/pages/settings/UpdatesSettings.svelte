@@ -2,6 +2,7 @@
   import Icon from '../../Icon.svelte';
   import StatusPill from '../../components/StatusPill.svelte';
   import { PREVIEW_MODE } from '../../lib/env';
+  import { apiClient } from '../../api';
   import type { UpdateStatus, WebUpdateState } from '../../api';
 
   let { status, installedVersion, checkBusy, checkError, applyBusy, applyError, webUpdate, isOwner, isNewerVersion, onCheck, onUpdate, outdatedNodes = 0, totalNodes = 0, latestNode = '', offlineNodes = 0, offlineOutdatedNodes = 0, nodesBusy = false, onUpdateNodes }: {
@@ -24,6 +25,20 @@
     nodesBusy?: boolean;
     onUpdateNodes?: () => void;
   } = $props();
+
+  let restartBusy = $state(false);
+  let restartError = $state('');
+  async function restartHub() {
+    restartBusy = true; restartError = '';
+    try {
+      await apiClient.restartHub();
+      // The service manager restarts the hub; reload once it answers again.
+      setTimeout(() => location.reload(), 6000);
+    } catch (error) {
+      restartError = error instanceof Error ? error.message : 'Unable to restart.';
+      restartBusy = false;
+    }
+  }
 
   const PER_PAGE = 5;
   let page = $state(0);
@@ -66,6 +81,13 @@
     </div>
   </div>
 
+  {#if status?.restart_available && isOwner}
+    <div class="update-progress" role="status">
+      <div><strong>v{status.restart_available} is installed on this server</strong><span class="muted">This hub shares its programs with another Payesh install that was updated. Restart to run the new version.</span></div>
+      <button class="button primary" type="button" disabled={restartBusy} onclick={() => void restartHub()}>{restartBusy ? 'Restarting…' : 'Restart now'}</button>
+    </div>
+    {#if restartError}<p class="form-error" role="alert">{restartError}</p>{/if}
+  {/if}
   {#if status && !checkBusy && !checkError}
     {#if webUpdateActive}
       <div class="update-progress" role="status">

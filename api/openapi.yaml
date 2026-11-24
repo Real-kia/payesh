@@ -759,10 +759,36 @@ paths:
     post:
       summary: Owner-authorized signed fleet rollout
       operationId: startUpdate
+      description: Creates one durable job for the selected servers. The hub runs targets serially, in waves of up to 20 after any canary. A selected hub always goes first and must succeed or already be on the requested release before nodes proceed.
       security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateRequest' } } } }
       responses: { '202': { description: Update job, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /updates/{jobId}/resume:
+    post:
+      operationId: resumeUpdate
+      summary: Resume a paused signed fleet rollout
+      description: Requires owner access. Acknowledges the failed wave and continues with pending targets. Completed and failed targets keep their recorded results.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - $ref: '#/components/parameters/CSRFHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision]
+              properties:
+                expected_revision: { $ref: '#/components/schemas/DecimalUint64' }
+      responses:
+        '202': { description: Rollout resumed, content: { application/json: { schema: { $ref: '#/components/schemas/Job' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /updates/latest:
     get:
       operationId: checkLatestGitHubRelease
@@ -1331,7 +1357,8 @@ components:
         architecture: { type: string }
         platform: { type: string }
         capabilities: { type: array, maxItems: 64, items: { type: string, maxLength: 64 } }
-        version: { type: string }
+        version: { type: string, description: Release installed on the server. }
+        agent_version: { type: string, description: Reported agent version. Older nodes fall back to their installed release. }
         last_heartbeat: { type: string, format: date-time, nullable: true }
         connection_state: { type: string, enum: [connected, disconnected, never-connected, revoked] }
         freshness_state: { type: string, enum: [fresh, stale, unknown] }
@@ -1429,7 +1456,8 @@ components:
       properties:
         id: { type: string }
         kind: { type: string }
-        state: { type: string, enum: [queued, running, cancelling, succeeded, failed, cancelled, recovery-required] }
+        state: { type: string, enum: [queued, running, paused, skipped, cancelling, succeeded, failed, cancelled, recovery-required] }
+        resumable: { type: boolean, description: Present and true when the owner can resume a paused rollout. }
         revision: { $ref: '#/components/schemas/DecimalUint64' }
         idempotency_key: { type: string, minLength: 1, maxLength: 128 }
         target_server_id: { type: string }
@@ -1778,8 +1806,57 @@ components:
       properties: { items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Release' } }, next_cursor: { type: string, maxLength: 256 } }
     UpdateRequest:
       type: object
-      required: [release, selected_server_ids, idempotency_key]
-      properties: { release: { type: string, maxLength: 64 }, selected_server_ids: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 16, maxLength: 128 } }, idempotency_key: { type: string, minLength: 1, maxLength: 128 }, expected_revision: { $ref: '#/components/schemas/DecimalUint64' }, expires_at: { type: string, format: date-time } }
+      required: [release, idempotency_key]
+      oneOf:
+        - required: [selected_server_ids]
+        - required: [tag]
+      properties:
+        release: { type: string, maxLength: 64 }
+        selected_server_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: { type: string, minLength: 16, maxLength: 128 }
+        tag:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Selects all servers with this tag, using a case-insensitive match. Membership is fixed for the job and its idempotent replays.
+        idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+        expected_revision: { $ref: '#/components/schemas/DecimalUint64' }
+        expires_at:
+          type: string
+          format: date-time
+          description: Authorization expiry. Defaults to 30 minutes from submission or from the start of a future update window. The maximum is 30 days from submission.
+        canary:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 0
+          description: Size of the initial wave and no greater than the selection size. Uses request ID order or server ID order for tag selection, with the hub promoted to first if selected. Zero uses regular waves from the start.
+        max_fail_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Pause before the next pending wave if failures exceed this percentage in a completed wave. Skips do not count toward the percentage. Omit to continue after node failures. A final wave with failures completes as failed.
+        skip_up_to_date:
+          type: boolean
+          default: false
+          description: Skip targets whose reported installed release matches the requested release. A skipped target has its own successful no-op outcome.
+        update_window:
+          type: object
+          required: [start, end]
+          description: Absolute time window for starting this rollout's targets. The start is inclusive and the end is exclusive. Activation already delivered may finish after the window closes, subject to authorization expiry.
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+        stagger_seconds:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          default: 0
+          description: Minimum delay after a node finishes before starting the next node self-update. Applies across wave boundaries.
     SSHInstallRequest:
       type: object
       required: [server_id, host, port, user, idempotency_key]

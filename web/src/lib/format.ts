@@ -89,5 +89,5 @@ export function roleLabel(role: PreviewServer['role']): string {
 /** The node agent's own version. Agents report it as a capability; older ones only report the release they came from. */
 export function nodeVersionOf(server: PreviewServer): string {
   const reported = server.capabilities.find((capability) => capability.startsWith('node-version:'));
-  return (reported ? reported.slice('node-version:'.length) : server.version).replace(/^v/, '');
+  return (server.agentVersion || reported?.slice('node-version:'.length) || server.version).replace(/^v/, '');
 }

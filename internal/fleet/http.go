@@ -333,7 +333,8 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.httpsSettings.ServeHTTP(w, r)
 		return
 	}
-	if a.updates != nil && (trimmedPath == "/api/v1/updates" || trimmedPath == "/api/v1/updates/latest" || trimmedPath == "/api/v1/updates/apply" || trimmedPath == "/api/v1/updates/status") {
+	if a.updates != nil && (trimmedPath == "/api/v1/updates" || trimmedPath == "/api/v1/updates/latest" || trimmedPath == "/api/v1/updates/apply" || trimmedPath == "/api/v1/updates/restart" || trimmedPath == "/api/v1/updates/status" ||
+		strings.HasPrefix(trimmedPath, "/api/v1/updates/") && strings.HasSuffix(trimmedPath, "/resume")) {
 		a.updates.ServeHTTP(w, r)
 		return
 	}

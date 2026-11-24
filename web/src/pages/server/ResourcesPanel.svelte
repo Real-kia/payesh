@@ -2,6 +2,15 @@
   import Icon from '../../Icon.svelte';
   import Sparkline from '../../Sparkline.svelte';
   import ChartPreview from '../../ChartPreview.svelte';
+
+  let fit = $state(readFit());
+  function readFit(): boolean {
+    try { return localStorage.getItem('payesh.chartFit') === '1'; } catch { return false; }
+  }
+  function toggleFit() {
+    fit = !fit;
+    try { localStorage.setItem('payesh.chartFit', fit ? '1' : '0'); } catch { /* ignore */ }
+  }
   import { clampPercent, formatBytes, metricValue, resourceLevel, sampleAge } from '../../lib/format';
   import type { PreviewChartData, PreviewChartRange, PreviewServer } from '../../preview/fixtures';
 
@@ -103,7 +112,8 @@
 
 <article class="panel chart-panel">
   <div class="panel-heading">
-      <div><h2>CPU utilization</h2><span class="muted">{#if server.capacity?.cpuCores}{server.capacity.cpuCores} {server.capacity.cpuCores === 1 ? 'core' : 'cores'} · {/if}Scale 0–100% · {timezone}</span></div>
+      <div><h2>CPU utilization</h2><span class="muted">{#if server.capacity?.cpuCores}{server.capacity.cpuCores} {server.capacity.cpuCores === 1 ? 'core' : 'cores'} · {/if}{fit ? 'Scale fitted to data' : 'Scale 0–100%'} · {timezone}</span></div>
+    <button type="button" class="button ghost small" aria-pressed={fit} title="Zoom the Y axis to the visible data" onclick={toggleFit}>{fit ? 'Full scale' : 'Fit to data'}</button>
     <div class="segmented" role="group" aria-label="Chart time range">
       {#each [['15m', '15 min'], ['1h', '1 hour'], ['24h', '24 hours']] as [id, label] (id)}
         <button type="button" aria-pressed={range === id} onclick={() => (range = id as PreviewChartRange)}>{label}</button>
@@ -115,8 +125,8 @@
       <span><i class="legend-dot accent"></i> CPU</span>
       {#if chartData.coverage === 'gap'}<span class="gap-note"><Icon name="alert-circle" size={12} /> Some samples are missing in this range</span>{/if}
     </div>
-    {#key `${range}-${theme}-${server.id}-${timezone}`}
-      <ChartPreview data={chartData} {range} {timezone} metric="cpu" label="CPU history over the selected time range" />
+    {#key `${range}-${theme}-${server.id}-${timezone}-${fit}`}
+      <ChartPreview data={chartData} {range} {timezone} metric="cpu" {fit} label="CPU history over the selected time range" />
     {/key}
     <div class="highlights">
       {#if server.capacity?.cpuCores}<span>Cores <strong class="tabular">{server.capacity.cpuCores}</strong></span>{/if}
@@ -128,9 +138,9 @@
 </article>
 
 <article class="panel chart-panel">
-  <div class="panel-heading"><div><h2>Memory utilization</h2><span class="muted">{#if server.capacity?.memoryTotalBytes}{formatBytes(server.capacity.memoryUsedBytes ?? '')} used of {formatBytes(server.capacity.memoryTotalBytes)} · {/if}Scale 0–100% · {timezone}</span></div></div>
+  <div class="panel-heading"><div><h2>Memory utilization</h2><span class="muted">{#if server.capacity?.memoryTotalBytes}{formatBytes(server.capacity.memoryUsedBytes ?? '')} used of {formatBytes(server.capacity.memoryTotalBytes)} · {/if}{fit ? 'Scale fitted to data' : 'Scale 0–100%'} · {timezone}</span></div></div>
   {#if chartData && chartData.coverage !== 'unavailable'}
-    <ChartPreview data={chartData} {range} {timezone} metric="memory" label="Memory history over the selected time range" />
+    {#key fit}<ChartPreview data={chartData} {range} {timezone} metric="memory" {fit} label="Memory history over the selected time range" />{/key}
     <div class="highlights">
       {#if server.capacity?.memoryTotalBytes}
         <span>Total <strong class="tabular">{formatBytes(server.capacity.memoryTotalBytes)}</strong></span>
@@ -144,9 +154,9 @@
 
 {#if hasSwap}
 <article class="panel chart-panel">
-  <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">{#if server.capacity?.swapTotalBytes}{formatBytes(server.capacity.swapUsedBytes ?? '')} used of {formatBytes(server.capacity.swapTotalBytes)} · {/if}Scale 0–100% · {timezone}</span></div></div>
+  <div class="panel-heading"><div><h2>Swap utilization</h2><span class="muted">{#if server.capacity?.swapTotalBytes}{formatBytes(server.capacity.swapUsedBytes ?? '')} used of {formatBytes(server.capacity.swapTotalBytes)} · {/if}{fit ? 'Scale fitted to data' : 'Scale 0–100%'} · {timezone}</span></div></div>
   {#if chartData && chartData.coverage !== 'unavailable' && hasSamples(chartData.swap)}
-    <ChartPreview data={chartData} {range} {timezone} metric="swap" label="Swap history over the selected time range" />
+    {#key fit}<ChartPreview data={chartData} {range} {timezone} metric="swap" {fit} label="Swap history over the selected time range" />{/key}
     <div class="highlights">
       {#if server.capacity?.swapTotalBytes}
         <span>Total <strong class="tabular">{formatBytes(server.capacity.swapTotalBytes)}</strong></span>

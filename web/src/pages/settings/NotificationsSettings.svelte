@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ActionFeedback from '../../components/ActionFeedback.svelte';
   import Icon from '../../Icon.svelte';
   import { formatDateTimeInTz } from '../../timezone';
   import type { StorageNotification } from '../../api';
@@ -36,23 +37,30 @@
       {#if canEdit}<button class="button ghost small" type="button" disabled={!unread || busy} onclick={onMarkRead}><Icon name="check" size={13} />Mark all read</button>{/if}
     </div>
   </div>
-  <div class="notification-explainer"><strong>What is this inbox?</strong><span>Storage pressure messages such as warnings, cleanup notices, and recovery updates. Alert rule states and incidents are managed on the Alerts page; use <em>Alert destinations</em> below to send alerts to a webhook, Slack, Discord, ntfy or Telegram.</span></div>
-  <div class="delivery"><div><strong>In-app notifications</strong><small>Storage warnings and recovery updates appear in this inbox.</small></div><span class="enabled">Enabled</span></div>
-  {#if error}<p class="form-error" role="alert">{error}</p>{/if}
+  <p class="intro">Storage warnings, automatic cleanup, and recovery updates appear here.</p>
+  {#if error}
+    <div class="inbox-error"><ActionFeedback tone="error" title="Notification request failed" message={error} /></div>
+  {/if}
   <div class="list">
-    {#each items as item, index (item.id)}
+    {#each items as item (item.id)}
       <article class={`item ${tone(item.kind)}`} class:unread={!item.read}>
-        <span class="marker" aria-hidden="true"></span>
+        <span class="marker">
+          <Icon name={item.kind === 'storage_cleanup' ? 'trash' : tone(item.kind) === 'success' ? 'check' : 'alert-triangle'} size={16} />
+        </span>
         <div class="body">
-          <div class="head"><strong>{title(item.kind)}</strong><time datetime={item.created_at}>{formatDateTimeInTz(item.created_at, timezone)}</time></div>
+          <div class="head"><div class="item-title"><strong>{title(item.kind)}</strong>{#if !item.read}<span class="unread-label">Unread</span>{/if}</div><time datetime={item.created_at}>{formatDateTimeInTz(item.created_at, timezone)}</time></div>
           <p>{item.message}</p>
         </div>
       </article>
     {:else}
-      <div class="empty">
-        <span class="state-icon positive"><Icon name="check" size={20} /></span>
-        <p class="muted">{busy ? 'Loading notifications…' : 'No storage notifications yet.'}</p>
-      </div>
+      {#if busy}
+        <p class="empty" role="status">Loading notifications…</p>
+      {:else if !error}
+        <div class="empty">
+          <span class="state-icon"><Icon name="bell" size={20} /></span>
+          <strong>No storage notifications yet</strong>
+        </div>
+      {/if}
     {/each}
   </div>
 </article>
@@ -68,17 +76,15 @@
   .item.info { --tone: var(--info); }
   .item.success { --tone: var(--success); }
   .item.unread { border-color: color-mix(in srgb, var(--tone) 40%, var(--line)); background: color-mix(in srgb, var(--tone) 6%, var(--surface)); }
-  .marker { flex-shrink: 0; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--tone); opacity: 0.35; }
-  .item.unread .marker { opacity: 1; }
+  .marker { display: grid; place-items: center; flex: 0 0 32px; height: 32px; border-radius: var(--radius-md); color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, var(--surface)); }
+  .item-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .unread-label { color: var(--tone); font-size: 11px; font-weight: 650; }
   .body { flex: 1; min-width: 0; }
   .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; }
   .head strong { font-size: 13.5px; }
   time { color: var(--muted); font-size: 12px; }
   p { margin: 6px 0 0; color: var(--ink-secondary); font-size: 13px; overflow-wrap: anywhere; }
-  .empty { display: grid; justify-items: center; gap: 8px; padding: 28px 0; }
-  .notification-explainer { display: grid; gap: 4px; margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--line-light); border-radius: var(--radius-md); background: var(--surface-muted); }
-  .notification-explainer span, .delivery small { color: var(--muted); font-size: 12px; line-height: 1.45; }
-  .delivery { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 10px 14px; border-bottom: 1px solid var(--line-light); }
-  .delivery div { display: grid; gap: 2px; }
-  .enabled { color: var(--success); font-size: 12px; font-weight: 650; }
+  .intro { margin: 0 0 14px; color: var(--muted); }
+  .inbox-error { margin-bottom: 12px; }
+  .empty { display: grid; justify-items: center; gap: 8px; margin: 0; padding: 28px 12px; border: 1px dashed var(--line); border-radius: var(--radius-md); color: var(--muted); }
 </style>

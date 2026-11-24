@@ -83,3 +83,23 @@ func TestCoreDeliveryRechecksAuthorizationBeforeLeaseRedelivery(t *testing.T) {
 		t.Fatalf("cancelled lease redelivered: %v %v", ok, err)
 	}
 }
+
+func TestCoreDeliveryHonorsRolloutWindow(t *testing.T) {
+	store, node, now := coreDeliveryFixture(t)
+	ctx := context.Background()
+	start, end := now.Add(time.Minute), now.Add(2*time.Minute)
+	_, err := store.db.Exec(`UPDATE jobs SET action_json=json_object('arguments',json_object('window_start',?,'window_end',?)) WHERE id='parent-core-delivery'`,
+		FormatPersistedTime(start), FormatPersistedTime(end))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.LeaseNextActionJob(ctx, node, start.Add(-time.Nanosecond), time.Minute); err != nil || ok {
+		t.Fatalf("delivery before start: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LeaseNextActionJob(ctx, node, start, time.Minute); err != nil || !ok {
+		t.Fatalf("delivery at start: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.LeaseNextActionJob(ctx, node, end, time.Minute); err != nil || ok {
+		t.Fatalf("redelivery at end: ok=%v err=%v", ok, err)
+	}
+}

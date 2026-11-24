@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import ActionFeedback from '../../components/ActionFeedback.svelte';
   import Icon from '../../Icon.svelte';
   import { ApiError, apiClient, type StorageStatus } from '../../api';
   import { PREVIEW_MODE } from '../../lib/env';
   import { formatBytes } from '../../lib/format';
   import { previewStorageStatus } from '../../preview/fixtures';
 
-  let { isOwner, onSaved, onAuthExpired, onNotificationsChanged }: {
+  let { isOwner, onAuthExpired, onNotificationsChanged }: {
     isOwner: boolean;
-    onSaved: (title: string, description: string) => void;
     onAuthExpired: () => void;
     onNotificationsChanged: () => void;
   } = $props();
@@ -25,7 +25,9 @@
   let busy = $state(false);
   let refreshBusy = false;
   let error = $state('');
-  let saved = $state('');
+  let errorTitle = $state('');
+  let saved = $state(false);
+  let saving = $state(false);
   let refreshTimer: number | undefined;
 
   const snapshotBytes = $derived(storageStatus?.recovery_snapshot_bytes ?? 0);
@@ -46,27 +48,32 @@
 
   async function load(): Promise<void> {
     if (PREVIEW_MODE) { applyStatus(structuredClone(previewStorageStatus)); return; }
-    busy = true; error = ''; saved = '';
+    busy = true; error = ''; saved = false;
     try {
       applyStatus(await apiClient.getStorageSettings());
     } catch (err) {
       if (err instanceof ApiError && err.authExpired) onAuthExpired();
-      error = err instanceof ApiError ? err.message : 'Storage settings could not be loaded.';
+      errorTitle = 'Could not load settings';
+      error = err instanceof ApiError ? err.message : 'Use Refresh to try again.';
     } finally { busy = false; }
   }
 
   async function save(): Promise<void> {
-    if (!storageStatus) return;
-    busy = true; error = ''; saved = '';
+    if (!storageStatus || busy || !isOwner || PREVIEW_MODE) return;
+    saving = true;
+    busy = true; error = ''; saved = false;
     try {
       storageStatus = await apiClient.saveStorageSettings({ ...storageStatus.settings, max_database_bytes: Math.round(databaseLimitGB * 1000000000), sample_seconds: samplingSeconds, pressure_sample_seconds: pressureSamplingSeconds, adaptive_sampling: adaptiveSampling, notifications_enabled: notificationsEnabled, relay_cleanup_days: relayCleanupDays, join_command_expiry_hours: joinCommandExpiryHours, offline_node_cleanup_hours: offlineNodeCleanupHours });
-      saved = 'Settings saved. Collection changes take effect on the next sampling cycle; cleanup runs automatically.';
-      onSaved('Storage & sampling updated', `Storage settings applied successfully:\n\n• Maximum database size: ${databaseLimitGB} GB\n• Normal interval: ${samplingSeconds} seconds\n• Storage-saving interval: ${pressureSamplingSeconds} seconds\n• Adaptive sampling: ${adaptiveSampling ? 'Enabled' : 'Disabled'}\n• Storage notifications: ${notificationsEnabled ? 'Enabled' : 'Disabled'}\n• One-line command expiry: ${joinCommandExpiryHours} hours\n• Delete unreachable nodes after: ${offlineNodeCleanupHours ? `${offlineNodeCleanupHours} hours` : 'Off'}\n\nCollection settings take effect on the next sampling cycle.`);
+      saved = true;
       onNotificationsChanged();
     } catch (err) {
       if (err instanceof ApiError && err.authExpired) onAuthExpired();
-      error = err instanceof ApiError ? err.message : 'Storage settings could not be saved.';
-    } finally { busy = false; }
+      errorTitle = 'Could not save settings';
+      error = err instanceof ApiError ? err.message : 'Your edits are still here. Try saving again.';
+    } finally {
+      saving = false;
+      busy = false;
+    }
   }
 
   // Keeps the usage figures current without touching the form fields.
@@ -107,7 +114,7 @@
       {/if}
       <div class="meta-row"><span>Current sampling interval</span><strong>{storageStatus.effective_sample_seconds} seconds{storageStatus.settings.pressure_state === 'saving' && storageStatus.settings.adaptive_sampling ? ' · storage-saving mode' : ''}</strong></div>
     </div>
-    <form class="form-grid" onsubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form class="form-grid" oninput={() => (saved = false)} onsubmit={(event) => { event.preventDefault(); void save(); }}>
       <label>Maximum storage size (GB)<input type="number" min="0.128" max="64" step="0.001" required bind:value={databaseLimitGB} disabled={busy || !isOwner} /></label>
       <label>Normal sample interval (seconds)<input type="number" min="5" max="3600" step="1" required bind:value={samplingSeconds} disabled={busy || !isOwner} /></label>
       <label>Storage-saving interval (seconds)<input type="number" min={samplingSeconds} max="3600" step="1" required bind:value={pressureSamplingSeconds} disabled={busy || !isOwner} /></label>
@@ -119,16 +126,36 @@
         <input type="number" min="0" max="87600" step="1" required bind:value={offlineNodeCleanupHours} disabled={busy || !isOwner} />
         <small class="muted">Permanently deletes disconnected nodes and their history after this many hours without a heartbeat. The hub and nodes awaiting their first connection are protected.</small>
       </label>
-      {#if isOwner}<div class="setup-actions"><button class="button primary" type="submit" disabled={busy || PREVIEW_MODE}>{busy ? 'Saving…' : 'Save settings'}</button></div>{/if}
+      {#if isOwner}
+        <div class="setup-actions storage-actions">
+          {#if saved || error}
+            <div class="save-feedback">
+              {#if saved}
+                <ActionFeedback title="Settings saved" message="Sampling changes take effect on the next cycle. Cleanup runs automatically." />
+              {:else}
+                <ActionFeedback tone="error" title={errorTitle} message={error} />
+              {/if}
+            </div>
+          {/if}
+          <button class="button primary" type="submit" disabled={busy || PREVIEW_MODE}>
+            {#if saving}<span class="version-spinner" aria-hidden="true"></span>{/if}
+            {saving ? 'Saving…' : 'Save settings'}
+          </button>
+        </div>
+      {:else if error}
+        <div class="form-wide"><ActionFeedback tone="error" title={errorTitle} message={error} /></div>
+      {/if}
     </form>
   {:else if busy}
     <p class="muted" role="status"><span class="version-spinner" aria-hidden="true"></span> Loading storage settings…</p>
+  {:else if error}
+    <ActionFeedback tone="error" title={errorTitle} message={error} />
   {/if}
-  {#if error}<p class="form-error" role="alert">{error}</p>{/if}
-  {#if saved}<p class="success-text" role="status">{saved}</p>{/if}
 </article>
 
 <style>
+  .storage-actions { flex-wrap: wrap; gap: 12px; }
+  .save-feedback { flex: 1 1 320px; min-width: 0; }
   .usage { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
   .usage > div { display: grid; gap: 2px; font-size: 13px; }
   .usage strong { font-size: 20px; letter-spacing: -0.02em; }

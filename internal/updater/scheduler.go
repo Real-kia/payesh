@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Real-kia/payesh/internal/contracts"
@@ -56,10 +55,11 @@ func (f ExecutorFunc) Execute(ctx context.Context, execution Execution) error {
 // Execution is the narrow, injectable handoff to a local updater or an
 // authenticated node transport implementation.
 type Execution struct {
-	JobID    string
-	ParentID string
-	Release  string
-	Target   contracts.Server
+	JobID     string
+	ParentID  string
+	Release   string
+	Target    contracts.Server
+	WindowEnd time.Time
 }
 
 // Target describes one owner-selected machine. Compatible and Reason are
@@ -79,6 +79,10 @@ type Plan struct {
 	IdempotencyKey string
 	Targets        []Target
 	ExpiresAt      time.Time
+	// DefaultExpiry tells idempotent submissions to reuse the stored deadline.
+	DefaultExpiry bool
+	Tag           string
+	RolloutOptions
 }
 
 // Scheduler persists one parent update job and one child per selected target.
@@ -175,7 +179,7 @@ func (s *Scheduler) StartWorker(ctx context.Context, interval time.Duration, onE
 }
 
 // Schedule creates an idempotent parent job and durable child jobs. Children
-// are inserted hub-first and then in stable server-ID order. Ineligible,
+// are inserted hub-first, then in canary selection order or stable server-ID order. Ineligible,
 // offline, and incompatible targets are terminal child jobs with explicit
 // error codes, not omitted machines and not fake successes.
 func (s *Scheduler) Schedule(ctx context.Context, plan Plan) (contracts.Job, error) {
@@ -183,84 +187,94 @@ func (s *Scheduler) Schedule(ctx context.Context, plan Plan) (contracts.Job, err
 		return contracts.Job{}, errors.New("updater: scheduler store is required")
 	}
 	now := s.now()
-	if err := validatePlan(plan, now); err != nil {
-		return contracts.Job{}, err
-	}
-	plan.Targets = orderedTargets(plan.Targets)
-	hash, err := planHash(plan)
-	if err != nil {
-		return contracts.Job{}, err
-	}
+	plan.Targets = orderedTargets(plan.Targets, plan.Canary > 0)
 	parent, storedHash, found, err := s.Store.GetJobByOperation(ctx, UpdateJobKind, "", plan.IdempotencyKey)
 	if err != nil {
 		return contracts.Job{}, err
 	}
 	if found {
-		if storedHash != hash {
-			return contracts.Job{}, monitoring.ErrJobIdempotencyConflict
-		}
-		if err := s.ensureChildren(ctx, parent, plan); err != nil {
-			return contracts.Job{}, err
-		}
-		return parent, nil
+		return replayPlan(parent, storedHash, plan)
+	}
+	hash, err := planHash(plan)
+	if err != nil {
+		return contracts.Job{}, err
+	}
+	if err := validatePlan(plan, now); err != nil {
+		return contracts.Job{}, err
 	}
 	parentID, err := s.newID("update")
 	if err != nil {
 		return contracts.Job{}, fmt.Errorf("create update job identity: %w", err)
 	}
 	parent = contracts.Job{ID: parentID, Kind: UpdateJobKind, State: contracts.JobQueued, IdempotencyKey: plan.IdempotencyKey, ExpiresAt: plan.ExpiresAt}
-	parent, _, err = s.Store.CreateJob(ctx, parent, hash, now)
-	if err != nil {
-		if raced, racedHash, racedFound, lookupErr := s.Store.GetJobByOperation(ctx, UpdateJobKind, "", plan.IdempotencyKey); lookupErr == nil && racedFound {
-			if racedHash != hash {
-				return contracts.Job{}, monitoring.ErrJobIdempotencyConflict
-			}
-			if ensureErr := s.ensureChildren(ctx, raced, plan); ensureErr != nil {
-				return contracts.Job{}, ensureErr
-			}
-			return raced, nil
+	if plan.RolloutOptions != (RolloutOptions{}) {
+		policy := rolloutPolicy{RolloutOptions: plan.RolloutOptions}
+		if window := plan.UpdateWindow; window != nil {
+			policy.WindowStart = monitoring.FormatPersistedTime(window.Start)
+			policy.WindowEnd = monitoring.FormatPersistedTime(window.End)
 		}
+		policy.store(&parent)
+	}
+	children, err := s.registerChildren(parent, plan, now)
+	if err != nil {
 		return contracts.Job{}, err
 	}
-	if err := s.ensureChildren(ctx, parent, plan); err != nil {
+	parent, _, err = s.Store.CreateJobGroup(ctx, parent, hash, children, now)
+	if errors.Is(err, monitoring.ErrJobIdempotencyConflict) && plan.DefaultExpiry {
+		existing, storedHash, found, lookupErr := s.Store.GetJobByOperation(ctx, UpdateJobKind, "", plan.IdempotencyKey)
+		if lookupErr != nil {
+			return contracts.Job{}, lookupErr
+		}
+		if found {
+			return replayPlan(existing, storedHash, plan)
+		}
+	}
+	return parent, err
+}
+
+func replayPlan(parent contracts.Job, storedHash string, plan Plan) (contracts.Job, error) {
+	if plan.DefaultExpiry {
+		plan.ExpiresAt = parent.ExpiresAt
+	}
+	hash, err := planHash(plan)
+	if err != nil {
 		return contracts.Job{}, err
+	}
+	if storedHash != hash {
+		return contracts.Job{}, monitoring.ErrJobIdempotencyConflict
 	}
 	return parent, nil
 }
 
-func (s *Scheduler) ensureChildren(ctx context.Context, parent contracts.Job, plan Plan) error {
-	now := s.now()
+func (s *Scheduler) registerChildren(parent contracts.Job, plan Plan, now time.Time) ([]monitoring.JobRegistration, error) {
+	children := make([]monitoring.JobRegistration, 0, len(plan.Targets))
+	width := 2
+	if len(plan.Targets) > 100 {
+		width = 4
+	}
 	for index, target := range plan.Targets {
-		childID, err := s.newID(fmt.Sprintf("update-node-%02d", index))
+		childID, err := s.newID(fmt.Sprintf("update-node-%0*d", width, index))
 		if err != nil {
-			return fmt.Errorf("create update target %s identity: %w", target.Server.ID, err)
+			return nil, fmt.Errorf("create update target %s identity: %w", target.Server.ID, err)
 		}
 		child := contracts.Job{ID: childID, Kind: UpdateNodeJobKind, State: contracts.JobQueued, IdempotencyKey: childKey(parent.ID, target.Server.ID), TargetServerID: target.Server.ID, ExpiresAt: plan.ExpiresAt}
-		arguments, _ := json.Marshal(struct {
-			Parent  string `json:"parent_job_id"`
-			Release string `json:"release"`
-		}{Parent: parent.ID, Release: plan.Release})
+		arguments, _ := json.Marshal(childUpdate{
+			Parent: parent.ID, Release: plan.Release, Role: target.Server.Role,
+		})
 		// Keeping the release and parent identity in the private action payload
 		// makes a resumed child self-describing without adding a new shared
 		// database column. Action is never emitted by the browser job API.
 		child.Action = &contracts.ActionRequest{Protocol: contracts.HelperProtocol, RequestID: child.ID, Action: "update", TargetServerID: target.Server.ID, IdempotencyKey: child.IdempotencyKey, Target: "payesh-agent", Arguments: arguments, Deadline: plan.ExpiresAt}
-		if reason, code := targetSkipReason(target, now); reason != "" {
+		if plan.SkipUpToDate && target.Compatible && alreadyOnRelease(target.Server, plan.Release) {
+			child.State, child.Progress = contracts.JobSkipped, 100
+		} else if reason, code := targetSkipReason(target, now); reason != "" {
 			child.State = contracts.JobFailed
 			child.Progress = 100
 			child.Error = &contracts.Error{Code: code, Message: reason, Retryable: code == "offline"}
 		}
-		childHash := childRequestHash(parent.ID, plan.Release, target, index)
-		if _, _, err := s.Store.CreateJob(ctx, child, childHash, now); err != nil {
-			// A replay may race another worker inserting this exact child. The
-			// operation key and request hash make that insert idempotent.
-			if existing, storedHash, found, lookupErr := s.Store.GetJobByOperation(ctx, UpdateNodeJobKind, target.Server.ID, child.IdempotencyKey); lookupErr == nil && found && storedHash == childHash {
-				_ = existing
-				continue
-			}
-			return fmt.Errorf("create update target %s: %w", target.Server.ID, err)
-		}
+		children = append(children, monitoring.JobRegistration{Job: child, RequestHash: childRequestHash(parent.ID, plan.Release, target, index)})
 	}
-	return nil
+	return children, nil
 }
 
 // RunOnce advances one parent by at most one target. Callers may invoke this
@@ -276,6 +290,9 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 	}
 	if !found || parent.Kind != UpdateJobKind {
 		return contracts.Job{}, ErrUpdateNotFound
+	}
+	if UpdateJobResumable(parent, s.now()) {
+		return parent, nil
 	}
 	children, err := s.children(ctx, parent.ID)
 	if err != nil {
@@ -303,16 +320,22 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 		return parent, nil
 	}
 	if !parent.ExpiresAt.After(s.now()) {
-		for _, child := range children {
-			if err := s.cancelCoreAction(ctx, child); err != nil {
-				return parent, err
-			}
-		}
-		failed, transitionErr := s.Store.TransitionJob(ctx, parent.ID, parent.Revision, contracts.JobFailed, 100, updateError("expired", ErrUpdateExpired.Error(), false), s.now())
-		if transitionErr != nil {
-			return contracts.Job{}, transitionErr
+		failed, err := s.failRollout(ctx, parent, children, updateError("expired", ErrUpdateExpired.Error(), false))
+		if err != nil {
+			return failed, err
 		}
 		return failed, ErrUpdateExpired
+	}
+
+	policy, err := policyFor(parent)
+	if err != nil {
+		return parent, err
+	}
+	if parent.State == contracts.JobPaused {
+		if window := policy.UpdateWindow; window != nil && !s.now().Before(window.End) {
+			return s.failRollout(ctx, parent, children, updateError("update_window_closed", ErrUpdateWindowClosed.Error(), false))
+		}
+		return parent, nil
 	}
 
 	// Claiming the parent prevents two workers from attempting children at the
@@ -330,16 +353,24 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 	if gated {
 		return s.finishParent(ctx, parent, children, false)
 	}
+	if paused, changed, err := s.pauseIfNeeded(ctx, parent, children, rolloutProgress(children)); changed || err != nil {
+		return paused, err
+	}
+	var lastNodeFinished time.Time
 	for _, child := range children {
 		if terminal(child.State) {
+			if policy.StaggerSeconds > 0 && child.State != contracts.JobSkipped && child.UpdatedAt.After(lastNodeFinished) {
+				if childUpdateFor(child).Role == "node" && child.Revision > 0 {
+					lastNodeFinished = child.UpdatedAt
+				}
+			}
 			continue
 		}
 		if child.State == contracts.JobCancelling || child.CancelRequested {
 			if err := s.cancelCoreAction(ctx, child); err != nil {
 				return parent, err
 			}
-			_, _ = s.Store.TransitionJob(ctx, child.ID, child.Revision, contracts.JobCancelled, 100, nil, s.now())
-			continue
+			return s.settleChild(ctx, parent, children, child, contracts.JobCancelled, nil)
 		}
 		if child.State != contracts.JobQueued && child.State != contracts.JobRunning {
 			continue
@@ -351,30 +382,32 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 		if !found {
 			return s.failChildAndFinish(ctx, parent, children, child, "incompatible", "selected server no longer exists", false)
 		}
+		if child.State == contracts.JobQueued {
+			if policy.SkipUpToDate && alreadyOnRelease(server, releaseForChild(child)) {
+				return s.settleChild(ctx, parent, children, child, contracts.JobSkipped, nil)
+			}
+			now := s.now()
+			if window := policy.UpdateWindow; window != nil {
+				if !now.Before(window.End) {
+					return s.failRollout(ctx, parent, children, updateError("update_window_closed", ErrUpdateWindowClosed.Error(), false))
+				}
+				if now.Before(window.Start) {
+					return parent, nil
+				}
+			}
+			if server.Role == "node" && now.Before(lastNodeFinished.Add(time.Duration(policy.StaggerSeconds)*time.Second)) {
+				return parent, nil
+			}
+		}
 		if reason, code := currentSkipReason(server, s.now()); reason != "" && !(child.State == contracts.JobRunning && code == "offline" && server.ConnectionState != "revoked") {
 			return s.failChildAndFinish(ctx, parent, children, child, code, reason, code == "offline")
 		}
-		active, queryErr := s.Store.ListActiveJobsForServer(ctx, server.ID, child.ID)
-		if queryErr != nil {
-			return contracts.Job{}, queryErr
-		}
-		conflict := false
-		for _, job := range active {
-			// The transport action owned by this child is part of the update,
-			// not an independent operation that should block its reconciliation.
-			if job.ID == CoreUpdateActionID(child.ID) && job.Kind == "core-update-action" && job.Action != nil && job.Action.Action == "core.update" {
-				continue
-			}
-			conflict = true
-		}
-		if conflict {
-			// Leave the child queued. This is durable serialization: the next
-			// worker pass can run it once the conflicting operation completes.
+		claimed, err := s.Store.ClaimUpdateTarget(ctx, parent, child, CoreUpdateActionID(child.ID), s.now())
+		if errors.Is(err, monitoring.ErrJobRevisionConflict) {
 			return parent, ErrUpdateConflict
 		}
-		claimed, claimErr := s.Store.TransitionJob(ctx, child.ID, child.Revision, contracts.JobRunning, child.Progress, nil, s.now())
-		if claimErr != nil {
-			return contracts.Job{}, claimErr
+		if err != nil {
+			return parent, err
 		}
 		if err := ctx.Err(); err != nil {
 			// Preserve running ownership on interruption. A subsequent worker
@@ -385,7 +418,10 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 		if s.Executor == nil {
 			return s.completeChild(ctx, parent, children, claimed, updateError("executor_unavailable", ErrUpdateExecutorAbsent.Error(), true))
 		}
-		execErr := s.Executor.Execute(ctx, Execution{JobID: claimed.ID, ParentID: parent.ID, Release: releaseForChild(claimed), Target: server})
+		execErr := s.Executor.Execute(ctx, Execution{JobID: claimed.ID, ParentID: parent.ID, Release: releaseForChild(claimed), Target: server, WindowEnd: policy.windowEnd()})
+		if errors.Is(execErr, ErrUpdateWindowClosed) {
+			return s.failChildAndFinish(ctx, parent, children, claimed, "update_window_closed", execErr.Error(), false)
+		}
 		if errors.Is(execErr, ErrExecutionPending) {
 			return parent, nil
 		}
@@ -421,11 +457,18 @@ func (s *Scheduler) RunOnce(ctx context.Context, parentID string) (contracts.Job
 // every later target is durably blocked and no node executor can run.
 func (s *Scheduler) enforceHubGate(ctx context.Context, children []contracts.Job) ([]contracts.Job, bool, error) {
 	for index, child := range children {
-		server, found, err := s.Store.GetServer(ctx, child.TargetServerID)
-		if err != nil {
-			return nil, false, err
+		if !terminal(child.State) || child.State == contracts.JobSucceeded || child.State == contracts.JobSkipped {
+			continue
 		}
-		if !found || server.Role != "hub" || child.State == contracts.JobSucceeded || !terminal(child.State) {
+		role := childUpdateFor(child).Role
+		if role == "" {
+			server, _, err := s.Store.GetServer(ctx, child.TargetServerID)
+			if err != nil {
+				return nil, false, err
+			}
+			role = server.Role
+		}
+		if role != "hub" {
 			continue
 		}
 		code, message := "hub_update_failed", "hub update failed; remaining targets were blocked"
@@ -450,17 +493,19 @@ func (s *Scheduler) enforceHubGate(ctx context.Context, children []contracts.Job
 // Run drains one parent in sequence. Context cancellation leaves a running
 // child durable and a later invocation can safely resume it.
 func (s *Scheduler) Run(ctx context.Context, parentID string) (contracts.Job, error) {
+	var previous contracts.Job
 	for {
 		job, err := s.RunOnce(ctx, parentID)
 		if err != nil && !errors.Is(err, ErrUpdateConflict) {
 			return job, err
 		}
-		if terminal(job.State) {
+		if terminal(job.State) || job.State == contracts.JobPaused {
 			return job, nil
 		}
-		if errors.Is(err, ErrUpdateConflict) {
+		if errors.Is(err, ErrUpdateConflict) || previous.ID == job.ID && previous.Revision == job.Revision {
 			return job, err
 		}
+		previous = job
 	}
 }
 
@@ -513,29 +558,34 @@ func (e *RetryableError) Unwrap() error {
 }
 
 func (s *Scheduler) children(ctx context.Context, parentID string) ([]contracts.Job, error) {
-	all, err := s.Store.ListJobsByKind(ctx, UpdateNodeJobKind)
-	if err != nil {
-		return nil, err
-	}
-	prefix := parentID + ":"
-	children := make([]contracts.Job, 0, maxUpdateTargets)
-	for _, job := range all {
-		if strings.HasPrefix(job.IdempotencyKey, prefix) {
-			children = append(children, job)
+	return s.Store.ListUpdateTargets(ctx, parentID)
+}
+
+func (s *Scheduler) failRollout(ctx context.Context, parent contracts.Job, children []contracts.Job, reason *contracts.Error) (contracts.Job, error) {
+	for _, child := range children {
+		if terminal(child.State) {
+			continue
+		}
+		if err := s.cancelCoreAction(ctx, child); err != nil {
+			return parent, err
+		}
+		if _, err := s.transition(ctx, child, contracts.JobFailed, 100, reason); err != nil {
+			return parent, err
 		}
 	}
-	// The sequence prefix is part of the durable child identity, so ordering is
-	// retained even when a restart or concurrent producer changes timestamps.
-	sort.SliceStable(children, func(i, j int) bool { return children[i].ID < children[j].ID })
-	return children, nil
+	return s.transition(ctx, parent, contracts.JobFailed, 100, reason)
 }
 
 func (s *Scheduler) completeChild(ctx context.Context, parent contracts.Job, children []contracts.Job, child contracts.Job, jobErr *contracts.Error) (contracts.Job, error) {
-	state, progress := contracts.JobSucceeded, uint8(100)
+	state := contracts.JobSucceeded
 	if jobErr != nil {
 		state = contracts.JobFailed
 	}
-	completed, err := s.Store.TransitionJob(ctx, child.ID, child.Revision, state, progress, jobErr, s.now())
+	return s.settleChild(ctx, parent, children, child, state, jobErr)
+}
+
+func (s *Scheduler) settleChild(ctx context.Context, parent contracts.Job, children []contracts.Job, child contracts.Job, state contracts.JobState, jobErr *contracts.Error) (contracts.Job, error) {
+	completed, err := s.transition(ctx, child, state, 100, jobErr)
 	if err != nil {
 		return contracts.Job{}, err
 	}
@@ -559,7 +609,7 @@ func (s *Scheduler) finishParent(ctx context.Context, parent contracts.Job, chil
 		failed, err := s.transition(ctx, parent, contracts.JobFailed, 100, updateError("empty_selection", "no update targets were selected", false))
 		return failed, err
 	}
-	done, successes, failures := 0, 0, 0
+	done, successes, skipped := 0, 0, 0
 	for _, child := range children {
 		if terminal(child.State) {
 			done++
@@ -567,14 +617,16 @@ func (s *Scheduler) finishParent(ctx context.Context, parent contracts.Job, chil
 		if child.State == contracts.JobSucceeded {
 			successes++
 		}
-		if child.State == contracts.JobFailed {
-			failures++
+		if child.State == contracts.JobSkipped {
+			skipped++
 		}
 	}
 	progress := uint8(done * 100 / len(children))
 	if done < len(children) {
-		if progress > 99 {
-			progress = 99
+		if !cancelling {
+			if paused, changed, err := s.pauseIfNeeded(ctx, parent, children, progress); changed || err != nil {
+				return paused, err
+			}
 		}
 		updated, err := s.transition(ctx, parent, parent.State, progress, nil)
 		return updated, err
@@ -583,8 +635,8 @@ func (s *Scheduler) finishParent(ctx context.Context, parent contracts.Job, chil
 		updated, err := s.transition(ctx, parent, contracts.JobCancelled, 100, nil)
 		return updated, err
 	}
-	if failures > 0 || successes != len(children) {
-		error := updateError("partial_failure", fmt.Sprintf("%d of %d selected targets updated", successes, len(children)), false)
+	if successes+skipped != len(children) {
+		error := updateError("partial_failure", fmt.Sprintf("%d of %d selected targets updated", successes, len(children)-skipped), false)
 		updated, err := s.transition(ctx, parent, contracts.JobFailed, 100, error)
 		return updated, err
 	}
@@ -607,7 +659,7 @@ func (s *Scheduler) now() time.Time {
 }
 
 func validatePlan(plan Plan, now time.Time) error {
-	if !ValidRelease(plan.Release) || plan.IdempotencyKey == "" || len(plan.IdempotencyKey) > 128 || len(plan.Targets) == 0 || len(plan.Targets) > maxUpdateTargets || now.IsZero() || !plan.ExpiresAt.After(now) || plan.ExpiresAt.Sub(now) > 30*24*time.Hour {
+	if !ValidRelease(plan.Release) || plan.IdempotencyKey == "" || len(plan.IdempotencyKey) > 128 || len(plan.Targets) == 0 || len(plan.Targets) > MaxRolloutTargets || !plan.RolloutOptions.valid(now, plan.ExpiresAt, len(plan.Targets)) || now.IsZero() || !plan.ExpiresAt.After(now) || plan.ExpiresAt.Sub(now) > 30*24*time.Hour {
 		return errors.New("updater: invalid update plan")
 	}
 	seen := map[contracts.ServerID]bool{}
@@ -620,7 +672,7 @@ func validatePlan(plan Plan, now time.Time) error {
 	return nil
 }
 
-func orderedTargets(targets []Target) []Target {
+func orderedTargets(targets []Target, preserveOrder bool) []Target {
 	copyTargets := append([]Target(nil), targets...)
 	sort.SliceStable(copyTargets, func(i, j int) bool {
 		hi := copyTargets[i].Server.Role == "hub"
@@ -628,7 +680,7 @@ func orderedTargets(targets []Target) []Target {
 		if hi != hj {
 			return hi
 		}
-		return copyTargets[i].Server.ID < copyTargets[j].Server.ID
+		return !preserveOrder && copyTargets[i].Server.ID < copyTargets[j].Server.ID
 	})
 	return copyTargets
 }
@@ -656,7 +708,7 @@ func currentSkipReason(server contracts.Server, now time.Time) (string, string) 
 }
 
 func terminal(state contracts.JobState) bool {
-	return state == contracts.JobSucceeded || state == contracts.JobFailed || state == contracts.JobCancelled || state == contracts.JobRecoveryRequired
+	return state == contracts.JobSkipped || state == contracts.JobSucceeded || state == contracts.JobFailed || state == contracts.JobCancelled || state == contracts.JobRecoveryRequired
 }
 func updateError(code, message string, retryable bool) *contracts.Error {
 	return &contracts.Error{Code: code, Message: message, Retryable: retryable}
@@ -671,15 +723,24 @@ func planHash(plan Plan) (string, error) {
 		Reason     string             `json:"reason,omitempty"`
 	}
 	targets := make([]stableTarget, 0, len(plan.Targets))
-	for _, target := range orderedTargets(plan.Targets) {
+	for _, target := range plan.Targets {
 		targets = append(targets, stableTarget{ServerID: target.Server.ID, Compatible: target.Compatible, Reason: target.Reason})
 	}
+	if plan.Tag != "" {
+		targets = nil
+	}
+	var options *RolloutOptions
+	if plan.RolloutOptions != (RolloutOptions{}) {
+		options = &plan.RolloutOptions
+	}
 	body, err := json.Marshal(struct {
-		Release        string         `json:"release"`
-		IdempotencyKey string         `json:"idempotency_key"`
-		Targets        []stableTarget `json:"targets"`
-		ExpiresAt      time.Time      `json:"expires_at"`
-	}{plan.Release, plan.IdempotencyKey, targets, plan.ExpiresAt})
+		Release        string          `json:"release"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Targets        []stableTarget  `json:"targets"`
+		ExpiresAt      time.Time       `json:"expires_at"`
+		Tag            string          `json:"tag,omitempty"`
+		Options        *RolloutOptions `json:"options,omitempty"`
+	}{plan.Release, plan.IdempotencyKey, targets, plan.ExpiresAt, plan.Tag, options})
 	if err != nil {
 		return "", err
 	}
@@ -695,18 +756,52 @@ func childRequestHash(parent, release string, target Target, index int) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
-func childKey(parent string, target contracts.ServerID) string { return parent + ":" + string(target) }
-func releaseForChild(job contracts.Job) string {
-	if job.Action != nil && len(job.Action.Arguments) > 0 {
-		var payload struct {
-			Release string `json:"release"`
-		}
-		if json.Unmarshal(job.Action.Arguments, &payload) == nil {
-			return payload.Release
-		}
+func childKey(parent string, target contracts.ServerID) string {
+	key := parent + ":" + string(target)
+	if len(key) <= 128 {
+		return key
 	}
-	return ""
+	sum := sha256.Sum256([]byte(target))
+	return parent + ":" + hex.EncodeToString(sum[:])
 }
+
+type childUpdate struct {
+	Parent  string `json:"parent_job_id"`
+	Release string `json:"release"`
+	Role    string `json:"role,omitempty"`
+}
+
+func childUpdateFor(job contracts.Job) childUpdate {
+	var update childUpdate
+	if job.Action != nil {
+		_ = json.Unmarshal(job.Action.Arguments, &update)
+	}
+	return update
+}
+
+func releaseForChild(job contracts.Job) string { return childUpdateFor(job).Release }
+
+// ReplayTargets reconstructs the original selection's ordering metadata.
+func (s *Scheduler) ReplayTargets(ctx context.Context, parentID string) (map[contracts.ServerID]Target, error) {
+	children, err := s.children(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	targets := make(map[contracts.ServerID]Target, len(children))
+	for _, child := range children {
+		role := childUpdateFor(child).Role
+		if role == "" {
+			server, _, err := s.Store.GetServer(ctx, child.TargetServerID)
+			if err != nil {
+				return nil, err
+			}
+			role = server.Role
+		}
+		targets[child.TargetServerID] = Target{Server: contracts.Server{ID: child.TargetServerID, Role: role}, Compatible: true}
+	}
+	return targets, nil
+}
+
 func newUpdateJobID(prefix string) string {
 	var raw [10]byte
 	if _, err := cryptorand.Read(raw[:]); err != nil {

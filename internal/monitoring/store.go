@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Real-kia/payesh/internal/contracts"
+	"github.com/Real-kia/payesh/internal/version"
 	_ "modernc.org/sqlite"
 )
 
@@ -1322,11 +1323,13 @@ func (s *Store) ListServers(ctx context.Context, limit int) ([]contracts.Server,
 	return page.Items, err
 }
 
+const serverSelect = `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),` + duplicateOfColumn + `,` + tagsColumn + `,COALESCE(server_locations.peer_ip,''),COALESCE(server_locations.addresses,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
+
 func (s *Store) GetServer(ctx context.Context, serverID contracts.ServerID) (contracts.Server, bool, error) {
 	if len(serverID) < 16 || len(serverID) > 128 || !isSafeServerID(string(serverID)) {
 		return contracts.Server{}, false, errors.New("server id must be a bounded URL-safe identifier")
 	}
-	row := s.readDB().QueryRowContext(ctx, `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),`+duplicateOfColumn+`,`+tagsColumn+`,COALESCE(server_locations.peer_ip,''),COALESCE(server_locations.addresses,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id WHERE id=?`, string(serverID))
+	row := s.readDB().QueryRowContext(ctx, serverSelect+` WHERE id=?`, string(serverID))
 	server, err := scanServer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.Server{}, false, nil
@@ -1412,7 +1415,7 @@ func (s *Store) QueryScopedServerPage(ctx context.Context, limit int, cursor str
 	if err != nil {
 		return ServerPage{}, err
 	}
-	query := `SELECT id,name,address,role,architecture,platform,capabilities_json,version,last_heartbeat,connection_state,freshness_state,COALESCE(freshness_reason,''),configuration_revision,COALESCE(server_locations.country_code,''),` + duplicateOfColumn + `,` + tagsColumn + `,COALESCE(server_locations.peer_ip,''),COALESCE(server_locations.addresses,'') FROM servers LEFT JOIN server_locations ON server_locations.server_id=servers.id`
+	query := serverSelect
 	args := make([]any, 0, len(ids)+4)
 	conditions := []string{}
 	if len(ids) > 0 {
@@ -1518,6 +1521,15 @@ func scanServer(row scanner) (contracts.Server, error) {
 	server.ID = contracts.ServerID(id)
 	if err := json.Unmarshal([]byte(capabilitiesJSON), &server.Capabilities); err != nil {
 		return contracts.Server{}, fmt.Errorf("decode server capabilities: %w", err)
+	}
+	server.AgentVersion = server.Version
+	if server.Role == "node" {
+		for _, capability := range server.Capabilities {
+			if reported, ok := strings.CutPrefix(capability, version.NodeCapabilityPrefix); ok && reported != "" {
+				server.AgentVersion = reported
+				break
+			}
+		}
 	}
 	if heartbeat.Valid && heartbeat.String != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, heartbeat.String)

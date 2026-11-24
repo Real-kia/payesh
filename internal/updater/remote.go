@@ -72,6 +72,9 @@ func (e *FleetExecutor) Execute(ctx context.Context, execution Execution) error 
 	if err != nil {
 		return err
 	}
+	if !execution.WindowEnd.IsZero() && !now.Before(execution.WindowEnd) && (!found || action.State == contracts.JobQueued) {
+		return ErrUpdateWindowClosed
+	}
 	if !found {
 		body, _ := json.Marshal(contracts.CoreUpdateIntent{JobID: execution.JobID, Release: execution.Release})
 		request := contracts.ActionRequest{Protocol: contracts.HelperProtocol, RequestID: id, Action: "core.update", TargetServerID: execution.Target.ID, IdempotencyKey: id, ExpectedRevision: execution.Target.ConfigurationRevision, Target: "payesh-core", Arguments: body, Deadline: child.ExpiresAt}

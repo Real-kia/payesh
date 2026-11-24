@@ -121,7 +121,7 @@
     try {
       await apiClient.markNotificationsRead();
       await loadNotifications();
-      showSettingsSavedDialog('Notifications updated', 'All fleet storage notifications have been marked as read.');
+      showNotice('All notifications marked as read');
     }
     catch (error) {
       if (error instanceof ApiError && error.authExpired) authExpired = true;
@@ -568,6 +568,7 @@
       window.history.pushState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
       if (changed) window.scrollTo({ top: 0 });
     }
+    if (changed && ['overview', 'monitoring', 'servers'].includes(page)) void refreshMonitoring();
     if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
@@ -988,7 +989,7 @@
     navigate('overview');
   }
 
-  // Connected nodes not on the latest release; the API takes 20 per update.
+  // Connected nodes with a newer agent version available.
   $: latestRelease = (updateStatus?.latest ?? '').replace(/^v/, '');
   // Nodes have their own version, which moves only when the agent changes, so
   // a hub-only release does not make every node outdated.
@@ -1070,12 +1071,9 @@
     showLoading('Queueing updates…', `Scheduling update to v${latestRelease} for ${outdatedNodes.length} nodes…`);
     try {
       const ids = outdatedNodes.map((server) => server.id);
-      for (let start = 0; start < ids.length; start += 20) {
-        const batch = ids.slice(start, start + 20);
-        const job = await apiClient.createUpdate({ release: latestRelease, selected_server_ids: batch, idempotency_key: operationKey('update-nodes') });
-        recordJob(job);
-        trackNodeUpdates(batch, job, latestRelease);
-      }
+      const job = await apiClient.createUpdate({ release: latestRelease, selected_server_ids: ids, idempotency_key: operationKey('update-nodes') });
+      recordJob(job);
+      trackNodeUpdates(ids, job, latestRelease);
       showNotice(`Update to v${latestRelease} queued for ${ids.length} node${ids.length === 1 ? '' : 's'}.`);
     } catch (error) {
       updateApplyError = error instanceof Error ? error.message : 'Unable to queue the node updates.';
@@ -1106,12 +1104,9 @@
         const release = latest.latest.replace(/^v/, '');
         if (!release || release === '—') throw new Error('No release is available. Check for updates first.');
         const ids = targets.map((server) => server.id);
-        for (let start = 0; start < ids.length; start += 20) {
-          const batch = ids.slice(start, start + 20);
-          const job = await apiClient.createUpdate({ release, selected_server_ids: batch, idempotency_key: operationKey('bulk-update') });
-          recordJob(job);
-          trackNodeUpdates(batch, job, release);
-        }
+        const job = await apiClient.createUpdate({ release, selected_server_ids: ids, idempotency_key: operationKey('bulk-update') });
+        recordJob(job);
+        trackNodeUpdates(ids, job, release);
       }
       showNotice(`Update queued for ${targets.length} node${targets.length === 1 ? '' : 's'}.`);
       selectedServerIds = [];
@@ -1403,7 +1398,7 @@
     return {
       canDelete: server.can_delete, deletionBlockedReason: server.deletion_blocked_reason,
       id: server.id, name: server.name, countryCode: server.country_code, address: server.address, duplicateOf: server.duplicate_of, duplicateOfName: server.duplicate_of_name, tags: server.tags ?? [], addresses: server.addresses ?? [], role: server.role, architecture: server.architecture,
-      platform: server.platform, capabilities: [...caps], version: server.version ?? '—',
+      platform: server.platform, capabilities: [...caps], version: server.version ?? '—', agentVersion: server.agent_version,
       lastHeartbeat: server.last_heartbeat ?? null, connectionState: server.connection_state,
       freshnessState: server.freshness_state, freshnessReason: server.freshness_reason,
       configurationRevision: server.configuration_revision, displayState: displayState(server),
@@ -1513,11 +1508,13 @@
   let liveUpdatedAt: number | null = null;
 
   // One overview request gives every card its numbers and 15-minute series.
-  function applyOverview(overview: Overview): void {
+  function applyOverview(overview: Overview, onlyIds?: Set<string>): void {
     const byId = new Map(overview.items.map((item) => [item.server_id, item]));
     servers = servers.map((server) => {
+      if (onlyIds && !onlyIds.has(server.id)) return server;
       const item = byId.get(server.id);
       if (!item) return server;
+      if (item.observed_at && server.latestMetricAt && Date.parse(item.observed_at) < Date.parse(server.latestMetricAt)) return server;
       const empty: PreviewChartData = { timestamps: [], cpu: [], memory: [], swap: [], disk: [], coverage: 'unavailable' };
       const ranges = server.metricHistory?.ranges ?? { '15m': empty, '1h': empty, '24h': empty };
       const series = item.series;
@@ -1544,34 +1541,53 @@
     liveUpdatedAt = Date.now();
   }
 
+  async function readOverview(signal: AbortSignal): Promise<{ overview: Overview } | { error: unknown }> {
+    try {
+      return { overview: await apiClient.getOverview({ signal }) };
+    } catch (error) {
+      return { error };
+    }
+  }
+
+  function applyOverviewResult(result: Awaited<ReturnType<typeof readOverview>>, timedOut: boolean): void {
+    if ('overview' in result) {
+      applyOverview(result.overview);
+      partialWarning = '';
+      return;
+    }
+    const { error } = result;
+    partialWarning = timedOut
+      ? 'Loading live metrics timed out. Retry to load the latest values.'
+      : `Live metrics could not be loaded. ${error instanceof Error ? error.message : 'Please retry.'}`;
+    if (error instanceof ApiError && error.authExpired) authExpired = true;
+  }
+
   // State and values settle independently so a slow list cannot hold up metrics.
   async function refreshMonitoring(refreshServers = true, parentSignal?: AbortSignal): Promise<void> {
-    if (parentSignal?.aborted || liveRefreshBusy || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || (refreshServers && !['overview', 'monitoring', 'servers'].includes(activePage)) || document.hidden) return;
+    if (parentSignal?.aborted || liveRefreshBusy || previewState === 'loading' || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || (refreshServers && !['overview', 'monitoring', 'servers'].includes(activePage)) || document.hidden) return;
     liveRefreshBusy = true;
     const controller = new AbortController();
     const onParentAbort = () => controller.abort();
     parentSignal?.addEventListener('abort', onParentAbort, { once: true });
     const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const reads: Promise<void>[] = [apiClient.getOverview({ signal: controller.signal }).then((overview) => {
-        if (controller.signal.aborted) return;
-        applyOverview(overview);
-        partialWarning = '';
-      }).catch((error) => {
+      let refreshedOverview: Overview | undefined;
+      const reads: Promise<void>[] = [readOverview(controller.signal).then((result) => {
         if (parentSignal?.aborted) return;
-        partialWarning = controller.signal.aborted
-          ? 'Loading live metrics timed out. Retry to load the latest values.'
-          : `Live metrics could not be loaded. ${error instanceof Error ? error.message : 'Please retry.'}`;
-        if (error instanceof ApiError && error.authExpired) authExpired = true;
+        if ('overview' in result) refreshedOverview = result.overview;
+        applyOverviewResult(result, controller.signal.aborted);
       })];
       if (refreshServers) reads.push(apiClient.listServers({ signal: controller.signal }).then((page) => {
         if (controller.signal.aborted) return;
         const existing = new Map(servers.map((server) => [server.id, server]));
+        const added = new Set<string>();
         servers = page.items.map((item) => {
           const previous = existing.get(item.id);
           const fresh = emptyApiServer(item);
+          if (!previous) added.add(item.id);
           return previous ? { ...fresh, metrics: previous.metrics, capacity: previous.capacity, latestMetricAt: previous.latestMetricAt, traffic: previous.traffic, metricHistory: previous.metricHistory } : fresh;
         });
+        if (refreshedOverview && added.size) applyOverview(refreshedOverview, added);
       }).catch((error) => {
         if (parentSignal?.aborted) return;
         if (error instanceof ApiError && error.authExpired) authExpired = true;
@@ -1694,6 +1710,8 @@
     partialWarning = '';
     authExpired = false;
     servers = [];
+    const overviewTimeout = AbortSignal.timeout(15000);
+    const overview = readOverview(AbortSignal.any([controller.signal, overviewTimeout]));
     try {
       const page = await apiClient.listServers({ signal: controller.signal });
       if (controller.signal.aborted) return;
@@ -1708,9 +1726,11 @@
       if (activePage === 'packages') void loadModules();
       if (activePage === 'alerts') void loadAlerts();
       void loadNotifications();
-      await refreshMonitoring(false, controller.signal);
+      const result = await overview;
+      if (!controller.signal.aborted) applyOverviewResult(result, overviewTimeout.aborted);
     } catch (error) {
       if (controller.signal.aborted) return;
+      controller.abort();
       apiError = error instanceof Error ? error.message : 'Unable to connect to Payesh API.';
       previewState = 'error';
       if (error instanceof ApiError && error.authExpired) {
@@ -1773,6 +1793,7 @@
     if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
     const onPopState = (event: PopStateEvent) => {
       restoreState({ ...(event.state ?? {}), ...stateFromLocation() });
+      if (['overview', 'monitoring', 'servers'].includes(activePage)) void refreshMonitoring();
       if (activePage === 'packages' && !PREVIEW_MODE) void loadModules();
       if (activePage === 'alerts' && !PREVIEW_MODE) void loadAlerts();
       saveUiState();
@@ -2057,7 +2078,7 @@
                 {#if settingsSection === 'general'}
                   {#await lazy.GeneralSettings() then { default: GeneralSettings }}<GeneralSettings {appearance} timezone={currentTimezone} onAppearance={setAppearance} onTimezone={changeTimezone} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'storage'}
-                  {#await lazy.StorageSettings() then { default: StorageSettings }}<StorageSettings isOwner={myAccount?.role === 'owner'} onSaved={showSettingsSavedDialog} onAuthExpired={() => (authExpired = true)} onNotificationsChanged={() => void loadNotifications()} />{:catch}{@render chunkFailed()}{/await}
+                  {#await lazy.StorageSettings() then { default: StorageSettings }}<StorageSettings isOwner={myAccount?.role === 'owner'} onAuthExpired={() => (authExpired = true)} onNotificationsChanged={() => void loadNotifications()} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'notifications'}
                   {#await lazy.NotificationsSettings() then { default: NotificationsSettings }}<NotificationsSettings items={notificationItems} busy={notificationBusy} error={notificationError} canEdit={myAccount?.permission === 'edit'} isOwner={myAccount?.role === 'owner'} timezone={currentTimezone} onRefresh={() => void loadNotifications()} onMarkRead={() => void markNotificationsRead()} onConfirm={openConfirmModal} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'users' && myAccount?.role === 'owner'}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -31,9 +32,14 @@ type UpdateService struct {
 	Sessions *auth.Manager
 	// WebUpdateDir and WebUpdateRoot locate the root worker's handoff files and
 	// service definition; empty values use the installed defaults.
-	WebUpdateDir   string
-	WebUpdateRoot  string
-	ReleaseChecker interface {
+	WebUpdateDir  string
+	WebUpdateRoot string
+	// InstalledVersion reports the release installed on disk; Restart makes the
+	// process exit so its service manager starts the installed binary. Both
+	// default to the shared /usr/bin/payesh and a delayed non-zero exit.
+	InstalledVersion func(context.Context) string
+	Restart          func()
+	ReleaseChecker   interface {
 		Latest(context.Context) (release.GitHubRelease, error)
 	}
 }
@@ -67,6 +73,88 @@ func (s *UpdateService) webUpdateRoot() string {
 }
 
 // webUpdateStatus returns the current worker state, hiding abandoned work.
+// webUpdateAvailable reports whether this hub can hand updates to the root
+// worker: the worker must be installed and the handoff directory writable by
+// this process. A second hub on the same host (its own user and data directory)
+// shares the binaries but not the worker's directory, so it reports false.
+func (s *UpdateService) webUpdateAvailable() bool {
+	if !webupdate.Supported(s.webUpdateRoot()) {
+		return false
+	}
+	probe, err := os.CreateTemp(s.webUpdateDir(), ".write-check-")
+	if err != nil {
+		return false
+	}
+	_ = probe.Close()
+	_ = os.Remove(probe.Name())
+	return true
+}
+
+// restartPending reports the on-disk release when this hub cannot use the root
+// worker (a second install sharing the host's binaries) and that release is
+// not the one running, so a restart would apply it.
+func (s *UpdateService) restartPending(ctx context.Context) string {
+	if s.webUpdateAvailable() || !updater.ValidRelease(version.Value) {
+		return ""
+	}
+	lookup := s.InstalledVersion
+	if lookup == nil {
+		lookup = installedBinaryVersion
+	}
+	installed := strings.TrimPrefix(strings.TrimSpace(lookup(ctx)), "v")
+	if !updater.ValidRelease(installed) {
+		return ""
+	}
+	if cmp, err := updater.CompareReleases(version.Value, installed); err != nil || cmp >= 0 {
+		return ""
+	}
+	return installed
+}
+
+func installedBinaryVersion(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/bin/payesh", "version").Output()
+	if err != nil || len(out) > 128 {
+		return ""
+	}
+	return string(out)
+}
+
+func (s *UpdateService) serveRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+		return
+	}
+	if s.Sessions == nil {
+		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
+		return
+	}
+	account, ok := s.Sessions.Authenticate(r)
+	if !ok {
+		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
+		return
+	}
+	if account.Role != "owner" {
+		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
+		return
+	}
+	target := s.restartPending(r.Context())
+	if target == "" {
+		writeFleetError(w, http.StatusConflict, "restart_not_needed", "no newer installed release is waiting for a restart", false)
+		return
+	}
+	restart := s.Restart
+	if restart == nil {
+		restart = func() { time.Sleep(time.Second); os.Exit(75) }
+	}
+	go restart()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"restarting_into": target})
+}
+
 func (s *UpdateService) webUpdateStatus() *webupdate.Status {
 	status, err := webupdate.ReadStatus(s.webUpdateDir())
 	if err != nil {
@@ -97,8 +185,8 @@ func (s *UpdateService) serveApply(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
 		return
 	}
-	if !webupdate.Supported(s.webUpdateRoot()) {
-		writeFleetError(w, http.StatusConflict, "web_update_unavailable", "web updates are not set up on this server; run sudo payesh update once from the command line", false)
+	if !s.webUpdateAvailable() {
+		writeFleetError(w, http.StatusConflict, "web_update_unavailable", "web updates are not available for this hub (not set up, or it is a second Payesh install on a shared host); update the primary install or run sudo payesh update, then restart this service", false)
 		return
 	}
 	var request struct {
@@ -139,11 +227,21 @@ type updateRequest struct {
 	IdempotencyKey    string     `json:"idempotency_key"`
 	ExpectedRevision  *uint64    `json:"expected_revision,omitempty,string"`
 	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	Tag               *string    `json:"tag,omitempty"`
+	updater.RolloutOptions
 }
 
 func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/resume") {
+		s.serveResume(w, r)
+		return
+	}
 	if r.URL.Path == "/api/v1/updates/apply" {
 		s.serveApply(w, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/updates/restart" {
+		s.serveRestart(w, r)
 		return
 	}
 	if r.URL.Path == "/api/v1/updates/status" {
@@ -157,7 +255,8 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Current            string            `json:"current"`
 			WebUpdateSupported bool              `json:"web_update_supported"`
 			WebUpdate          *webupdate.Status `json:"web_update"`
-		}{version.Value, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
+			RestartTo          string            `json:"restart_available,omitempty"`
+		}{version.Value, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
 		return
 	}
 	if r.URL.Path == "/api/v1/updates/latest" {
@@ -203,7 +302,8 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Releases           []release.GitHubRelease `json:"releases"`
 			WebUpdateSupported bool                    `json:"web_update_supported"`
 			WebUpdate          *webupdate.Status       `json:"web_update"`
-		}{version.Value, latest.Version, latestNode, ahead, available, latest.URL, history, webupdate.Supported(s.webUpdateRoot()), s.webUpdateStatus()})
+			RestartTo          string                  `json:"restart_available,omitempty"`
+		}{version.Value, latest.Version, latestNode, ahead, available, latest.URL, history, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
 		return
 	}
 	if r.URL.Path != "/api/v1/updates" {
@@ -228,31 +328,67 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
 		return
 	}
+	if len(account.ServerIDs) > 0 {
+		writeFleetError(w, http.StatusForbidden, "token_scope", "fleet rollouts require fleet-wide server access", false)
+		return
+	}
 	var request updateRequest
 	if !decode(w, r, &request) {
 		return
 	}
 	if strings.TrimSpace(request.Release) == "" || len(request.Release) > 64 || !updater.ValidRelease(request.Release) ||
 		len(request.IdempotencyKey) == 0 || len(request.IdempotencyKey) > 128 ||
-		len(request.SelectedServerIDs) == 0 || len(request.SelectedServerIDs) > 20 {
-		writeFleetError(w, http.StatusBadRequest, "invalid_request", "release, selected_server_ids, and idempotency_key are invalid", false)
+		(request.SelectedServerIDs == nil) == (request.Tag == nil) ||
+		(request.Tag == nil && len(request.SelectedServerIDs) == 0) || len(request.SelectedServerIDs) > updater.MaxRolloutTargets {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "provide a valid release, idempotency_key, and either selected_server_ids or tag", false)
 		return
 	}
+	tag := ""
+	if request.Tag != nil {
+		tags, err := monitoring.NormalizeTags([]string{*request.Tag})
+		if err != nil || len(tags) != 1 {
+			writeFleetError(w, http.StatusBadRequest, "invalid_request", "tag is invalid", false)
+			return
+		}
+		tag = strings.ToLower(tags[0])
+	}
+	if window := request.UpdateWindow; window != nil {
+		window.Start, window.End = window.Start.UTC(), window.End.UTC()
+	}
 	now := s.now()
-	expires := now.Add(defaultUpdateAuthorizationTTL)
+	defaultStart := now
+	if window := request.UpdateWindow; window != nil && window.Start.After(now) {
+		defaultStart = window.Start
+	}
+	expires := defaultStart.Add(defaultUpdateAuthorizationTTL)
 	if request.ExpiresAt != nil {
 		expires = request.ExpiresAt.UTC()
 	}
-	// An omitted expiry is generated by the service, but replays must hash to
-	// the original operation. Reuse the durable expiry when the key exists.
-	if existing, _, found, err := s.Store.GetJobByOperation(r.Context(), updater.UpdateJobKind, "", request.IdempotencyKey); err != nil {
+	existing, _, found, err := s.Store.GetJobByOperation(r.Context(), updater.UpdateJobKind, "", request.IdempotencyKey)
+	if err != nil {
 		writeFleetError(w, http.StatusServiceUnavailable, "job_storage_unavailable", "could not read update job history", true)
 		return
-	} else if found && request.ExpiresAt == nil {
-		expires = existing.ExpiresAt
+	}
+	plan := updater.Plan{Release: request.Release, IdempotencyKey: request.IdempotencyKey, Tag: tag, ExpiresAt: expires, DefaultExpiry: request.ExpiresAt == nil, RolloutOptions: request.RolloutOptions}
+	if tag != "" && !found {
+		servers, err := s.Store.ServersWithTag(r.Context(), tag, updater.MaxRolloutTargets+1)
+		if err != nil {
+			writeFleetError(w, http.StatusServiceUnavailable, "storage_unavailable", "could not select servers by tag", true)
+			return
+		}
+		for _, server := range servers {
+			plan.Targets = append(plan.Targets, updater.Target{Server: server, Compatible: true})
+		}
+	}
+	var replayTargets map[contracts.ServerID]updater.Target
+	if found && tag == "" {
+		replayTargets, err = s.Scheduler.ReplayTargets(r.Context(), existing.ID)
+		if err != nil {
+			writeFleetError(w, http.StatusServiceUnavailable, "job_storage_unavailable", "could not read update targets", true)
+			return
+		}
 	}
 	seen := make(map[contracts.ServerID]struct{}, len(request.SelectedServerIDs))
-	targets := make([]updater.Target, 0, len(request.SelectedServerIDs))
 	for _, rawID := range request.SelectedServerIDs {
 		if len(rawID) < 16 || len(rawID) > 128 || !safeFleetID(rawID) {
 			writeFleetError(w, http.StatusBadRequest, "invalid_request", "selected server ID is invalid", false)
@@ -264,6 +400,14 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[serverID] = struct{}{}
+		if found {
+			if replay, ok := replayTargets[serverID]; ok {
+				plan.Targets = append(plan.Targets, replay)
+				continue
+			}
+			plan.Targets = append(plan.Targets, updater.Target{Server: contracts.Server{ID: serverID}, Compatible: true})
+			continue
+		}
 		server, found, err := s.Store.GetServer(r.Context(), serverID)
 		if err != nil {
 			writeFleetError(w, http.StatusServiceUnavailable, "storage_unavailable", "could not read selected server", true)
@@ -273,9 +417,9 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeFleetError(w, http.StatusNotFound, "not_found", "selected server not found", false)
 			return
 		}
-		targets = append(targets, updater.Target{Server: server, Compatible: true})
+		plan.Targets = append(plan.Targets, updater.Target{Server: server, Compatible: true})
 	}
-	job, err := s.Scheduler.ScheduleUpdate(r.Context(), updater.Plan{Release: request.Release, IdempotencyKey: request.IdempotencyKey, Targets: targets, ExpiresAt: expires})
+	job, err := s.Scheduler.ScheduleUpdate(r.Context(), plan)
 	if err != nil {
 		switch {
 		case errors.Is(err, monitoring.ErrJobIdempotencyConflict):
@@ -299,4 +443,58 @@ func safeFleetID(value string) bool {
 		}
 	}
 	return true
+}
+
+func (s *UpdateService) serveResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeFleetError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+		return
+	}
+	if s.Sessions == nil {
+		writeFleetError(w, http.StatusNotFound, "not_found", "resource not found", false)
+		return
+	}
+	account, ok := s.Sessions.Authenticate(r)
+	if !ok {
+		writeFleetError(w, http.StatusUnauthorized, "unauthorized", "authentication required", true)
+		return
+	}
+	if account.Role != "owner" {
+		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
+		return
+	}
+	if len(account.ServerIDs) > 0 {
+		writeFleetError(w, http.StatusForbidden, "token_scope", "fleet rollouts require fleet-wide server access", false)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(strings.TrimRight(r.URL.Path, "/"), "/api/v1/updates/"), "/resume")
+	if id == "" || len(id) > 128 || !safeFleetID(id) {
+		writeFleetError(w, http.StatusNotFound, "not_found", "job not found", false)
+		return
+	}
+	var request struct {
+		ExpectedRevision json.RawMessage `json:"expected_revision"`
+	}
+	if !decode(w, r, &request) {
+		return
+	}
+	revision, err := parseJobRevision(request.ExpectedRevision)
+	if err != nil {
+		writeFleetError(w, http.StatusBadRequest, "invalid_request", "expected_revision must be an unsigned decimal string", false)
+		return
+	}
+	job, err := s.Scheduler.ResumePaused(r.Context(), id, revision)
+	switch {
+	case err == nil:
+		writeJob(w, http.StatusAccepted, job)
+	case errors.Is(err, updater.ErrUpdateNotFound):
+		writeFleetError(w, http.StatusNotFound, "not_found", "update job not found", false)
+	case errors.Is(err, monitoring.ErrJobRevisionConflict):
+		writeFleetError(w, http.StatusConflict, "job_revision_conflict", "job changed; reload before resuming", false)
+	case errors.Is(err, updater.ErrUpdateNotPaused):
+		writeFleetError(w, http.StatusConflict, "job_not_resumable", "update job is no longer resumable", false)
+	default:
+		writeFleetError(w, http.StatusServiceUnavailable, "job_storage_unavailable", "could not resume update job", true)
+	}
 }

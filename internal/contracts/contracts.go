@@ -41,6 +41,7 @@ type Server struct {
 	Platform              string     `json:"platform"`
 	Capabilities          []string   `json:"capabilities"`
 	Version               string     `json:"version,omitempty"`
+	AgentVersion          string     `json:"agent_version,omitempty"`
 	LastHeartbeat         *time.Time `json:"last_heartbeat,omitempty"`
 	ConnectionState       string     `json:"connection_state"`
 	FreshnessState        string     `json:"freshness_state"`
@@ -268,6 +269,8 @@ type JobState string
 const (
 	JobQueued           JobState = "queued"
 	JobRunning          JobState = "running"
+	JobPaused           JobState = "paused"
+	JobSkipped          JobState = "skipped"
 	JobCancelling       JobState = "cancelling"
 	JobSucceeded        JobState = "succeeded"
 	JobFailed           JobState = "failed"
@@ -285,7 +288,9 @@ type Job struct {
 	ExpiresAt       time.Time `json:"expires_at"`
 	CancelRequested bool      `json:"cancel_requested,omitempty"`
 	Progress        uint8     `json:"progress"`
+	Resumable       bool      `json:"resumable,omitempty"`
 	Error           *Error    `json:"error,omitempty"`
+	UpdatedAt       time.Time `json:"-"`
 	// Action is persisted for node-delivery jobs but deliberately omitted from
 	// the browser/API representation. Action arguments can contain sensitive
 	// implementation details and are only released to the authenticated node

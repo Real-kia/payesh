@@ -73,3 +73,33 @@ func (s *Store) SetServerTags(ctx context.Context, serverID contracts.ServerID, 
 	})
 	return normalized, err
 }
+
+// ServersWithTag takes a single server snapshot and returns matching targets
+// in ID order. Match in Go to use the same case folding as NormalizeTags.
+func (s *Store) ServersWithTag(ctx context.Context, normalizedTag string, limit int) ([]contracts.Server, error) {
+	rows, err := s.readDB().QueryContext(ctx, serverSelect+` WHERE EXISTS (SELECT 1 FROM server_tags WHERE server_id=servers.id) ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var servers []contracts.Server
+	for rows.Next() {
+		server, err := scanServer(rows)
+		if err != nil {
+			return nil, err
+		}
+		if s.isDeleting(string(server.ID)) {
+			continue
+		}
+		for _, tag := range server.Tags {
+			if strings.ToLower(tag) == normalizedTag {
+				servers = append(servers, server)
+				break
+			}
+		}
+		if len(servers) >= limit {
+			break
+		}
+	}
+	return servers, rows.Err()
+}

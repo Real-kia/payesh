@@ -10,6 +10,7 @@ import (
 
 	"github.com/Real-kia/payesh/internal/contracts"
 	"github.com/Real-kia/payesh/internal/monitoring"
+	"github.com/Real-kia/payesh/internal/updater"
 )
 
 type jobHTTP struct{ store *monitoring.Store }
@@ -91,6 +92,7 @@ func parseJobRevision(raw json.RawMessage) (uint64, error) {
 }
 
 func writeJob(w http.ResponseWriter, status int, job contracts.Job) {
+	job.Resumable = updater.UpdateJobResumable(job, time.Now())
 	data, err := json.Marshal(job)
 	if err != nil {
 		writeFleetError(w, http.StatusInternalServerError, "internal_error", "request failed", false)

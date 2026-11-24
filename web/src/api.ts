@@ -45,6 +45,7 @@ export type Server = {
   platform: string;
   capabilities: string[];
   version?: string;
+  agent_version?: string;
   last_heartbeat?: string | null;
   connection_state: 'connected' | 'disconnected' | 'never-connected' | 'revoked';
   freshness_state: 'fresh' | 'stale' | 'unknown';
@@ -64,7 +65,7 @@ export type NodeTransportStatus = { port: string; url?: string; ca_sha256?: stri
 export type HTTPSStatus = { domain?: string; state: 'disabled' | 'pending' | 'active' | 'failed'; method?: 'http-01' | 'dns-cloudflare'; expires_at?: string; error?: string; https_port?: string };
 export type HTTPSSettingsRequest = { domain: string; email?: string; cloudflare_api_token?: string };
 export type WebUpdateState = { state: 'queued' | 'running' | 'succeeded' | 'failed'; target?: string; message?: string; updated_at: string };
-export type UpdateStatus = { current: string; latest: string; latest_node?: string; update_available: boolean; installed_ahead?: boolean; url: string; releases?: { version: string; url: string; published_at: string }[]; web_update_supported?: boolean; web_update?: WebUpdateState | null };
+export type UpdateStatus = { current: string; latest: string; latest_node?: string; update_available: boolean; installed_ahead?: boolean; url: string; releases?: { version: string; url: string; published_at: string }[]; web_update_supported?: boolean; web_update?: WebUpdateState | null; restart_available?: string };
 export type UpdateProgress = { current: string; web_update_supported: boolean; web_update: WebUpdateState | null };
 export type Account = { username: string; role: 'owner' | 'admin' | 'member'; permission: 'read' | 'edit'; token_count?: number };
 export type TokenPermissionMode = 'none' | 'read' | 'write';
@@ -154,11 +155,12 @@ export type LogSourcePage = { items: LogSource[]; next_cursor?: string };
 
 export type QueryOptions = { signal?: AbortSignal };
 
-export type JobState = 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled' | 'recovery-required';
+export type JobState = 'queued' | 'running' | 'paused' | 'skipped' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled' | 'recovery-required';
 export type Job = {
   id: string;
   kind: string;
   state: JobState;
+  resumable?: boolean;
   revision: string;
   idempotency_key: string;
   target_server_id?: string;
@@ -170,7 +172,16 @@ export type Job = {
 export type SetupRequest = { setup_secret: string; username: string; password: string };
 export type EnrollmentRequest = { token: string; idempotency_key: string };
 export type EnrollmentToken = { server_id: string; token: string; expires_at: string };
-export type UpdateRequest = { release: string; selected_server_ids: string[]; idempotency_key: string; expires_at?: string };
+export type UpdateRequest = {
+  release: string;
+  idempotency_key: string;
+  expires_at?: string;
+  canary?: number;
+  max_fail_pct?: number;
+  skip_up_to_date?: boolean;
+  update_window?: { start: string; end: string };
+  stagger_seconds?: number;
+} & ({ selected_server_ids: string[]; tag?: never } | { tag: string; selected_server_ids?: never });
 export type OverviewSeries = { t: number[]; cpu: Array<number | null>; memory: Array<number | null>; swap: Array<number | null>; disk: Array<number | null>; rx: Array<number | null>; tx: Array<number | null> };
 export type OverviewItem = {
   server_id: string;
@@ -440,6 +451,10 @@ export class ApiClient {
 
   applyWebUpdate(version: string): Promise<WebUpdateState> {
     return this.request<WebUpdateState>('/updates/apply', { method: 'POST', headers: this.mutationHeaders(), body: JSON.stringify({ version }) });
+  }
+
+  restartHub(): Promise<{ restarting_into: string }> {
+    return this.request<{ restarting_into: string }>('/updates/restart', { method: 'POST', headers: this.mutationHeaders(), body: '{}' });
   }
 
   getUpdateProgress(): Promise<UpdateProgress> { return this.request<UpdateProgress>('/updates/status'); }

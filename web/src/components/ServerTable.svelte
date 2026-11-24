@@ -106,7 +106,7 @@
           <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if}</small>
         </div>
         <div class="col-platform"><span>{server.platform || '—'}</span><small class="mono">{server.architecture || '—'}</small></div>
-        <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{server.version && server.version !== '—' ? `v${server.role === 'node' ? nodeVersionOf(server) : server.version.replace(/^v/, '')}` : '—'}</div>
+        <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{nodeVersionOf(server) && nodeVersionOf(server) !== '—' ? `v${nodeVersionOf(server)}` : '—'}</div>
         <div class="col-contact">{detail(server)}</div>
         <div class="col-action" aria-hidden="true"><Icon name="chevron-right" size={16} /></div>
       </a>
