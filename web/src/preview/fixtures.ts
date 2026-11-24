@@ -11,6 +11,7 @@ export type PreviewChartData = {
   networkRx?: Array<number | null>;
   networkTx?: Array<number | null>;
   missingNetworkTiming?: boolean;
+  cpuGap?: boolean;
   coverage: 'complete' | 'gap' | 'unavailable';
 };
 export type PreviewMetricHistory = { ranges: Record<PreviewChartRange, PreviewChartData> };

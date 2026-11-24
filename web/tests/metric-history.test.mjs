@@ -20,3 +20,24 @@ test('empty refresh retains existing history and all arrays stay aligned', () =>
 test('history drops samples outside the selected window', () => {
   assert.deepEqual(merge(chart([10, 800], [1, 2]), chart([1000], [3]), 900).timestamps, [800, 1000]);
 });
+
+test('a complete full-window refresh clears a CPU warning, while a partial refresh preserves it', () => {
+  const previous = { ...chart([10, 20], [1, 2]), cpuGap: true };
+  const next = { ...chart([20, 30], [2, 3]), cpuGap: false };
+  assert.equal(merge(previous, next, 900).cpuGap, false);
+  assert.equal(merge(previous, next, 900, true).cpuGap, true);
+});
+
+const chartBody = source.slice(source.indexOf('  const cpuMetricNames'), source.indexOf('  function applyMetric('));
+const chartJS = ts.transpileModule(chartBody, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const metricChart = new Function('networkRates', `${chartJS}; return metricChart;`)(() => []);
+
+test('only missing CPU samples or stream gaps warn on a raw CPU chart', () => {
+  const sample = { observed_at: '2026-01-01T00:00:00Z', values: { 'cpu.utilization': 2 } };
+  const query = { samples: [sample], rollups: [], coverage: { 'cpu.utilization': 1, 'net.billing.rx_bytes': 0 } };
+  assert.equal(metricChart(query).cpuGap, false);
+  assert.equal(metricChart({ ...query, gaps: [{}] }).cpuGap, true);
+  const invalid = metricChart({ ...query, samples: [{ ...sample, validity: { 'cpu.utilization': 'invalid' } }] });
+  assert.equal(invalid.cpuGap, true);
+  assert.deepEqual(invalid.cpu, [null]);
+});

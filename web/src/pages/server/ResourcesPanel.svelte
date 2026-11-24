@@ -5,7 +5,7 @@
 
   let fit = $state(readFit());
   function readFit(): boolean {
-    try { return localStorage.getItem('payesh.chartFit') === '1'; } catch { return false; }
+    try { return localStorage.getItem('payesh.chartFit') !== '0'; } catch { return true; }
   }
   function toggleFit() {
     fit = !fit;
@@ -120,10 +120,10 @@
       {/each}
     </div>
   </div>
-  {#if chartData && chartData.coverage !== 'unavailable'}
+  {#if chartData && hasSamples(chartData.cpu)}
     <div class="legend">
       <span><i class="legend-dot accent"></i> CPU</span>
-      {#if chartData.coverage === 'gap'}<span class="gap-note"><Icon name="alert-circle" size={12} /> Some samples are missing in this range</span>{/if}
+      {#if (chartData.cpuGap ?? (chartData.coverage === 'gap'))}<span class="gap-note"><Icon name="alert-circle" size={12} /> CPU history has gaps in this range</span>{/if}
     </div>
     {#key `${range}-${theme}-${server.id}-${timezone}-${fit}`}
       <ChartPreview data={chartData} {range} {timezone} metric="cpu" {fit} label="CPU history over the selected time range" />
@@ -133,7 +133,7 @@
       <span>CPU range <strong class="tabular">{seriesRange(chartData.cpu)}</strong></span>
     </div>
   {:else}
-    <div class="unavailable-panel"><strong>Resource history unavailable</strong><span>No telemetry samples have been recorded yet for this range.</span></div>
+    <div class="unavailable-panel"><strong>CPU history unavailable</strong><span>No CPU samples are available for this range.</span></div>
   {/if}
 </article>
 

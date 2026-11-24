@@ -20,7 +20,7 @@
   });
 
   // Zoom the Y axis to the visible data (never beyond 0–100%) so small swings
-  // stay readable; the default stays the honest full 0–100% scale.
+  // stay readable.
   function fitRange(_u: uPlot, min: number | null, max: number | null): [number, number] {
     if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) return [0, 100];
     const span = Math.max(max - min, 4);

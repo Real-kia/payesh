@@ -1421,6 +1421,8 @@
     return alignedWindow(minutes * 60_000);
   }
 
+  const cpuMetricNames = ['cpu.utilization', 'cpu'];
+
   function metricChart(query: MetricQuery): PreviewChartData {
     if (!query.samples.length && query.rollups.length) {
       const timestamps = [...new Set(query.rollups.map((rollup) => Date.parse(String(rollup.bucket_start)) / 1000))].filter(Number.isFinite).sort((a, b) => a - b);
@@ -1430,17 +1432,29 @@
         const point = names.map((name) => bucket(timestamp, name)).find((entry) => typeof entry?.weighted_mean === 'number');
         return typeof point?.weighted_mean === 'number' && Number.isFinite(point.weighted_mean) ? point.weighted_mean : null;
       };
-      return { timestamps, missingNetworkTiming: query.rollups.some((r) => (r.metric === 'net.billing.rx_bytes' || r.metric === 'net.billing.tx_bytes') && r.coverage === 'complete' && r.counter_delta != null && r.observed_seconds === 0), cpu: timestamps.map((t) => gauge(t, ['cpu.utilization', 'cpu'])), memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), swap: timestamps.map((t) => gauge(t, ['memory.swap_used_percent', 'swap.used_percent', 'swap'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
+      const cpu = timestamps.map((t) => gauge(t, cpuMetricNames));
+      const cpuGap = query.truncated === true || cpu.includes(null) || query.rollups.some(
+        (rollup) => cpuMetricNames.includes(String(rollup.metric)) && rollup.coverage !== 'complete'
+      );
+      return { timestamps, cpuGap, missingNetworkTiming: query.rollups.some((r) => (r.metric === 'net.billing.rx_bytes' || r.metric === 'net.billing.tx_bytes') && r.coverage === 'complete' && r.counter_delta != null && r.observed_seconds === 0), cpu, memory: timestamps.map((t) => gauge(t, ['memory.used_percent', 'memory.utilization', 'memory'])), swap: timestamps.map((t) => gauge(t, ['memory.swap_used_percent', 'swap.used_percent', 'swap'])), disk: timestamps.map((t) => gauge(t, ['disk.root.used_percent', 'disk.used_percent', 'disk'])), networkRx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.rx_bytes'))), networkTx: timestamps.map((t) => networkRollupRate(bucket(t, 'net.billing.tx_bytes'))), coverage: query.truncated || query.rollups.some((rollup) => rollup.coverage !== 'complete') ? 'gap' : 'complete' };
     }
     const samples = [...query.samples].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
     const value = (sample: MetricQuery['samples'][number], name: string) => {
-      const candidates = name === 'cpu' ? ['cpu', 'cpu.utilization'] : name === 'memory' ? ['memory', 'memory.used_percent', 'memory.utilization'] : name === 'swap' ? ['memory.swap_used_percent', 'swap.used_percent', 'swap'] : ['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent'];
-      const found = candidates.map((candidate) => sample.values[candidate] ?? sample.values[candidate.toUpperCase()]).find((entry) => typeof entry === 'number');
+      const candidates = name === 'cpu' ? cpuMetricNames : name === 'memory' ? ['memory', 'memory.used_percent', 'memory.utilization'] : name === 'swap' ? ['memory.swap_used_percent', 'swap.used_percent', 'swap'] : ['disk', 'disk.used_percent', 'disk.utilization', 'disk.root.used_percent'];
+      const usable = name === 'cpu'
+        ? candidates.filter((candidate) => {
+          const state = sample.validity?.[candidate] ?? sample.validity?.[candidate.toUpperCase()];
+          return !state || state === 'valid';
+        })
+        : candidates;
+      const found = usable.map((candidate) => sample.values[candidate] ?? sample.values[candidate.toUpperCase()]).find((entry) => typeof entry === 'number');
       return typeof found === 'number' && Number.isFinite(found) ? found : null;
     };
+    const cpu = samples.map((sample) => value(sample, 'cpu'));
     return {
+      cpuGap: samples.length ? query.truncated === true || Boolean(query.next_cursor || query.gaps_next_cursor || query.gaps?.length) || cpu.includes(null) : undefined,
       timestamps: samples.map((sample) => Date.parse(sample.observed_at) / 1000),
-      cpu: samples.map((sample) => value(sample, 'cpu')),
+      cpu,
       memory: samples.map((sample) => value(sample, 'memory')),
       swap: samples.map((sample) => value(sample, 'swap')),
       disk: samples.map((sample) => value(sample, 'disk')),
@@ -1490,7 +1504,7 @@
     };
   }
 
-  function mergeMetricCharts(previous: PreviewChartData, next: PreviewChartData, seconds: number): PreviewChartData {
+  function mergeMetricCharts(previous: PreviewChartData, next: PreviewChartData, seconds: number, partial = false): PreviewChartData {
     const cutoff = Math.max(previous.timestamps.at(-1) ?? 0, next.timestamps.at(-1) ?? 0) - seconds;
     const points = new Map<number, { cpu: number | null; memory: number | null; swap: number | null; disk: number | null; networkRx: number | null; networkTx: number | null }>();
     const add = (source: PreviewChartData, index: number) => {
@@ -1501,7 +1515,8 @@
     previous.timestamps.forEach((_, index) => add(previous, index));
     next.timestamps.forEach((_, index) => add(next, index));
     const ordered = [...points.entries()].sort(([a], [b]) => a - b);
-    return { timestamps: ordered.map(([timestamp]) => timestamp), cpu: ordered.map(([, point]) => point.cpu), memory: ordered.map(([, point]) => point.memory), swap: ordered.map(([, point]) => point.swap), disk: ordered.map(([, point]) => point.disk), networkRx: ordered.map(([, point]) => point.networkRx), networkTx: ordered.map(([, point]) => point.networkTx), coverage: previous.coverage === 'gap' || next.coverage === 'gap' ? 'gap' : next.coverage };
+    const cpuGap = partial && previous.cpuGap ? true : next.cpuGap ?? previous.cpuGap;
+    return { timestamps: ordered.map(([timestamp]) => timestamp), cpu: ordered.map(([, point]) => point.cpu), memory: ordered.map(([, point]) => point.memory), swap: ordered.map(([, point]) => point.swap), disk: ordered.map(([, point]) => point.disk), networkRx: ordered.map(([, point]) => point.networkRx), networkTx: ordered.map(([, point]) => point.networkTx), ...(cpuGap === undefined ? {} : { cpuGap }), coverage: previous.coverage === 'gap' || next.coverage === 'gap' ? 'gap' : next.coverage };
   }
 
   let liveRefreshBusy = false;
@@ -1640,7 +1655,7 @@
             applyMetric(latestQuery ?? query, updated);
             const ranges = updated.metricHistory?.ranges ?? { '15m': emptyChart, '1h': emptyChart, '24h': emptyChart };
             const nextChart = metricChart(query);
-            updated.metricHistory = { ranges: { ...ranges, [range]: range === '15m' && ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], nextChart, 15 * 60) : nextChart, ...(latestQuery ? { '15m': ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], metricChart(latestQuery), 15 * 60) : metricChart(latestQuery) } : {}) } };
+            updated.metricHistory = { ranges: { ...ranges, [range]: range === '15m' && ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], nextChart, 15 * 60) : nextChart, ...(latestQuery ? { '15m': ranges['15m'].timestamps.length ? mergeMetricCharts(ranges['15m'], metricChart(latestQuery), 15 * 60, true) : metricChart(latestQuery) } : {}) } };
             return updated;
           });
           chartLoading = false;
