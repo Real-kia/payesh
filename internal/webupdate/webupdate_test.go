@@ -208,3 +208,21 @@ func TestConcurrentHistoricalPromotionUsesOneDurableIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestSameDatabaseRequiresManagedPath(t *testing.T) {
+	dir := t.TempDir()
+	managed := filepath.Join(dir, "managed.db")
+	secondary := filepath.Join(dir, "secondary.db")
+	for _, path := range []string{managed, secondary} {
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(dir, "alias.db")
+	if err := os.Symlink(managed, alias); err != nil {
+		t.Fatal(err)
+	}
+	if !sameDatabase(managed, managed) || !sameDatabase(alias, managed) || sameDatabase(secondary, managed) || sameDatabase(filepath.Join(dir, "missing.db"), managed) {
+		t.Fatal("managed database identity was not determined by its resolved path")
+	}
+}

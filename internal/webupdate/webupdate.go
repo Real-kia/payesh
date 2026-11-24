@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	DefaultDir  = "/var/lib/payesh"
-	RequestFile = "update-request.json"
-	StatusFile  = "update-status.json"
-	ServiceName = "payesh-update"
+	DefaultDir      = "/var/lib/payesh"
+	ManagedDatabase = DefaultDir + "/payesh.db"
+	RequestFile     = "update-request.json"
+	StatusFile      = "update-status.json"
+	ServiceName     = "payesh-update"
 
 	StateQueued    = "queued"
 	StateRunning   = "running"
@@ -72,6 +73,25 @@ func Supported(root string) bool {
 		}
 	}
 	return false
+}
+
+// ManagesDatabase reports whether this instance owns the database the
+// installed root worker updates. Queue access alone does not identify it.
+func ManagesDatabase(path string) bool {
+	return sameDatabase(path, ManagedDatabase)
+}
+
+func sameDatabase(path, managed string) bool {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	actual, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return false
+	}
+	expected, err := filepath.EvalSymlinks(managed)
+	return err == nil && actual == expected
 }
 
 // Submit queues a durable local activation using the same protected worker

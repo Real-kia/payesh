@@ -92,6 +92,37 @@ func TestWebUpdateRequiresOwnerCSRFAndNewerVersion(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w.Code
 	}
+	// An installed worker and a writable queue are insufficient for an
+	// instance backed by a different database, even under the same Unix user.
+	service.SharedUpdateScope = true
+	service.InstalledVersion = func(context.Context) string { return "1.2.4" }
+	if err := webupdate.WriteStatus(dir, webupdate.Status{State: webupdate.StateRunning, Target: "1.2.4", UpdatedAt: service.now()}); err != nil {
+		t.Fatal(err)
+	}
+	statusReq := httptest.NewRequest("GET", "/api/v1/updates/status", nil)
+	statusReq.AddCookie(&http.Cookie{Name: sessions.SessionCookieName(), Value: owner})
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, statusReq)
+	var status struct {
+		Shared    bool              `json:"shared_update_scope"`
+		Supported bool              `json:"web_update_supported"`
+		Update    *webupdate.Status `json:"web_update"`
+		Restart   string            `json:"restart_available"`
+	}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil || statusResponse.Code != 200 ||
+		!status.Shared || status.Supported || status.Update != nil || status.Restart != "1.2.4" {
+		t.Fatalf("secondary status=%s, decode error=%v", statusResponse.Body.String(), err)
+	}
+	if got := call(owner, csrf, "1.2.4"); got != 409 {
+		t.Fatalf("secondary update returned %d, want 409", got)
+	}
+	if _, found, err := webupdate.Take(dir); found || err != nil {
+		t.Fatalf("secondary touched the primary queue: found=%v err=%v", found, err)
+	}
+	if err := os.Remove(filepath.Join(dir, webupdate.StatusFile)); err != nil {
+		t.Fatal(err)
+	}
+	service.SharedUpdateScope = false
 	for _, tc := range []struct {
 		token, csrf, target string
 		status              int

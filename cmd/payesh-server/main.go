@@ -387,9 +387,13 @@ func main() {
 		}
 
 		go store.RunLocalAddressReporter(ctx, moduleManager.LocalServerID)
+		sharedUpdateScope := !webupdate.ManagesDatabase(*dbPath)
 		updateScheduler.Executor = &updater.FleetExecutor{
 			Store: store, Producer: nodeHub, LocalServerID: moduleManager.LocalServerID,
 			Local: updater.ExecutorFunc(func(updateCtx context.Context, execution updater.Execution) error {
+				if sharedUpdateScope {
+					return &updater.IncompatibleError{Reason: "This instance shares its binaries. Update the managed installation and restart this instance."}
+				}
 				if !webupdate.Supported("/") {
 					return errors.New("signed root update worker is not installed")
 				}
@@ -436,7 +440,7 @@ func main() {
 			}
 			bandwidthService = handlerService{handler: proxy}
 		}
-		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, NotificationDestinations: destinationManager, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx), NodeTransportSettings: nodePorts.Handler()})
+		api, apiErr := fleet.NewAPIWithOptions(store, *bootstrapSecret, fleet.Options{SecureCookies: *secureBrowserCookies, TrustedProxyCIDRs: splitCommaList(*trustedProxyCIDRs), AlertService: alertService, NotificationDestinations: destinationManager, TrafficService: trafficService, ModuleService: moduleService, ProcessMonitoringService: processRuntime, CPUControlService: cpuControlService, BandwidthService: bandwidthService, PortTrafficService: portTrafficService, EnrollmentAuthority: enrollmentAuthority, UpdateScheduler: updateScheduler, SharedUpdateScope: sharedUpdateScope, InstallService: installService, HTTPSSettings: httpsManager.Handler(ctx), NodeTransportSettings: nodePorts.Handler()})
 		if apiErr != nil {
 			fmt.Fprintln(os.Stderr, "create browser API:", apiErr)
 			os.Exit(1)

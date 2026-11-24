@@ -98,8 +98,10 @@
     {:else if status.update_available && isOwner}
       {#if status.web_update_supported}
         <button class="button primary" type="button" disabled={applyBusy} onclick={() => onUpdate(status?.latest ?? '')}><Icon name="download" size={14} />{applyBusy ? 'Starting…' : `Update to v${status.latest}`}</button>
+      {:else if status.shared_update_scope}
+        <p class="muted">This instance shares its binaries with the managed installation. Update that installation, then restart this instance to use the new version.</p>
       {:else}
-        <p class="muted">Updating from the browser is not set up on this server yet. Run the command below once; later updates can be done here.</p>
+        <p class="muted">The local update worker is unavailable. Run the update on the server using the command below.</p>
       {/if}
     {/if}
   {/if}

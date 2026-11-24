@@ -806,6 +806,9 @@ paths:
                   current: { type: string }
                   latest: { type: string }
                   update_available: { type: boolean }
+                  shared_update_scope: { type: boolean, description: This instance shares installed binaries and must restart after the managed installation updates. }
+                  web_update_supported: { type: boolean, description: This instance can queue updates with the local root worker. }
+                  restart_available: { type: string, description: Newer on-disk release available after this instance restarts. }
                   url: { type: string, format: uri }
                   releases:
                     type: array

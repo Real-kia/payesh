@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,8 +33,9 @@ type UpdateService struct {
 	Sessions *auth.Manager
 	// WebUpdateDir and WebUpdateRoot locate the root worker's handoff files and
 	// service definition; empty values use the installed defaults.
-	WebUpdateDir  string
-	WebUpdateRoot string
+	WebUpdateDir      string
+	WebUpdateRoot     string
+	SharedUpdateScope bool
 	// InstalledVersion reports the release installed on disk; Restart makes the
 	// process exit so its service manager starts the installed binary. Both
 	// default to the shared /usr/bin/payesh and a delayed non-zero exit.
@@ -72,13 +74,9 @@ func (s *UpdateService) webUpdateRoot() string {
 	return "/"
 }
 
-// webUpdateStatus returns the current worker state, hiding abandoned work.
-// webUpdateAvailable reports whether this hub can hand updates to the root
-// worker: the worker must be installed and the handoff directory writable by
-// this process. A second hub on the same host (its own user and data directory)
-// shares the binaries but not the worker's directory, so it reports false.
+// webUpdateAvailable requires the managed instance and a writable queue.
 func (s *UpdateService) webUpdateAvailable() bool {
-	if !webupdate.Supported(s.webUpdateRoot()) {
+	if s.SharedUpdateScope || !webupdate.Supported(s.webUpdateRoot()) {
 		return false
 	}
 	probe, err := os.CreateTemp(s.webUpdateDir(), ".write-check-")
@@ -156,6 +154,9 @@ func (s *UpdateService) serveRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *UpdateService) webUpdateStatus() *webupdate.Status {
+	if s.SharedUpdateScope {
+		return nil
+	}
 	status, err := webupdate.ReadStatus(s.webUpdateDir())
 	if err != nil {
 		return nil
@@ -185,8 +186,12 @@ func (s *UpdateService) serveApply(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, http.StatusForbidden, "owner_required", "owner access required", false)
 		return
 	}
+	if s.SharedUpdateScope {
+		writeFleetError(w, http.StatusConflict, "shared_update_scope", "This instance shares its binaries. Update the managed installation and restart this instance.", false)
+		return
+	}
 	if !s.webUpdateAvailable() {
-		writeFleetError(w, http.StatusConflict, "web_update_unavailable", "web updates are not available for this hub (not set up, or it is a second Payesh install on a shared host); update the primary install or run sudo payesh update, then restart this service", false)
+		writeFleetError(w, http.StatusConflict, "web_update_unavailable", "The local update worker or its queue is unavailable. Check the worker setup or update from the command line.", false)
 		return
 	}
 	var request struct {
@@ -210,7 +215,8 @@ func (s *UpdateService) serveApply(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, webupdate.ErrBusy) {
 			writeFleetError(w, http.StatusConflict, "update_in_progress", "an update is already in progress", true)
 		} else {
-			writeFleetError(w, http.StatusServiceUnavailable, "update_unavailable", "could not queue the update", true)
+			log.Printf("web update queue failed for release %s: %v", target, err)
+			writeFleetError(w, http.StatusServiceUnavailable, "update_unavailable", "could not queue the update; check the hub service log for details", true)
 		}
 		return
 	}
@@ -253,10 +259,11 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
 			Current            string            `json:"current"`
+			SharedUpdateScope  bool              `json:"shared_update_scope,omitempty"`
 			WebUpdateSupported bool              `json:"web_update_supported"`
 			WebUpdate          *webupdate.Status `json:"web_update"`
 			RestartTo          string            `json:"restart_available,omitempty"`
-		}{version.Value, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
+		}{version.Value, s.SharedUpdateScope, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
 		return
 	}
 	if r.URL.Path == "/api/v1/updates/latest" {
@@ -300,10 +307,11 @@ func (s *UpdateService) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			UpdateAvailable    bool                    `json:"update_available"`
 			URL                string                  `json:"url"`
 			Releases           []release.GitHubRelease `json:"releases"`
+			SharedUpdateScope  bool                    `json:"shared_update_scope,omitempty"`
 			WebUpdateSupported bool                    `json:"web_update_supported"`
 			WebUpdate          *webupdate.Status       `json:"web_update"`
 			RestartTo          string                  `json:"restart_available,omitempty"`
-		}{version.Value, latest.Version, latestNode, ahead, available, latest.URL, history, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
+		}{version.Value, latest.Version, latestNode, ahead, available, latest.URL, history, s.SharedUpdateScope, s.webUpdateAvailable(), s.webUpdateStatus(), s.restartPending(r.Context())})
 		return
 	}
 	if r.URL.Path != "/api/v1/updates" {

@@ -114,6 +114,8 @@ type Options struct {
 	// UpdateScheduler enables the authenticated, durable update producer. The
 	// scheduler's executor is intentionally owned by the worker process.
 	UpdateScheduler *updater.Scheduler
+	// SharedUpdateScope identifies an instance outside the installed root worker’s database scope.
+	SharedUpdateScope bool
 	// InstallService enables the authenticated durable SSH-install producer.
 	// Its credential handoff remains process-memory only.
 	InstallService *InstallService
@@ -190,6 +192,7 @@ func NewAPIWithOptions(store *monitoring.Store, setupSecret string, options Opti
 			return nil, updateErr
 		}
 		updateService.Sessions = sessions
+		updateService.SharedUpdateScope = options.SharedUpdateScope
 		updateHandler = sessions.Middleware(updateService.Handler())
 	}
 	var installHandler http.Handler
