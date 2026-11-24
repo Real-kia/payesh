@@ -105,6 +105,10 @@ curl -H "Authorization: Bearer YOUR_TOKEN" https://payesh.example.com/api/v1/ser
   Read-only accounts can create read tokens only.
 - Categories: monitoring, logs, traffic, alerts, packages, operations,
   settings, updates. New tokens start at **None** everywhere.
+- Server enrolment integrations need **Monitoring** read access to list servers
+  and **Operations** write access to create and enrol them. A rejected bearer
+  credential returns HTTP 401 with `invalid_token`. A valid token that lacks
+  the required permission returns HTTP 403.
 - Tokens cannot manage tokens or accounts, so a leaked token cannot renew itself.
 - Up to 20 active tokens per account. Resetting an account's password or
   deleting it revokes its tokens.

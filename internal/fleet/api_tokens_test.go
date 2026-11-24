@@ -88,6 +88,7 @@ func TestAPITokensAuthenticateWithoutCSRFAndKeepTheirBoundaries(t *testing.T) {
 
 	editToken := c.createToken(oc, ocsrf, `{"name":"agent","permission":"edit"}`)
 	readToken := c.createToken(oc, ocsrf, `{"name":"reader","permission":"read","expires_in_days":7}`)
+	enrollmentToken := c.createToken(oc, ocsrf, `{"name":"enrollment","permission":"edit","permissions":{"monitoring":"read","operations":"write"}}`)
 
 	// Tokens read and, with edit permission, mutate without a CSRF header.
 	if w := c.call("GET", "/api/v1/servers", "", nil, "", readToken); w.Code != 200 {
@@ -99,8 +100,19 @@ func TestAPITokensAuthenticateWithoutCSRFAndKeepTheirBoundaries(t *testing.T) {
 	if w := c.call("POST", "/api/v1/servers", `{"name":"node","address":"192.0.2.2"}`, nil, "", readToken); w.Code != 403 {
 		t.Fatalf("read token write: %d", w.Code)
 	}
+	if w := c.call("GET", "/api/v1/servers", "", nil, "", enrollmentToken); w.Code != 200 {
+		t.Fatalf("enrollment token read: %d %s", w.Code, w.Body.String())
+	}
+	if w := c.call("POST", "/api/v1/servers", `{"name":"builder node","address":"192.0.2.3"}`, nil, "", enrollmentToken); w.Code != 201 {
+		t.Fatalf("enrollment token write: %d %s", w.Code, w.Body.String())
+	}
 	if w := c.call("GET", "/api/v1/servers", "", nil, "", "pyt_not-a-real-token"); w.Code != 401 {
 		t.Fatalf("unknown token: %d", w.Code)
+	}
+	if w := c.call("POST", "/api/v1/servers", `{"name":"node","address":"192.0.2.4"}`, nil, "", "pyt_not-a-real-token"); w.Code != 401 ||
+		!strings.Contains(w.Header().Get("WWW-Authenticate"), `error="invalid_token"`) ||
+		!strings.Contains(w.Body.String(), `"code":"invalid_token"`) {
+		t.Fatalf("unknown token write: %d %s", w.Code, w.Body.String())
 	}
 	// A bad bearer token is not rescued by a valid cookie on the same request.
 	if w := c.call("GET", "/api/v1/servers", "", oc, "", "pyt_not-a-real-token"); w.Code != 401 {
@@ -141,7 +153,7 @@ func TestAPITokensAuthenticateWithoutCSRFAndKeepTheirBoundaries(t *testing.T) {
 		t.Fatalf("viewer token list: %d %s", w.Code, w.Body.String())
 	}
 	w = c.call("GET", "/api/v1/api-tokens", "", oc, "", "")
-	if json.Unmarshal(w.Body.Bytes(), &list); len(list.Items) != 3 || strings.Contains(w.Body.String(), editToken) {
+	if json.Unmarshal(w.Body.Bytes(), &list); len(list.Items) != 4 || strings.Contains(w.Body.String(), editToken) {
 		t.Fatalf("owner token list: %s", w.Body.String())
 	}
 	var readTokenID string

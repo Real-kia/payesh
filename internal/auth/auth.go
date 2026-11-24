@@ -525,7 +525,8 @@ func (m *Manager) middleware(next http.Handler, requireEdit bool) http.Handler {
 		if token, ok := bearerToken(r); ok {
 			principal, ok := m.tokenPrincipal(token)
 			if !ok {
-				unauthorized(w)
+				w.Header().Set("WWW-Authenticate", `Bearer realm="payesh", error="invalid_token"`)
+				writeAuthError(w, http.StatusUnauthorized, "invalid_token", "API token is invalid, expired, or revoked", false)
 				return
 			}
 			// Every token request, including denied ones, is recorded with its
