@@ -2137,8 +2137,9 @@ func (s *Store) RunRollupWorker(ctx context.Context, interval time.Duration, rep
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if err := s.drainRollupQueue(ctx); err != nil && ctx.Err() == nil && report != nil {
+		case now := <-ticker.C:
+			err := errors.Join(s.drainRollupQueue(ctx), s.captureFleetTraffic(ctx, now))
+			if err != nil && ctx.Err() == nil && report != nil {
 				report(err)
 			}
 		}

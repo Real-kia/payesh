@@ -1,6 +1,7 @@
 <script lang="ts">
   import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
+  import FleetTrafficHistory from '../components/FleetTrafficHistory.svelte';
   import FleetSummary from '../components/FleetSummary.svelte';
   import { filterServers, defaultFilter } from '../lib/serverFilter';
   import { serverLabel } from '../lib/flags';
@@ -18,6 +19,8 @@
     apiError,
     readOnly,
     timezone,
+    theme,
+    onAuthExpired,
     download,
     upload,
     trafficBytes,
@@ -40,6 +43,8 @@
     apiError: string;
     readOnly: boolean;
     timezone: string;
+    theme: string;
+    onAuthExpired: () => void;
     download: number | null;
     upload: number | null;
     trafficBytes: string;
@@ -102,6 +107,7 @@
     </div>
   {:else}
     <FleetSummary {servers} {download} {upload} />
+    <FleetTrafficHistory {timezone} {theme} {onAuthExpired} />
 
     <article class="panel attention-panel">
       <div class="panel-heading">

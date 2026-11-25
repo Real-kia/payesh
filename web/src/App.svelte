@@ -269,6 +269,7 @@
     PackagesPanel: () => import('./pages/server/PackagesPanel.svelte'),
     LogsPage: () => import('./pages/LogsPage.svelte'),
     GeneralSettings: () => import('./pages/settings/GeneralSettings.svelte'),
+    FleetTrafficSettings: () => import('./pages/settings/FleetTrafficSettings.svelte'),
     StorageSettings: () => import('./pages/settings/StorageSettings.svelte'),
     NotificationsSettings: () => import('./pages/settings/NotificationsSettings.svelte'),
     UsersSettings: () => import('./pages/settings/UsersSettings.svelte'),
@@ -2093,6 +2094,7 @@
                 {#if settingsSection === 'general'}
                   {#await lazy.GeneralSettings() then { default: GeneralSettings }}<GeneralSettings {appearance} timezone={currentTimezone} onAppearance={setAppearance} onTimezone={changeTimezone} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'storage'}
+                  {#await lazy.FleetTrafficSettings() then { default: FleetTrafficSettings }}<FleetTrafficSettings isOwner={myAccount?.role === 'owner'} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
                   {#await lazy.StorageSettings() then { default: StorageSettings }}<StorageSettings isOwner={myAccount?.role === 'owner'} onAuthExpired={() => (authExpired = true)} onNotificationsChanged={() => void loadNotifications()} />{:catch}{@render chunkFailed()}{/await}
                 {:else if settingsSection === 'notifications'}
                   {#await lazy.NotificationsSettings() then { default: NotificationsSettings }}<NotificationsSettings items={notificationItems} busy={notificationBusy} error={notificationError} canEdit={myAccount?.permission === 'edit'} isOwner={myAccount?.role === 'owner'} timezone={currentTimezone} onRefresh={() => void loadNotifications()} onMarkRead={() => void markNotificationsRead()} onConfirm={openConfirmModal} onAuthExpired={() => (authExpired = true)} />{:catch}{@render chunkFailed()}{/await}
@@ -2340,7 +2342,7 @@
       </section>
 
     {:else}
-      <OverviewPage firingAlerts={firingAlertCount}
+      <OverviewPage firingAlerts={firingAlertCount} {theme} onAuthExpired={() => (authExpired = true)}
         servers={displayServers}
         refreshing={liveRefreshBusy}
         updatedAt={liveUpdatedAt}

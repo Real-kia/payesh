@@ -856,6 +856,58 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SettingsRequest' } } } }
       responses: { '200': { description: Settings updated, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /fleet/traffic:
+    get:
+      operationId: getFleetTrafficHistory
+      summary: Read up to 30 days of saved hourly fleet traffic totals
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses:
+        '200':
+          description: Hourly totals from reliable host counter rollups, with per-direction coverage. Missing hours are omitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, end, hours]
+                properties:
+                  enabled: { type: boolean }
+                  end: { type: string, format: date-time, description: Exclusive end of the completed-hour range. }
+                  hours:
+                    type: array
+                    maxItems: 720
+                    items:
+                      type: object
+                      required: [start, download_bytes, upload_bytes, download_servers, upload_servers, server_count]
+                      properties:
+                        start: { type: string, format: date-time }
+                        download_bytes: { type: string, nullable: true, pattern: '^[0-9]+$' }
+                        upload_bytes: { type: string, nullable: true, pattern: '^[0-9]+$' }
+                        download_servers: { type: integer, minimum: 0 }
+                        upload_servers: { type: integer, minimum: 0 }
+                        server_count: { type: integer, minimum: 0, description: Servers listed on the hub when the hourly total was saved. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /settings/fleet-traffic:
+    get:
+      operationId: getFleetTrafficSettings
+      security: [{ SessionCookie: [] }, { BearerAuth: [] }]
+      responses:
+        '200': { description: Current saving preference, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTrafficSettings' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      operationId: updateFleetTrafficSettings
+      summary: Change the hub owner's fleet traffic saving preference
+      description: Starts saving with the first full hour after enabling. Disabling stops new saves. Previously saved hours expire after 30 days.
+      security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTrafficSettings' } } } }
+      responses:
+        '200': { description: Updated saving preference, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTrafficSettings' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /settings/storage:
     get:
       operationId: getStorageSettings
@@ -1876,6 +1928,11 @@ components:
       type: object
       required: [server_id, eligible, checks]
       properties: { server_id: { type: string, minLength: 16, maxLength: 128 }, eligible: { type: boolean }, checks: { type: array, maxItems: 32, items: { type: string, maxLength: 512 } }, required_staging_bytes: { $ref: '#/components/schemas/DecimalUint64' }, required_backup_bytes: { $ref: '#/components/schemas/DecimalUint64' } }
+    FleetTrafficSettings:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, default: false }
     StorageSettings:
       type: object
       required: [max_database_bytes, sample_seconds, pressure_sample_seconds, adaptive_sampling, notifications_enabled, revision, pressure_state]

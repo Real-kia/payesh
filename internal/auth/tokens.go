@@ -618,6 +618,9 @@ func tokenPermissionCategory(r *http.Request) string {
 		}
 		return TokenCategoryOperations
 	}
+	if path == "/api/v1/fleet/traffic" {
+		return TokenCategoryTraffic
+	}
 	if path == "/api/v1/overview" {
 		return TokenCategoryMonitoring
 	}

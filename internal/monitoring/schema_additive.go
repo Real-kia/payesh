@@ -94,6 +94,18 @@ var additiveTables = []additiveTable{
   FOREIGN KEY (relay_server_id) REFERENCES relay_nodes(server_id) ON DELETE CASCADE,
   FOREIGN KEY (target_server_id) REFERENCES servers(id) ON DELETE CASCADE
 )`},
+	{name: "fleet_traffic_settings", ddl: `CREATE TABLE IF NOT EXISTS fleet_traffic_settings (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  next_hour TEXT NOT NULL
+)`},
+	{name: "fleet_traffic_hours", ddl: `CREATE TABLE IF NOT EXISTS fleet_traffic_hours (
+  bucket_start TEXT PRIMARY KEY,
+  download_bytes TEXT,
+  upload_bytes TEXT,
+  download_servers INTEGER NOT NULL,
+  upload_servers INTEGER NOT NULL,
+  server_count INTEGER NOT NULL
+)`},
 }
 
 var additiveColumns = []additiveColumn{

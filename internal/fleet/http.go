@@ -320,6 +320,10 @@ func (a *API) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trimmedPath := strings.TrimRight(r.URL.Path, "/")
+	if r.URL.Path == "/api/v1/fleet/traffic" || r.URL.Path == "/api/v1/settings/fleet-traffic" {
+		a.sessions.Middleware(http.HandlerFunc(a.fleetTraffic)).ServeHTTP(w, r)
+		return
+	}
 	if trimmedPath == "/api/v1/settings/storage" {
 		a.sessions.Middleware(http.HandlerFunc(a.storageSettings)).ServeHTTP(w, r)
 		return

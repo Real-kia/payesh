@@ -1,15 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { formatBytes } from './lib/format';
   import { formatNetworkRate } from './network';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import { chartColors, areaFill, hoverValues } from './lib/chart';
-  import type { PreviewChartData } from './preview/fixtures';
 
-  let { data, timezone = 'UTC' }: { data: PreviewChartData; timezone?: string } = $props();
+  let { data, timezone = 'UTC', hourlyBytes = false }: {
+    data: { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
+    timezone?: string;
+    hourlyBytes?: boolean;
+  } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
-  const rate = formatNetworkRate;
 
   $effect(() => {
     const updated: uPlot.AlignedData = [data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)];
@@ -21,7 +24,7 @@
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
-    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : rate(raw);
+    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : hourlyBytes ? formatBytes(raw) : formatNetworkRate(raw);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
@@ -34,7 +37,9 @@
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
-          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: timezone }))
+          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleString([], hourlyBytes && data.timestamps.length > 24
+            ? { month: 'short', day: 'numeric', timeZone: timezone }
+            : { hour: '2-digit', minute: '2-digit', timeZone: timezone }))
         },
         {
           stroke: muted,
@@ -42,7 +47,7 @@
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
-          values: (_u, values) => values.map((v) => (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
+          values: (_u, values) => values.map((v) => hourlyBytes ? formatBytes(v) : (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
         }
       ],
       cursor: {
@@ -60,14 +65,14 @@
           stroke: accent,
           width: 1.5,
           fill: areaFill(accent),
-          points: { show: false },
+          points: { show: hourlyBytes, size: 4 },
           value
         },
         {
           label: 'Upload',
           stroke: secondary,
           width: 1.5,
-          points: { show: false },
+          points: { show: hourlyBytes, size: 4 },
           value
         }
       ]
@@ -78,7 +83,7 @@
   });
 </script>
 
-<div bind:this={host} class="chart-host" role="img" aria-label="Network download and upload rate history"></div>
+<div bind:this={host} class="chart-host" role="img" aria-label={hourlyBytes ? 'Fleet download and upload bytes per hour' : 'Network download and upload rate history'}></div>
 
 <style>
   .chart-host { min-height: 240px; width: 100%; }
