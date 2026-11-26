@@ -20,6 +20,7 @@ func TestFleetTrafficOptInAndHourlyCoverage(t *testing.T) {
 	for _, id := range []string{"server-fleet-0001", "server-fleet-0002"} {
 		server := testServer()
 		server.ID = contracts.ServerID(id)
+		server.Role = "node"
 		if err := store.EnsureServer(ctx, server); err != nil {
 			t.Fatal(err)
 		}
@@ -39,6 +40,9 @@ func TestFleetTrafficOptInAndHourlyCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	taggedID := contracts.ServerID("server-fleet-0001")
+	_, err = store.SetServerTags(ctx, taggedID, []string{"Edge", "West"})
+	check(err)
 	read := func(now time.Time) FleetTrafficHistory {
 		t.Helper()
 		history, err := store.FleetTrafficHistory(ctx, now)
@@ -67,6 +71,34 @@ func TestFleetTrafficOptInAndHourlyCoverage(t *testing.T) {
 		hour.UploadBytes != nil || hour.UploadServers != 0 || hour.ServerCount != 2 {
 		t.Fatalf("incorrect fleet totals or coverage: %+v", hour)
 	}
+	assertTag := func(now time.Time, tag string) {
+		t.Helper()
+		filtered, err := store.FleetTrafficHistoryByTag(ctx, now, tag)
+		check(err)
+		if len(filtered.Hours) != 1 {
+			t.Fatalf("expected one saved hour for %s: %+v", tag, filtered)
+		}
+		point := filtered.Hours[0]
+		if point.DownloadBytes == nil || *point.DownloadBytes != "18446744073709551615" ||
+			point.DownloadServers != 1 || point.ServerCount != 1 || point.UploadBytes != nil {
+			t.Fatalf("incorrect saved totals for %s: %+v", tag, point)
+		}
+	}
+	assertTag(now, "EDGE")
+	assertTag(now, "west")
+	server, found, err := store.GetServer(ctx, taggedID)
+	check(err)
+	if !found {
+		t.Fatal("tagged server missing before deletion")
+	}
+	check(store.DeleteServer(ctx, taggedID, server.ConfigurationRevision))
+	assertTag(now, "edge")
+	history = read(now)
+	if len(history.Hours) != 1 || history.Hours[0].DownloadBytes == nil ||
+		*history.Hours[0].DownloadBytes != "36893488147419103230" ||
+		history.Hours[0].ServerCount != 2 || len(history.Tags) != 2 || history.Tags[0] != "edge" {
+		t.Fatalf("server deletion changed saved history: %+v", history)
+	}
 	check(store.SetFleetTrafficEnabled(ctx, false, now))
 	now = now.Add(time.Hour)
 	check(store.captureFleetTraffic(ctx, now))
@@ -77,5 +109,10 @@ func TestFleetTrafficOptInAndHourlyCoverage(t *testing.T) {
 	check(store.captureFleetTraffic(ctx, now))
 	if history := read(now); len(history.Hours) != 0 {
 		t.Fatalf("expired history still returned: %+v", history)
+	}
+	filtered, err := store.FleetTrafficHistoryByTag(ctx, now, "edge")
+	check(err)
+	if len(filtered.Hours) != 0 || len(read(now).Tags) != 0 {
+		t.Fatalf("expired tagged history still returned: %+v", filtered)
 	}
 }

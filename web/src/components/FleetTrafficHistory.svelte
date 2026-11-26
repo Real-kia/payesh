@@ -1,27 +1,43 @@
 <script lang="ts">
   import { ApiError, apiClient, type FleetTrafficHistory } from '../api';
   import { PREVIEW_MODE } from '../lib/env';
-  import { formatBytes } from '../lib/format';
+  import { formatBytes, sumNetworkRate } from '../lib/format';
+  import { formatNetworkRate } from '../network';
+  import type { PreviewServer } from '../preview/fixtures';
 
-  let { timezone, theme, onAuthExpired }: { timezone: string; theme: string; onAuthExpired: () => void } = $props();
+  let { servers, timezone, theme, onAuthExpired, onOpenStorage }: { servers: PreviewServer[]; timezone: string; theme: string; onAuthExpired: () => void; onOpenStorage?: () => void } = $props();
 
   const loadChart = () => import('../TrafficChart.svelte');
   const hour = 3600000;
   const ranges = [[24, '24 hours'], [168, '7 days'], [720, '30 days']] as const;
+  let tag = $state('');
+  let savedTags = $state<string[]>([]);
+  const tagOptions = $derived.by(() => {
+    const labels = new Map(savedTags.map((label) => [label, label]));
+    for (const server of servers) {
+      for (const label of server.tags ?? []) labels.set(label.toLowerCase(), label);
+    }
+    if (tag && !labels.has(tag)) labels.set(tag, tag);
+    return [...labels].sort(([, a], [, b]) => a.localeCompare(b));
+  });
+  const taggedServers = $derived(servers.filter((server) => server.tags?.some((label) => label.toLowerCase() === tag)));
   let range = $state(24);
-  let history = $state<FleetTrafficHistory | null>(null);
+  let loaded = $state<{ tag: string; history: FleetTrafficHistory } | null>(null);
+  const history = $derived(loaded?.tag === tag ? loaded.history : null);
   let error = $state('');
   let retry = $state(0);
 
   $effect(() => {
     if (PREVIEW_MODE) return;
+    const selectedTag = tag;
     const controller = new AbortController();
-    async function load(attempt: number) {
-      if (attempt) error = '';
+    error = '';
+    async function load() {
       try {
-        const result = await apiClient.getFleetTraffic(controller.signal);
+        const result = await apiClient.getFleetTraffic(controller.signal, selectedTag);
         if (controller.signal.aborted) return;
-        history = result;
+        loaded = { tag: selectedTag, history: result };
+        if (!selectedTag) savedTags = result.tags ?? [];
         error = '';
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -29,10 +45,15 @@
         error = cause instanceof ApiError ? cause.message : 'Fleet traffic history could not be loaded.';
       }
     }
-    void load(retry);
-    const timer = window.setInterval(() => void load(0), 60000);
+    void retry;
+    void load();
+    const timer = window.setInterval(() => void load(), 60000);
     return () => { controller.abort(); window.clearInterval(timer); };
   });
+
+  const hasSavedTraffic = $derived(history?.hours.some((entry) => entry.download_bytes !== null || entry.upload_bytes !== null) ?? false);
+
+  const canPickRange = $derived(!!loaded && (loaded.history.enabled || hasSavedTraffic || (!!tag && savedTags.includes(tag))));
 
   const view = $derived.by(() => {
     const end = Date.parse(history?.end ?? '');
@@ -67,12 +88,32 @@
 <article class="panel fleet-traffic">
   <div class="panel-heading">
     <div><h2>Fleet traffic history</h2><span class="muted">Recorded download and upload per hour · {timezone}</span></div>
-    <div class="segmented" role="group" aria-label="Fleet traffic range">
-      {#each ranges as [hours, label]}
-        <button type="button" aria-pressed={range === hours} onclick={() => (range = hours)}>{label}</button>
-      {/each}
+    <div class="filters">
+      {#if !PREVIEW_MODE && tagOptions.length}
+        <label>Server tag
+          <select bind:value={tag}>
+            <option value="">All servers</option>
+            {#each tagOptions as [key, label] (key)}
+              <option value={key}>{label}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if canPickRange}
+        <div class="segmented" role="group" aria-label="Fleet traffic range">
+          {#each ranges as [hours, label]}
+            <button type="button" aria-pressed={range === hours} onclick={() => (range = hours)}>{label}</button>
+          {/each}
+        </div>
+      {/if}
     </div>
   </div>
+  {#if tag}
+    <dl class="totals">
+      <div><dt>Current download rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(taggedServers, 'download'))}</dd></div>
+      <div><dt>Current upload rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(taggedServers, 'upload'))}</dd></div>
+    </dl>
+  {/if}
   {#if PREVIEW_MODE}
     <p class="muted">Fleet traffic history is available on the hub.</p>
   {:else if error}
@@ -81,7 +122,12 @@
     <p class="muted" role="status">Loading fleet traffic history…</p>
   {:else}
     {#if !history.enabled}
-      <p class="muted">Saving is off. The hub owner can enable it in Settings → Storage.</p>
+      <div class="recording-status">
+        <span class="muted">Traffic recording is disabled.</span>
+        {#if onOpenStorage}
+          <button class="button ghost small" type="button" onclick={onOpenStorage}>Open storage settings</button>
+        {/if}
+      </div>
     {/if}
     {#if view.recorded}
       <dl class="totals">
@@ -96,10 +142,12 @@
           <p role="alert">Could not load the chart. Reload the page to try again.</p>
         {/await}
       {/key}
-      <p class="muted">{view.complete} of {range} hours have data for both directions from every server listed when the hub saved the hour. The totals include partial hours.</p>
+      <p class="muted">{view.complete} of {range} hours have data for both directions from every {tag ? 'server with this tag' : 'server'} when the hub saved the hour. The totals include partial hours.</p>
+    {:else if tag && (history.enabled || canPickRange)}
+      <p class="muted">No traffic recorded for this tag in this range.</p>
     {:else if history.enabled}
       <p class="muted">No traffic recorded in this range yet. The hub starts saving with the first full hour after you enable it.</p>
-    {:else}
+    {:else if hasSavedTraffic}
       <p class="muted">No saved traffic in this range.</p>
     {/if}
   {/if}
@@ -108,6 +156,10 @@
 <style>
   .fleet-traffic { margin-bottom: 24px; min-width: 0; }
   .panel-heading { flex-wrap: wrap; gap: 12px; }
+  .filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+  .filters label { display: flex; align-items: center; gap: 8px; }
+  .recording-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 10px 0 16px; }
+  .recording-status:last-child { margin-bottom: 0; }
   .totals { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0 0 16px; }
   dt { color: var(--muted); font-size: 12px; }
   dd { margin: 3px 0 0; font-size: 17px; font-weight: 600; }

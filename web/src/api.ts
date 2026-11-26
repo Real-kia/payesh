@@ -139,7 +139,7 @@ export type DestinationInput = Partial<{
 export type DestinationTestResult = { ok: boolean; status: string; error?: string; duration_ms: number };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
 export type FleetTrafficHour = { start: string; download_bytes: string | null; upload_bytes: string | null; download_servers: number; upload_servers: number; server_count: number };
-export type FleetTrafficHistory = { enabled: boolean; end: string; hours: FleetTrafficHour[] };
+export type FleetTrafficHistory = { enabled: boolean; end: string; hours: FleetTrafficHour[]; tags?: string[] };
 export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
 
 export type LogEntry = {
@@ -540,7 +540,10 @@ export class ApiClient {
   }
 
   getStorageSettings(): Promise<StorageStatus> { return this.request<StorageStatus>('/settings/storage'); }
-  getFleetTraffic(signal?: AbortSignal) { return this.request<FleetTrafficHistory>('/fleet/traffic', { signal }); }
+  getFleetTraffic(signal?: AbortSignal, tag = '') {
+    const query = tag ? '?' + new URLSearchParams({ tag }) : '';
+    return this.request<FleetTrafficHistory>('/fleet/traffic' + query, { signal });
+  }
   getFleetTrafficSettings(signal?: AbortSignal) { return this.request<{ enabled: boolean }>('/settings/fleet-traffic', { signal }); }
   saveFleetTrafficSettings(enabled: boolean) {
     return this.request<{ enabled: boolean }>('/settings/fleet-traffic', { method: 'PUT', headers: this.mutationHeaders(), body: JSON.stringify({ enabled }) });

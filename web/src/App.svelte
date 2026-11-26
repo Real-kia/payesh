@@ -2342,7 +2342,7 @@
       </section>
 
     {:else}
-      <OverviewPage firingAlerts={firingAlertCount} {theme} onAuthExpired={() => (authExpired = true)}
+      <OverviewPage firingAlerts={firingAlertCount} onOpenStorage={myAccount?.role === 'owner' ? () => openSettings('storage') : undefined} {theme} onAuthExpired={() => (authExpired = true)}
         servers={displayServers}
         refreshing={liveRefreshBusy}
         updatedAt={liveUpdatedAt}

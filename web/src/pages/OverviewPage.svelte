@@ -21,6 +21,7 @@
     timezone,
     theme,
     onAuthExpired,
+    onOpenStorage,
     download,
     upload,
     trafficBytes,
@@ -45,6 +46,7 @@
     timezone: string;
     theme: string;
     onAuthExpired: () => void;
+    onOpenStorage?: () => void;
     download: number | null;
     upload: number | null;
     trafficBytes: string;
@@ -98,6 +100,7 @@
         <li><span>3</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
       </ol>
     </div>
+    <FleetTrafficHistory {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
   {:else if loadState === 'error'}
     <div class="state-panel error-state">
       <div class="state-icon"><Icon name="alert-triangle" size={22} /></div>
@@ -107,7 +110,7 @@
     </div>
   {:else}
     <FleetSummary {servers} {download} {upload} />
-    <FleetTrafficHistory {timezone} {theme} {onAuthExpired} />
+    <FleetTrafficHistory {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
 
     <article class="panel attention-panel">
       <div class="panel-heading">

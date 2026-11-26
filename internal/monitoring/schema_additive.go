@@ -106,6 +106,16 @@ var additiveTables = []additiveTable{
   upload_servers INTEGER NOT NULL,
   server_count INTEGER NOT NULL
 )`},
+	{name: "fleet_traffic_tag_hours", ddl: `CREATE TABLE IF NOT EXISTS fleet_traffic_tag_hours (
+  bucket_start TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  download_bytes TEXT,
+  upload_bytes TEXT,
+  download_servers INTEGER NOT NULL,
+  upload_servers INTEGER NOT NULL,
+  server_count INTEGER NOT NULL,
+  PRIMARY KEY (tag, bucket_start)
+)`},
 }
 
 var additiveColumns = []additiveColumn{
@@ -124,6 +134,7 @@ var additiveColumns = []additiveColumn{
 // read indexes start with server_id and cannot satisfy this global ordering.
 // SQLite includes rowid in these indexes, also covering the eviction tie-break.
 var additiveIndexes = []additiveIndex{
+	{name: "fleet_traffic_tag_hours_retention", ddl: `CREATE INDEX IF NOT EXISTS fleet_traffic_tag_hours_retention ON fleet_traffic_tag_hours(bucket_start)`},
 	{name: "metric_samples_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_samples_retention ON metric_samples(observed_at)`},
 	{name: "metric_rollups_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_rollups_retention ON metric_rollups(bucket_start)`},
 	{name: "log_entries_retention", ddl: `CREATE INDEX IF NOT EXISTS log_entries_retention ON log_entries(timestamp)`},

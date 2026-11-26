@@ -11,7 +11,7 @@ func (a *API) fleetTraffic(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/v1/fleet/traffic":
 		if r.Method == http.MethodGet {
-			history, err := a.store.FleetTrafficHistory(ctx, now)
+			history, err := a.store.FleetTrafficHistoryByTag(ctx, now, r.URL.Query().Get("tag"))
 			if err != nil {
 				writeFleetError(w, 503, "traffic_unavailable", "fleet traffic history could not be loaded", true)
 				return
