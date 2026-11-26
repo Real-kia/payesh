@@ -13,6 +13,7 @@
   } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
+  const hourSeconds = 3600;
 
   $effect(() => {
     const updated: uPlot.AlignedData = [data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)];
@@ -24,20 +25,32 @@
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
+    const bars = (align: -1 | 1) => uPlot.paths.bars?.({ align, size: [0.4, 14], gap: 1 });
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : hourlyBytes ? formatBytes(raw) : formatNetworkRate(raw);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
       plugins: [hoverValues(timezone)],
       scales: {
-        x: { time: true },
+        x: hourlyBytes
+          ? { time: true, range: (_u, min, max) => [min - hourSeconds / 2, max + hourSeconds / 2] }
+          : { time: true },
         ...(hourlyBytes ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : 1] as [number, number] } } : {})
       },
       axes: [
         {
           stroke: muted,
           space: 70,
-          ...(hourlyBytes ? { incrs: [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800] } : {}),
+          ...(hourlyBytes ? {
+            incrs: [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800],
+            splits: (_u: uPlot, _axis: number, min: number, max: number, increment: number) => {
+              const ticks: number[] = [];
+              for (let tick = Math.ceil(min / increment) * increment; tick <= max; tick += increment) {
+                ticks.push(tick);
+              }
+              return ticks;
+            }
+          } : {}),
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
@@ -57,6 +70,7 @@
       cursor: {
         focus: { prox: 30 },
         points: {
+          show: !hourlyBytes,
           size: 6,
           width: 1.5,
           fill: surface
@@ -67,16 +81,16 @@
         {
           label: 'Download',
           stroke: accent,
-          width: 1.5,
-          fill: areaFill(accent),
-          points: { show: hourlyBytes, size: 4 },
+          width: hourlyBytes ? 0 : 1.5,
+          fill: hourlyBytes ? accent : areaFill(accent),
+          ...(hourlyBytes ? { paths: bars(-1), points: { show: false } } : {}),
           value
         },
         {
           label: 'Upload',
           stroke: secondary,
-          width: 1.5,
-          points: { show: hourlyBytes, size: 4 },
+          width: hourlyBytes ? 0 : 1.5,
+          ...(hourlyBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : {}),
           value
         }
       ]
