@@ -29,11 +29,15 @@
       width: Math.max(240, host.clientWidth),
       height: 240,
       plugins: [hoverValues(timezone)],
-      scales: { x: { time: true } },
+      scales: {
+        x: { time: true },
+        ...(hourlyBytes ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : 1] as [number, number] } } : {})
+      },
       axes: [
         {
           stroke: muted,
           space: 70,
+          ...(hourlyBytes ? { incrs: [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800] } : {}),
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',

@@ -76,7 +76,7 @@
         if (rx !== null) download += BigInt(rx);
         if (tx !== null) upload += BigInt(tx);
         if (rx !== null || tx !== null) recorded++;
-        if (entry && entry.download_servers === entry.server_count && entry.upload_servers === entry.server_count) complete++;
+        if (entry && rx !== null && tx !== null && entry.download_servers === entry.server_count && entry.upload_servers === entry.server_count) complete++;
       }
     }
     return { data: { timestamps, networkRx, networkTx }, recorded, complete,
@@ -142,11 +142,11 @@
           <p role="alert">Could not load the chart. Reload the page to try again.</p>
         {/await}
       {/key}
-      <p class="muted">{view.complete} of {range} hours have data for both directions from every {tag ? 'server with this tag' : 'server'} when the hub saved the hour. The totals include partial hours.</p>
+      <p class="muted">{view.recorded} of {range} hours have data. {view.complete} of those hours include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
     {:else if tag && (history.enabled || canPickRange)}
       <p class="muted">No traffic recorded for this tag in this range.</p>
     {:else if history.enabled}
-      <p class="muted">No traffic recorded in this range yet. The hub starts saving with the first full hour after you enable it.</p>
+      <p class="muted">No traffic data is available for this range.</p>
     {:else if hasSavedTraffic}
       <p class="muted">No saved traffic in this range.</p>
     {/if}
