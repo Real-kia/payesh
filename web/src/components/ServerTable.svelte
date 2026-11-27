@@ -99,11 +99,16 @@
       {#if selectable && (server.role === 'node' || canDeleteServer(server))}
         <input class="row-check" type="checkbox" aria-label={`Select ${serverLabel(server)}`} checked={selectedIds.includes(server.id)} onchange={() => toggle(server.id)} />
       {/if}
-      <a href={`/servers/${encodeURIComponent(server.id)}`} class="server-row" onclick={(event) => followLink(event, () => onSelect(server))} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}. Open details`}>
+      <a href={`/servers/${encodeURIComponent(server.id)}`} class="server-row" onclick={(event) => followLink(event, () => onSelect(server))} aria-label={`${serverLabel(server)}, ${stateLabel(server.displayState)}${server.tags?.length ? `, tags: ${server.tags.join(', ')}` : ''}. Open details`}>
         <div class="col-status">{#if server.duplicateOf}<span class="duplicate-pill" title={`Same machine as ${server.duplicateOfName ?? 'another server'}`}>Duplicate</span>{:else}<StatusPill state={server.displayState} label={stateLabel(server.displayState)} />{/if}</div>
         <div class="col-name">
           <strong>{serverLabel(server)}<span class="role-chip">{roleLabel(server.role)}</span>{#if latestNode && server.role === 'node' && server.connectionState === 'connected' && isOlder(nodeVersionOf(server), latestNode)}<span class="role-chip update-chip" title={`Node v${nodeVersionOf(server)}; v${latestNode} is available`}>Update</span>{/if}</strong>
           <small class="mono">{displayAddress(server)}{#if allAddresses(server).length > 1}<span class="more-addresses" title={allAddresses(server).join(', ')}> +{allAddresses(server).length - 1}</span>{/if}</small>
+          {#if server.tags?.length}
+            <div class="server-tags">
+              {#each server.tags as tag (tag)}<span class="tag">{tag}</span>{/each}
+            </div>
+          {/if}
         </div>
         <div class="col-platform"><span>{server.platform || '—'}</span><small class="mono">{server.architecture || '—'}</small></div>
         <div class="col-version mono tabular" title={server.role === 'node' ? `Node agent v${nodeVersionOf(server)}, installed from release v${server.version}` : `v${server.version}`}>{nodeVersionOf(server) && nodeVersionOf(server) !== '—' ? `v${nodeVersionOf(server)}` : '—'}</div>
@@ -169,6 +174,8 @@
   .col-name { min-width: 0; }
   .col-name strong { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
   .col-name small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .server-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .server-tags .tag { padding: 0 5px; border: 1px solid var(--line); border-radius: var(--radius-xs); color: var(--ink-secondary); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
   .role-chip {
     padding: 1px 6px;
     border: 1px solid var(--line);
