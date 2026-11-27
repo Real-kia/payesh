@@ -9,6 +9,8 @@
 
   const loadChart = () => import('../TrafficChart.svelte');
   const hour = 3600000;
+  const modes = ['Bandwidth', 'Traffic'] as const;
+  let mode = $state<(typeof modes)[number]>('Bandwidth');
   const ranges = [[24, '24 hours'], [168, '7 days'], [720, '30 days']] as const;
   let tag = $state('');
   let savedTags = $state<string[]>([]);
@@ -61,6 +63,8 @@
     const timestamps: number[] = [];
     const networkRx: (number | null)[] = [];
     const networkTx: (number | null)[] = [];
+    const days = new Map<number, { download: bigint | null; upload: bigint | null }>();
+    const calendar = new Intl.DateTimeFormat('en', { timeZone: timezone, year: 'numeric', month: 'numeric', day: 'numeric' });
     let download = 0n;
     let upload = 0n;
     let recorded = 0;
@@ -70,14 +74,32 @@
         const entry = points.get(start);
         const rx = entry?.download_bytes ?? null;
         const tx = entry?.upload_bytes ?? null;
-        timestamps.push(start / 1000);
-        networkRx.push(rx === null ? null : Number(rx));
-        networkTx.push(tx === null ? null : Number(tx));
+        if (mode === 'Bandwidth') {
+          timestamps.push(start / 1000);
+          networkRx.push(rx === null ? null : Number(rx) / (hour / 1000));
+          networkTx.push(tx === null ? null : Number(tx) / (hour / 1000));
+        } else {
+          const parts = calendar.formatToParts(start);
+          const year = Number(parts.find((part) => part.type === 'year')?.value);
+          const month = Number(parts.find((part) => part.type === 'month')?.value);
+          const day = Number(parts.find((part) => part.type === 'day')?.value);
+          // Encode local calendar dates at UTC midnight for evenly spaced day labels.
+          const date = Date.UTC(year, month - 1, day) / 1000;
+          const totals = days.get(date) ?? { download: null, upload: null };
+          if (rx !== null) totals.download = (totals.download ?? 0n) + BigInt(rx);
+          if (tx !== null) totals.upload = (totals.upload ?? 0n) + BigInt(tx);
+          days.set(date, totals);
+        }
         if (rx !== null) download += BigInt(rx);
         if (tx !== null) upload += BigInt(tx);
         if (rx !== null || tx !== null) recorded++;
         if (entry && rx !== null && tx !== null && entry.download_servers === entry.server_count && entry.upload_servers === entry.server_count) complete++;
       }
+    }
+    for (const [date, totals] of days) {
+      timestamps.push(date);
+      networkRx.push(totals.download === null ? null : Number(totals.download));
+      networkTx.push(totals.upload === null ? null : Number(totals.upload));
     }
     return { data: { timestamps, networkRx, networkTx }, recorded, complete,
       download: networkRx.some((value) => value !== null) ? download : null,
@@ -87,7 +109,7 @@
 
 <article class="panel fleet-traffic">
   <div class="panel-heading">
-    <div><h2>Fleet traffic history</h2><span class="muted">Recorded download and upload per hour · {timezone}</span></div>
+    <div><h2>Fleet traffic history</h2><span class="muted">{mode === 'Bandwidth' ? 'Hourly average of recorded traffic · Mbit/s' : 'Recorded daily totals for the selected range'} · {timezone}</span></div>
     <div class="filters">
       {#if !PREVIEW_MODE && tagOptions.length}
         <label>Server tag
@@ -100,6 +122,11 @@
         </label>
       {/if}
       {#if canPickRange}
+        <div class="segmented" role="group" aria-label="Fleet traffic mode">
+          {#each modes as option}
+            <button type="button" aria-pressed={mode === option} onclick={() => (mode = option)}>{option}</button>
+          {/each}
+        </div>
         <div class="segmented" role="group" aria-label="Fleet traffic range">
           {#each ranges as [hours, label]}
             <button type="button" aria-pressed={range === hours} onclick={() => (range = hours)}>{label}</button>
@@ -135,9 +162,9 @@
         <div><dt>Upload</dt><dd class="tabular">{view.upload === null ? 'Unavailable' : formatBytes(view.upload)}</dd></div>
         <div><dt>Total recorded</dt><dd class="tabular">{formatBytes((view.download ?? 0n) + (view.upload ?? 0n))}</dd></div>
       </dl>
-      {#key `${range}-${timezone}-${theme}`}
+      {#key `${mode}-${range}-${timezone}-${theme}`}
         {#await loadChart() then { default: TrafficChart }}
-          <TrafficChart data={view.data} {timezone} hourlyBytes />
+          <TrafficChart data={view.data} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} />
         {:catch}
           <p role="alert">Could not load the chart. Reload the page to try again.</p>
         {/await}

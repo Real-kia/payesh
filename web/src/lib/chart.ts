@@ -29,7 +29,7 @@ export function areaFill(color: string): uPlot.Series.Fill {
 }
 
 /** Displays the hovered timestamp and values beside the cursor. */
-export function hoverValues(timezone: string): uPlot.Plugin {
+export function hoverValues(timezone: string, dateOnly = false): uPlot.Plugin {
   let tooltip: HTMLDivElement;
   return { hooks: {
     ready: [(plot) => {
@@ -50,7 +50,8 @@ export function hoverValues(timezone: string): uPlot.Plugin {
         return;
       }
       const timestamp = Number(plot.data[0][idx]);
-      const lines = [new Date(timestamp * 1000).toLocaleString([], { timeZone: timezone })];
+      const date = new Date(timestamp * 1000);
+      const lines = [dateOnly ? date.toLocaleDateString([], { timeZone: timezone }) : date.toLocaleString([], { timeZone: timezone })];
       plot.series.slice(1).forEach((series, index) => {
         if (series.show === false) return;
         const raw = plot.data[index + 1][idx];

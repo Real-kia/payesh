@@ -6,14 +6,13 @@
   import 'uplot/dist/uPlot.min.css';
   import { chartColors, areaFill, hoverValues } from './lib/chart';
 
-  let { data, timezone = 'UTC', hourlyBytes = false }: {
+  let { data, timezone = 'UTC', fleetMode }: {
     data: { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
     timezone?: string;
-    hourlyBytes?: boolean;
+    fleetMode?: 'bandwidth' | 'traffic';
   } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
-  const hourSeconds = 3600;
 
   $effect(() => {
     const updated: uPlot.AlignedData = [data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)];
@@ -22,27 +21,30 @@
 
   onMount(() => {
     if (!data.networkRx || !data.networkTx || data.timestamps.length === 0) return;
+    const dailyBytes = fleetMode === 'traffic';
+    const chartTimezone = dailyBytes ? 'UTC' : timezone;
+    const bucketSeconds = dailyBytes ? 86400 : 3600;
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
     const bars = (align: -1 | 1) => uPlot.paths.bars?.({ align, size: [0.4, 14], gap: 1 });
-    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : hourlyBytes ? formatBytes(raw) : formatNetworkRate(raw);
+    const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : dailyBytes ? formatBytes(raw) : formatNetworkRate(raw);
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
-      plugins: [hoverValues(timezone)],
+      plugins: [hoverValues(chartTimezone, dailyBytes)],
       scales: {
-        x: hourlyBytes
-          ? { time: true, range: (_u, min, max) => [min - hourSeconds / 2, max + hourSeconds / 2] }
+        x: fleetMode
+          ? { time: true, range: (_u, min, max) => [min - bucketSeconds / 2, max + bucketSeconds / 2] }
           : { time: true },
-        ...(hourlyBytes ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : 1] as [number, number] } } : {})
+        ...(fleetMode ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : dailyBytes ? 1 : 125000] as [number, number] } } : {})
       },
       axes: [
         {
           stroke: muted,
           space: 70,
-          ...(hourlyBytes ? {
-            incrs: [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800],
+          ...(fleetMode ? {
+            incrs: dailyBytes ? [86400, 172800, 345600, 604800, 1209600, 2419200] : [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800],
             splits: (_u: uPlot, _axis: number, min: number, max: number, increment: number) => {
               const ticks: number[] = [];
               for (let tick = Math.ceil(min / increment) * increment; tick <= max; tick += increment) {
@@ -54,9 +56,9 @@
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
-          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleString([], hourlyBytes && data.timestamps.length > 24
-            ? { month: 'short', day: 'numeric', timeZone: timezone }
-            : { hour: '2-digit', minute: '2-digit', timeZone: timezone }))
+          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleString([], dailyBytes || (fleetMode === 'bandwidth' && data.timestamps.length > 24)
+            ? { month: 'short', day: 'numeric', timeZone: chartTimezone }
+            : { hour: '2-digit', minute: '2-digit', timeZone: chartTimezone }))
         },
         {
           stroke: muted,
@@ -64,13 +66,13 @@
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
-          values: (_u, values) => values.map((v) => hourlyBytes ? formatBytes(v) : (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
+          values: (_u, values) => values.map((v) => dailyBytes ? formatBytes(v) : (Number(v) * 8 / 1_000_000).toLocaleString([], { maximumFractionDigits: 2 }))
         }
       ],
       cursor: {
         focus: { prox: 30 },
         points: {
-          show: !hourlyBytes,
+          show: !dailyBytes,
           size: 6,
           width: 1.5,
           fill: surface
@@ -81,16 +83,16 @@
         {
           label: 'Download',
           stroke: accent,
-          width: hourlyBytes ? 0 : 1.5,
-          fill: hourlyBytes ? accent : areaFill(accent),
-          ...(hourlyBytes ? { paths: bars(-1), points: { show: false } } : {}),
+          width: dailyBytes ? 0 : 1.5,
+          fill: dailyBytes ? accent : areaFill(accent),
+          ...(dailyBytes ? { paths: bars(-1), points: { show: false } } : {}),
           value
         },
         {
           label: 'Upload',
           stroke: secondary,
-          width: hourlyBytes ? 0 : 1.5,
-          ...(hourlyBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : {}),
+          width: dailyBytes ? 0 : 1.5,
+          ...(dailyBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : {}),
           value
         }
       ]
@@ -101,7 +103,7 @@
   });
 </script>
 
-<div bind:this={host} class="chart-host" role="img" aria-label={hourlyBytes ? 'Fleet download and upload bytes per hour' : 'Network download and upload rate history'}></div>
+<div bind:this={host} class="chart-host" role="img" aria-label={fleetMode === 'traffic' ? 'Fleet download and upload bytes per day' : 'Network download and upload rate history'}></div>
 
 <style>
   .chart-host { min-height: 240px; width: 100%; }
