@@ -4,7 +4,7 @@
   import type { PreviewServer } from '../preview/fixtures';
   import FleetTrafficSeries from './FleetTrafficSeries.svelte';
 
-  let { servers, timezone, theme, onAuthExpired, onOpenStorage }: { servers: PreviewServer[]; timezone: string; theme: string; onAuthExpired: () => void; onOpenStorage?: () => void } = $props();
+  let { servers, updatedAt, timezone, theme, onAuthExpired, onOpenStorage }: { servers: PreviewServer[]; updatedAt: number | null; timezone: string; theme: string; onAuthExpired: () => void; onOpenStorage?: () => void } = $props();
 
   const modes = ['Bandwidth', 'Traffic'] as const;
   let mode = $state<(typeof modes)[number]>('Bandwidth');
@@ -75,10 +75,10 @@
       {/if}
     </div>
   </div>
-  <FleetTrafficSeries {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
+  <FleetTrafficSeries {servers} {updatedAt} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
     tag="" visible={!visibleTags.length} onHistory={receiveHistory} />
   {#each visibleTags as [key, label] (key)}
-    <FleetTrafficSeries {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
+    <FleetTrafficSeries {servers} {updatedAt} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
       tag={key} {label} />
   {/each}
 </article>

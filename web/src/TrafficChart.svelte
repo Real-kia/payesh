@@ -6,8 +6,9 @@
   import 'uplot/dist/uPlot.min.css';
   import { chartColors, areaFill, hoverValues } from './lib/chart';
 
-  let { data, timezone = 'UTC', fleetMode, daily = true, bucketSeconds = 3600, coverage }: {
+  let { data, livePoint, timezone = 'UTC', fleetMode, daily = true, bucketSeconds = 3600, coverage }: {
     data: { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
+    livePoint?: { timestamp: number; download: number | null; upload: number | null };
     timezone?: string;
     daily?: boolean;
     bucketSeconds?: number;
@@ -17,23 +18,51 @@
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
 
+  const chartData = $derived.by((): uPlot.AlignedData => {
+    const { timestamps } = data;
+    const blanks = timestamps.map(() => null);
+    const rx = data.networkRx ?? blanks;
+    const tx = data.networkTx ?? blanks;
+    if (fleetMode !== 'bandwidth') return [timestamps, rx, tx];
+
+    const lastTimestamp = timestamps.at(-1);
+    if (!livePoint || (lastTimestamp !== undefined && livePoint.timestamp <= lastTimestamp)) {
+      return [timestamps, rx, tx, blanks, blanks];
+    }
+    return [
+      [...timestamps, livePoint.timestamp],
+      [...rx, null],
+      [...tx, null],
+      [...blanks, livePoint.download],
+      [...blanks, livePoint.upload]
+    ];
+  });
+
   $effect(() => {
-    const updated: uPlot.AlignedData = [data.timestamps, data.networkRx ?? data.timestamps.map(() => null), data.networkTx ?? data.timestamps.map(() => null)];
+    const updated = chartData;
     plot?.setData(updated);
   });
 
   onMount(() => {
-    if (!data.networkRx || !data.networkTx || data.timestamps.length === 0) return;
+    if (!chartData[0].length) return;
     const showBytes = fleetMode === 'traffic';
     const dailyBuckets = showBytes && daily;
     const chartTimezone = dailyBuckets ? 'UTC' : timezone;
     const bandwidthPoints = bucketSeconds < 3600 ? { points: { show: true, size: 3 } } : {};
     const padding = (dailyBuckets ? 86400 : bucketSeconds) / 2;
+    const livePadding = fleetMode === 'bandwidth' ? 12 : 0;
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
     const bars = (align: -1 | 1) => uPlot.paths.bars?.({ align, size: [0.4, 14], gap: 1 });
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : showBytes ? formatBytes(raw) : formatNetworkRate(raw);
+    const liveSeries = (label: string, stroke: string): uPlot.Series => ({
+      label,
+      paths: () => null,
+      stroke,
+      points: { show: true, size: 9, width: 2, stroke, fill: surface },
+      value
+    });
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
@@ -41,7 +70,7 @@
       tzDate: (timestamp) => uPlot.tzDate(new Date(timestamp * 1000), chartTimezone),
       scales: {
         x: fleetMode
-          ? { time: true, range: (_u, min, max) => [min - padding, max + padding] }
+          ? { time: true, range: (_u, min, max) => [min - padding, max + Math.max(padding, (max - min) * livePadding / _u.width)] }
           : { time: true },
         ...(fleetMode ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : showBytes ? 1 : 125000] as [number, number] } } : {})
       },
@@ -100,9 +129,10 @@
           width: showBytes ? 0 : 1.5,
           ...(showBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : bandwidthPoints),
           value
-        }
+        },
+        ...(fleetMode === 'bandwidth' ? [liveSeries('Live download', accent), liveSeries('Live upload', secondary)] : [])
       ]
-    }, [data.timestamps, data.networkRx, data.networkTx] as uPlot.AlignedData, host);
+    }, chartData, host);
     const resize = new ResizeObserver(([entry]) => plot?.setSize({ width: Math.max(240, entry.contentRect.width), height: 240 }));
     resize.observe(host);
     return () => { resize.disconnect(); plot?.destroy(); };

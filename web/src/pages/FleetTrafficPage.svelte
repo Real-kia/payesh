@@ -23,5 +23,5 @@
     </div>
     {#if !PREVIEW_MODE}<LiveIndicator {refreshing} {updatedAt} />{/if}
   </div>
-  <FleetTrafficHistory {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
+  <FleetTrafficHistory {servers} {updatedAt} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
 </section>

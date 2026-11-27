@@ -5,9 +5,10 @@
   import { formatNetworkRate } from '../network';
   import type { PreviewServer } from '../preview/fixtures';
 
-  let { servers, timezone, theme, onAuthExpired, onOpenStorage, tag, label, visible = true,
+  let { servers, updatedAt, timezone, theme, onAuthExpired, onOpenStorage, tag, label, visible = true,
     onHistory, mode, range }: {
     servers: PreviewServer[];
+    updatedAt: number | null;
     timezone: string;
     theme: string;
     onAuthExpired: () => void;
@@ -23,6 +24,11 @@
   const loadChart = () => import('../TrafficChart.svelte');
   const hour = 3600000;
   const scopedServers = $derived(tag ? servers.filter((server) => server.tags?.some((label) => label.toLowerCase() === tag)) : servers);
+  const liveDownload = $derived(sumNetworkRate(scopedServers, 'download'));
+  const liveUpload = $derived(sumNetworkRate(scopedServers, 'upload'));
+  const livePoint = $derived(mode === 'Bandwidth' && updatedAt !== null && (liveDownload !== null || liveUpload !== null)
+    ? { timestamp: updatedAt / 1000, download: liveDownload, upload: liveUpload }
+    : undefined);
   let history = $state<FleetTrafficHistory | null>(null);
   let error = $state('');
   let retry = $state(0);
@@ -144,8 +150,8 @@
     {#if label}<h3>{label}</h3>{/if}
     {#if scopedServers.length}
       <dl class="totals">
-        <div><dt>Live download rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(scopedServers, 'download'))}</dd></div>
-        <div><dt>Live upload rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(scopedServers, 'upload'))}</dd></div>
+        <div><dt>Live download rate</dt><dd class="tabular">{formatNetworkRate(liveDownload)}</dd></div>
+        <div><dt>Live upload rate</dt><dd class="tabular">{formatNetworkRate(liveUpload)}</dd></div>
       </dl>
     {/if}
     {#if PREVIEW_MODE}
@@ -163,27 +169,31 @@
           {/if}
         </div>
       {/if}
-      {#if view.recorded}
-        {#if mode === 'Bandwidth'}
+      {#if view.recorded || livePoint}
+        {#if view.recorded && mode === 'Bandwidth'}
           <p class="muted resolution">{fiveMinute ? (view.recordedHours ? 'Hourly and 5-minute averages · Times mark the end of each interval' : '5-minute averages · Times mark the end of each interval') : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
           {#if view.latest && (view.latest.download_servers < view.latest.server_count || view.latest.upload_servers < view.latest.server_count)}
-            <p class="muted resolution">Latest recorded interval has partial coverage. Download includes {view.latest.download_servers}/{view.latest.server_count} servers and upload includes {view.latest.upload_servers}/{view.latest.server_count}. Missing servers are excluded from the chart rates.</p>
+            <p class="muted resolution">Latest recorded interval has partial coverage. Download includes {view.latest.download_servers}/{view.latest.server_count} servers and upload includes {view.latest.upload_servers}/{view.latest.server_count}. The recorded averages include only those servers.</p>
           {/if}
         {/if}
-        <dl class="totals">
-          <div><dt>Recorded download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>
-          <div><dt>Recorded upload</dt><dd class="tabular">{view.upload === null ? 'Unavailable' : formatBytes(view.upload)}</dd></div>
-          <div><dt>Total recorded</dt><dd class="tabular">{formatBytes((view.download ?? 0n) + (view.upload ?? 0n))}</dd></div>
-        </dl>
+        {#if view.recorded}
+          <dl class="totals">
+            <div><dt>Recorded download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>
+            <div><dt>Recorded upload</dt><dd class="tabular">{view.upload === null ? 'Unavailable' : formatBytes(view.upload)}</dd></div>
+            <div><dt>Total recorded</dt><dd class="tabular">{formatBytes((view.download ?? 0n) + (view.upload ?? 0n))}</dd></div>
+          </dl>
+        {:else}
+          <p class="muted resolution">Showing live rates. No recorded history is available for this range.</p>
+        {/if}
         {#key `${mode}-${range}-${timezone}-${theme}-${interval}`}
           {#await loadChart() then { default: TrafficChart }}
-            <TrafficChart data={view.data} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} daily={range !== 24}
+            <TrafficChart data={view.data} {livePoint} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} daily={range !== 24}
               bucketSeconds={interval / 1000} coverage={mode === 'Bandwidth' || range === 24 ? bucketCoverage : undefined} />
           {:catch}
             <p role="alert">Could not load the chart. Reload the page to try again.</p>
           {/await}
         {/key}
-        <p class="muted">{#if fiveMinute && view.recordedHours}{view.recordedHours} hourly and {view.recordedFiveMinutes} five-minute intervals have recorded data.{:else}{view.recorded} of {range * hour / interval} {fiveMinute ? 'five-minute intervals' : 'hours'} have recorded data.{/if} {view.complete} of those include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
+        {#if view.recorded}<p class="muted">{#if fiveMinute && view.recordedHours}{view.recordedHours} hourly and {view.recordedFiveMinutes} five-minute intervals have recorded data.{:else}{view.recorded} of {range * hour / interval} {fiveMinute ? 'five-minute intervals' : 'hours'} have recorded data.{/if} {view.complete} of those include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>{/if}
       {:else if tag && (history.enabled || hasSavedTraffic)}
         <p class="muted">No traffic recorded for this tag in this range.</p>
       {:else if history.enabled}
