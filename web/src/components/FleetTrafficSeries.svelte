@@ -6,7 +6,7 @@
   import type { PreviewServer } from '../preview/fixtures';
 
   let { servers, timezone, theme, onAuthExpired, onOpenStorage, tag, label, visible = true,
-    knownTag = false, onHistory, mode, range }: {
+    onHistory, mode, range }: {
     servers: PreviewServer[];
     timezone: string;
     theme: string;
@@ -15,7 +15,6 @@
     tag: string;
     label?: string;
     visible?: boolean;
-    knownTag?: boolean;
     onHistory?: (history: FleetTrafficHistory) => void;
     mode: 'Bandwidth' | 'Traffic';
     range: number;
@@ -143,7 +142,7 @@
           {/await}
         {/key}
         <p class="muted">{view.recorded} of {range} hours have data. {view.complete} of those hours include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
-      {:else if tag && (history.enabled || knownTag)}
+      {:else if tag && (history.enabled || hasSavedTraffic)}
         <p class="muted">No traffic recorded for this tag in this range.</p>
       {:else if history.enabled}
         <p class="muted">No traffic data is available for this range.</p>

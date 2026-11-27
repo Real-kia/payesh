@@ -11,20 +11,23 @@
   const ranges = [[24, '24 hours'], [168, '7 days'], [720, '30 days']] as const;
   let range = $state(24);
   let selectedTags = $state<string[]>([]);
-  let savedTags = $state<string[]>([]);
   let fleetHasTraffic = $state(false);
 
   function receiveHistory(history: FleetTrafficHistory) {
-    savedTags = history.tags ?? [];
     fleetHasTraffic = history.enabled || history.hours.some((entry) => entry.download_bytes !== null || entry.upload_bytes !== null);
   }
 
   const tagOptions = $derived.by(() => {
-    const labels = new Map([...selectedTags, ...savedTags].map((label) => [label, label]));
+    const labels = new Map<string, string>();
     for (const server of servers) {
       for (const label of server.tags ?? []) labels.set(label.toLowerCase(), label);
     }
     return [...labels].sort(([, a], [, b]) => a.localeCompare(b));
+  });
+  const visibleTags = $derived(tagOptions.filter(([key]) => selectedTags.includes(key)));
+
+  $effect(() => {
+    if (visibleTags.length !== selectedTags.length) selectedTags = visibleTags.map(([key]) => key);
   });
 </script>
 
@@ -58,10 +61,10 @@
     </div>
   </div>
   <FleetTrafficSeries {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
-    tag="" visible={!selectedTags.length} onHistory={receiveHistory} />
-  {#each tagOptions.filter(([key]) => selectedTags.includes(key)) as [key, label] (key)}
+    tag="" visible={!visibleTags.length} onHistory={receiveHistory} />
+  {#each visibleTags as [key, label] (key)}
     <FleetTrafficSeries {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} {mode} {range}
-      tag={key} {label} knownTag={savedTags.includes(key)} />
+      tag={key} {label} />
   {/each}
 </article>
 
