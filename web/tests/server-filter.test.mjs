@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterServers, defaultFilter } from '../src/lib/serverFilter.ts';
+import { filterServers, defaultFilter, reconcileServerFilter } from '../src/lib/serverFilter.ts';
 import { allAddresses } from '../src/lib/format.ts';
 
 const server = (id, extra) => ({ id, name: id, role: 'node', displayState: 'healthy', connectionState: 'connected', metrics: { cpu: 10, memory: 10, swap: null, disk: 10 }, ...extra });
@@ -28,4 +28,16 @@ test('filters and sorts', () => {
 test('addresses are merged without duplicates', () => {
   assert.deepEqual(allAddresses(fleet[0]), ['203.0.113.1', '198.51.100.20']);
   assert.deepEqual(allAddresses(fleet[2]), []);
+});
+
+test('clears saved filters whose options disappeared and keeps other choices', () => {
+  const state = { ...defaultFilter, tag: 'retired', country: 'GB', status: 'healthy', query: 'alpha', sort: 'name' };
+  assert.deepEqual(reconcileServerFilter(state, ['edge', 'db'], ['DE', 'IR']), { ...state, tag: '', country: '' });
+});
+
+test('keeps a tag filter when only the option casing changed', () => {
+  const state = { ...defaultFilter, tag: 'EDGE', country: 'DE' };
+  const current = reconcileServerFilter(state, ['edge', 'db'], ['DE', 'IR']);
+  assert.deepEqual(current, { ...state, tag: 'edge' });
+  assert.equal(reconcileServerFilter(current, ['edge', 'db'], ['DE', 'IR']), current);
 });

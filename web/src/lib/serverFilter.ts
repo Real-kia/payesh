@@ -12,6 +12,14 @@ const urgency: Record<DisplayState, number> = { failed: 0, unreachable: 1, stale
 
 const offline = (server: PreviewServer) => server.connectionState !== 'connected';
 
+export function reconcileServerFilter(state: ServerFilterState, tags: string[], countries: string[]): ServerFilterState {
+  const tag = state.tag
+    ? tags.find((tag) => tag === state.tag) ?? tags.find((tag) => tag.toLowerCase() === state.tag.toLowerCase()) ?? ''
+    : '';
+  const country = countries.includes(state.country) ? state.country : '';
+  return tag === state.tag && country === state.country ? state : { ...state, tag, country };
+}
+
 /** Search (name, every address, tags), filters and sort, applied in the browser. */
 export function filterServers(servers: PreviewServer[], state: ServerFilterState): PreviewServer[] {
   const query = state.query.trim().toLowerCase();

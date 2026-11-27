@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '../Icon.svelte';
   import { countryFlag } from '../lib/flags';
-  import type { ServerFilterState } from '../lib/serverFilter';
+  import { reconcileServerFilter, type ServerFilterState } from '../lib/serverFilter';
   import type { PreviewServer } from '../preview/fixtures';
 
   let { servers, state = $bindable(), shown, inventory = false }: { servers: PreviewServer[]; state: ServerFilterState; shown: number; inventory?: boolean } = $props();
@@ -9,6 +9,12 @@
   const tags = $derived([...new Set(servers.flatMap((server) => server.tags ?? []))].sort((a, b) => a.localeCompare(b)));
   const countries = $derived([...new Set(servers.map((server) => (server.countryCode ?? '').toUpperCase()).filter(Boolean))].sort());
   const filtered = $derived(state.status !== 'all' || !!state.tag || !!state.country || !!state.query.trim());
+
+  $effect(() => {
+    if (!servers.length) return;
+    const reconciled = reconcileServerFilter(state, tags, countries);
+    if (reconciled !== state) state = reconciled;
+  });
 </script>
 
 <div class="toolbar">
@@ -25,7 +31,7 @@
       {#each tags as tag (tag)}<option value={tag}>{tag}</option>{/each}
     </select>
   {/if}
-  {#if countries.length > 1}
+  {#if countries.length > 1 || (countries.length > 0 && state.country)}
     <select aria-label="Location" bind:value={state.country}>
       <option value="">All locations</option>
       {#each countries as country (country)}<option value={country}>{countryFlag(country)} {country}</option>{/each}
