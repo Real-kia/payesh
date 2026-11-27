@@ -92,6 +92,7 @@
     let complete = 0;
     let recordedHours = 0;
     let recordedFiveMinutes = 0;
+    let latest: FleetTrafficHour | undefined;
     for (const { start, duration, entry } of buckets) {
       const rx = entry?.download_bytes ?? null;
       const tx = entry?.upload_bytes ?? null;
@@ -120,6 +121,7 @@
       if (rx !== null) download += BigInt(rx);
       if (tx !== null) upload += BigInt(tx);
       if (rx !== null || tx !== null) {
+        latest = entry;
         recorded++;
         if (duration === hour) recordedHours++;
         else recordedFiveMinutes++;
@@ -131,7 +133,7 @@
       networkRx.push(totals.download === null ? null : Number(totals.download));
       networkTx.push(totals.upload === null ? null : Number(totals.upload));
     }
-    return { data: { timestamps, networkRx, networkTx }, coverage, recorded, complete, recordedHours, recordedFiveMinutes,
+    return { data: { timestamps, networkRx, networkTx }, coverage, recorded, complete, recordedHours, recordedFiveMinutes, latest,
       download: networkRx.some((value) => value !== null) ? download : null,
       upload: networkTx.some((value) => value !== null) ? upload : null };
   });
@@ -164,6 +166,9 @@
       {#if view.recorded}
         {#if mode === 'Bandwidth'}
           <p class="muted resolution">{fiveMinute ? (view.recordedHours ? 'Hourly and 5-minute averages · Times mark the end of each interval' : '5-minute averages · Times mark the end of each interval') : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
+          {#if view.latest && (view.latest.download_servers < view.latest.server_count || view.latest.upload_servers < view.latest.server_count)}
+            <p class="muted resolution">Latest recorded interval has partial coverage. Download includes {view.latest.download_servers}/{view.latest.server_count} servers and upload includes {view.latest.upload_servers}/{view.latest.server_count}. Missing servers are excluded from the chart rates.</p>
+          {/if}
         {/if}
         <dl class="totals">
           <div><dt>Recorded download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>

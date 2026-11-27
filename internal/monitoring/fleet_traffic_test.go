@@ -186,3 +186,40 @@ func TestFleetTrafficFiveMinuteCoverageAndRetention(t *testing.T) {
 		t.Fatalf("retention left %d expired five-minute rows", saved)
 	}
 }
+
+func TestFleetTrafficIncludesServerWhileItsNextIntervalIsActive(t *testing.T) {
+	ctx := t.Context()
+	store, err := OpenStore(ctx, ":memory:", StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	server := testServer()
+	check(store.EnsureServer(ctx, server))
+	check(store.SetFleetTrafficEnabled(ctx, true, base))
+	ingest := func(samples ...contracts.NodeMetricSample) {
+		t.Helper()
+		_, err := store.IngestNodeBatch(ctx, server.ID, samples, nil, samples[len(samples)-1].ObservedAt)
+		check(err)
+	}
+	ingest(testNodeSample(1, base, 10, "100"),
+		testNodeSample(2, base.Add(4*time.Minute), 10, "200"),
+		testNodeSample(3, base.Add(5*time.Minute), 10, "300"))
+	check(store.drainRollupQueue(ctx))
+
+	now := base.Add(6 * time.Minute)
+	ingest(testNodeSample(4, now, 10, "400"))
+	check(store.captureFleetTraffic(ctx, now))
+	history, err := store.FleetTrafficHistory(ctx, now)
+	check(err)
+	if len(history.FiveMinutes) != 1 || history.FiveMinutes[0].DownloadServers != 1 {
+		t.Fatalf("newer sample dropped the server from its previous interval: %+v", history)
+	}
+}

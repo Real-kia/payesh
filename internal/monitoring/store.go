@@ -1713,7 +1713,7 @@ func (s *Store) IngestSamples(ctx context.Context, serverID contracts.ServerID, 
 	if len(materializationSamples) > 0 || len(gaps) > 0 {
 		// Only mark the affected buckets dirty here. The rollup worker rebuilds
 		// each dirty bucket once per pass instead of once per ingested sample.
-		if err := s.queueIngestRollupTargets(ctx, serverID, materializationSamples); err != nil {
+		if err := s.queueIngestRollupTargets(ctx, serverID, materializationSamples, len(gaps) > 0); err != nil {
 			result.RollupsPending = true
 			return result, nil
 		}
@@ -2100,16 +2100,26 @@ func (s *Store) queuedRollupTargets(ctx context.Context, serverID contracts.Serv
 }
 
 // queueIngestRollupTargets marks the buckets touched by new samples as dirty:
-// each sample's own bucket and the previous one (its gauge duration changes),
-// plus the bucket of the following stored sample for late arrivals.
-func (s *Store) queueIngestRollupTargets(ctx context.Context, serverID contracts.ServerID, samples []contracts.MetricSample) error {
+// each sample's own bucket, the previous one if its first following observation
+// changes, and the next observation's bucket when its predecessor changes.
+func (s *Store) queueIngestRollupTargets(ctx context.Context, serverID contracts.ServerID, samples []contracts.MetricSample, rebuildGapBoundaries bool) error {
 	set := make(map[rollupTarget]struct{}, len(samples)*4)
 	for _, sample := range samples {
+		var earlier string
+		if !rebuildGapBoundaries {
+			if err := s.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT observed_at FROM metric_samples
+				WHERE server_id=? AND observed_at<? ORDER BY observed_at DESC LIMIT 1), '')`,
+				string(serverID), FormatPersistedTime(sample.ObservedAt)).Scan(&earlier); err != nil {
+				return err
+			}
+		}
 		for _, seconds := range rollupTierSeconds {
 			duration := time.Duration(seconds) * time.Second
 			bucket := sample.ObservedAt.UTC().Truncate(duration)
 			set[rollupTarget{start: bucket, seconds: seconds}] = struct{}{}
-			set[rollupTarget{start: bucket.Add(-duration), seconds: seconds}] = struct{}{}
+			if rebuildGapBoundaries || earlier < FormatPersistedTime(bucket) {
+				set[rollupTarget{start: bucket.Add(-duration), seconds: seconds}] = struct{}{}
+			}
 		}
 		next, found, err := s.nextRollupSample(ctx, serverID, sample)
 		if err != nil {
