@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ApiError, apiClient, type FleetTrafficHistory } from '../api';
+  import { ApiError, apiClient, type FleetTrafficHistory, type FleetTrafficHour } from '../api';
   import { PREVIEW_MODE } from '../lib/env';
   import { formatBytes, sumNetworkRate } from '../lib/format';
   import { formatNetworkRate } from '../network';
@@ -55,16 +55,32 @@
 
   const fiveMinute = $derived(mode === 'Bandwidth' && range === 24 && !!history?.five_minute_end && !!history.five_minutes?.length);
   const interval = $derived(fiveMinute ? 5 * 60 * 1000 : hour);
-  const points = $derived(new Map((fiveMinute ? history?.five_minutes : history?.hours)?.map((entry) => [Date.parse(entry.start), entry])));
-
   function bucketCoverage(timestamp: number): string | undefined {
-    const entry = points.get(timestamp * 1000 - (fiveMinute ? interval : 0));
-    if (!entry || (entry.download_bytes === null && entry.upload_bytes === null)) return;
-    return `Servers recorded · In ${entry.download_servers}/${entry.server_count} · Out ${entry.upload_servers}/${entry.server_count}`;
+    return view.coverage.get(timestamp);
   }
 
   const view = $derived.by(() => {
     const end = Date.parse((fiveMinute ? history?.five_minute_end : history?.end) ?? '');
+    const windowStart = end - range * hour;
+    const hourlyPoints = new Map(history?.hours.map((entry) => [Date.parse(entry.start), entry]));
+    const finePoints = new Map(history?.five_minutes?.map((entry) => [Date.parse(entry.start), entry]));
+    const buckets: { start: number; duration: number; entry?: FleetTrafficHour }[] = [];
+    if (Number.isFinite(end)) {
+      // Keep complete hourly buckets until the first fine-resolution record.
+      // An hour that overlaps any five-minute buckets would double-count bytes.
+      const fineStart = fiveMinute
+        ? Math.max(windowStart, Math.min(...finePoints.keys()))
+        : end;
+      for (let start = Math.ceil(windowStart / hour) * hour; start + hour <= fineStart; start += hour) {
+        buckets.push({ start, duration: hour, entry: hourlyPoints.get(start) });
+      }
+      if (fiveMinute) {
+        for (let start = fineStart; start < end; start += interval) {
+          buckets.push({ start, duration: interval, entry: finePoints.get(start) });
+        }
+      }
+    }
+    const coverage = new Map<number, string>();
     const timestamps: number[] = [];
     const networkRx: (number | null)[] = [];
     const networkTx: (number | null)[] = [];
@@ -74,40 +90,48 @@
     let upload = 0n;
     let recorded = 0;
     let complete = 0;
-    if (Number.isFinite(end)) {
-      for (let start = end - range * hour; start < end; start += interval) {
-        const entry = points.get(start);
-        const rx = entry?.download_bytes ?? null;
-        const tx = entry?.upload_bytes ?? null;
-        if (mode === 'Bandwidth' || range === 24) {
-          const divisor = mode === 'Bandwidth' ? interval / 1000 : 1;
-          timestamps.push((start + (fiveMinute ? interval : 0)) / 1000);
-          networkRx.push(rx === null ? null : Number(rx) / divisor);
-          networkTx.push(tx === null ? null : Number(tx) / divisor);
-        } else {
-          const parts = calendar.formatToParts(start);
-          const year = Number(parts.find((part) => part.type === 'year')?.value);
-          const month = Number(parts.find((part) => part.type === 'month')?.value);
-          const day = Number(parts.find((part) => part.type === 'day')?.value);
-          // Encode local calendar dates at UTC midnight for evenly spaced day labels.
-          const date = Date.UTC(year, month - 1, day) / 1000;
-          const totals = days.get(date) ?? { download: null, upload: null };
-          if (rx !== null) totals.download = (totals.download ?? 0n) + BigInt(rx);
-          if (tx !== null) totals.upload = (totals.upload ?? 0n) + BigInt(tx);
-          days.set(date, totals);
+    let recordedHours = 0;
+    let recordedFiveMinutes = 0;
+    for (const { start, duration, entry } of buckets) {
+      const rx = entry?.download_bytes ?? null;
+      const tx = entry?.upload_bytes ?? null;
+      if (mode === 'Bandwidth' || range === 24) {
+        const divisor = mode === 'Bandwidth' ? duration / 1000 : 1;
+        const timestamp = (start + (fiveMinute ? duration : 0)) / 1000;
+        timestamps.push(timestamp);
+        if (entry && (rx !== null || tx !== null)) {
+          const resolution = fiveMinute ? (duration === hour ? 'Hourly average · ' : '5-minute average · ') : '';
+          coverage.set(timestamp, `${resolution}Servers recorded · In ${entry.download_servers}/${entry.server_count} · Out ${entry.upload_servers}/${entry.server_count}`);
         }
-        if (rx !== null) download += BigInt(rx);
-        if (tx !== null) upload += BigInt(tx);
-        if (rx !== null || tx !== null) recorded++;
-        if (entry && rx !== null && tx !== null && entry.download_servers === entry.server_count && entry.upload_servers === entry.server_count) complete++;
+        networkRx.push(rx === null ? null : Number(rx) / divisor);
+        networkTx.push(tx === null ? null : Number(tx) / divisor);
+      } else {
+        const parts = calendar.formatToParts(start);
+        const year = Number(parts.find((part) => part.type === 'year')?.value);
+        const month = Number(parts.find((part) => part.type === 'month')?.value);
+        const day = Number(parts.find((part) => part.type === 'day')?.value);
+        // Encode local calendar dates at UTC midnight for evenly spaced day labels.
+        const date = Date.UTC(year, month - 1, day) / 1000;
+        const totals = days.get(date) ?? { download: null, upload: null };
+        if (rx !== null) totals.download = (totals.download ?? 0n) + BigInt(rx);
+        if (tx !== null) totals.upload = (totals.upload ?? 0n) + BigInt(tx);
+        days.set(date, totals);
       }
+      if (rx !== null) download += BigInt(rx);
+      if (tx !== null) upload += BigInt(tx);
+      if (rx !== null || tx !== null) {
+        recorded++;
+        if (duration === hour) recordedHours++;
+        else recordedFiveMinutes++;
+      }
+      if (entry && rx !== null && tx !== null && entry.download_servers === entry.server_count && entry.upload_servers === entry.server_count) complete++;
     }
     for (const [date, totals] of days) {
       timestamps.push(date);
       networkRx.push(totals.download === null ? null : Number(totals.download));
       networkTx.push(totals.upload === null ? null : Number(totals.upload));
     }
-    return { data: { timestamps, networkRx, networkTx }, recorded, complete,
+    return { data: { timestamps, networkRx, networkTx }, coverage, recorded, complete, recordedHours, recordedFiveMinutes,
       download: networkRx.some((value) => value !== null) ? download : null,
       upload: networkTx.some((value) => value !== null) ? upload : null };
   });
@@ -139,7 +163,7 @@
       {/if}
       {#if view.recorded}
         {#if mode === 'Bandwidth'}
-          <p class="muted resolution">{fiveMinute ? '5-minute averages · Times mark the end of each interval' : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
+          <p class="muted resolution">{fiveMinute ? (view.recordedHours ? 'Hourly and 5-minute averages · Times mark the end of each interval' : '5-minute averages · Times mark the end of each interval') : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
         {/if}
         <dl class="totals">
           <div><dt>Recorded download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>
@@ -154,7 +178,7 @@
             <p role="alert">Could not load the chart. Reload the page to try again.</p>
           {/await}
         {/key}
-        <p class="muted">{view.recorded} of {range * hour / interval} {fiveMinute ? 'five-minute intervals' : 'hours'} have recorded data. {view.complete} of those include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
+        <p class="muted">{#if fiveMinute && view.recordedHours}{view.recordedHours} hourly and {view.recordedFiveMinutes} five-minute intervals have recorded data.{:else}{view.recorded} of {range * hour / interval} {fiveMinute ? 'five-minute intervals' : 'hours'} have recorded data.{/if} {view.complete} of those include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
       {:else if tag && (history.enabled || hasSavedTraffic)}
         <p class="muted">No traffic recorded for this tag in this range.</p>
       {:else if history.enabled}
