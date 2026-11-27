@@ -242,7 +242,7 @@ func supported(id, version string) bool {
 	}
 	switch id {
 	case "ubuntu":
-		return (major == 22 && minor == 4) || (major == 24 && minor == 4) || (major == 26 && minor == 4)
+		return (major == 22 && minor == 4) || (major == 24 && (minor == 4 || minor == 10)) || (major == 26 && minor == 4)
 	case "debian":
 		return major == 12 || major == 13
 	case "fedora":
@@ -259,7 +259,7 @@ func supported(id, version string) bool {
 // components are intentionally ignored: the support matrix pins release
 // families/streams (for example Ubuntu 22.04 and Alpine 3.22), not a single
 // vendor point update. Unknown future families remain unsupported until they
-// are explicitly added to the matrix and CI.
+// are explicitly added to the installer allowlist.
 func releaseVersion(version string) (major, minor int, ok bool) {
 	parts := strings.Split(strings.TrimSpace(version), ".")
 	if len(parts) == 0 || len(parts) > 3 || parts[0] == "" {

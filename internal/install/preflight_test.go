@@ -80,6 +80,7 @@ func TestSupportedReleaseMatrixIsPinned(t *testing.T) {
 	}{
 		{"ubuntu", "22.04", true},
 		{"ubuntu", "24.04", true},
+		{"ubuntu", "24.10", true},
 		{"ubuntu", "26.04", true},
 		{"ubuntu", "23.10", false},
 		{"ubuntu", "25.04", false},

@@ -19,6 +19,9 @@ firewall, or OpenRC behavior is proven; those require disposable Linux VM
 tests in the package that owns the behavior. No distribution outside this
 matrix is a release gate.
 
+Installer preflight also accepts Ubuntu 24.10 (Oracular Oriole). Canonical ended
+security updates for this release on July 10, 2025.
+
 `cmd/payesh-install` is intentionally side-effect-free and reports the target
 OS, kernel, init system, package manager, cgroup mode, privilege, and
 `ip`/`tc`/`nft` availability before any artifact or credential handling.
