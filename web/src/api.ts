@@ -139,7 +139,7 @@ export type DestinationInput = Partial<{
 export type DestinationTestResult = { ok: boolean; status: string; error?: string; duration_ms: number };
 export type TrafficQuery = { periods: TrafficPeriod[]; next_cursor?: string };
 export type FleetTrafficHour = { start: string; download_bytes: string | null; upload_bytes: string | null; download_servers: number; upload_servers: number; server_count: number };
-export type FleetTrafficHistory = { enabled: boolean; end: string; hours: FleetTrafficHour[]; tags?: string[] };
+export type FleetTrafficHistory = { enabled: boolean; end: string; hours: FleetTrafficHour[]; five_minute_end?: string; five_minutes?: FleetTrafficHour[]; tags?: string[] };
 export type TrafficUsage = { from: string; to: string; download_bytes: string | null; upload_bytes: string | null; total_bytes: string | null; download_hours: number; upload_hours: number; requested_hours: number };
 
 export type LogEntry = {

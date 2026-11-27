@@ -1,12 +1,13 @@
 <script lang="ts">
+  import { followLink } from '../lib/navigation';
   import { formatNetworkRate } from '../network';
   import type { DisplayState, PreviewServer } from '../preview/fixtures';
 
-  let { servers, download, upload, detailed = false }: {
+  let { servers, download, upload, onOpenTraffic }: {
     servers: PreviewServer[];
     download: number | null;
     upload: number | null;
-    detailed?: boolean;
+    onOpenTraffic: () => void;
   } = $props();
 
   const order: DisplayState[] = ['healthy', 'installing', 'pending', 'stale', 'failed', 'unreachable', 'disabled', 'unsupported'];
@@ -50,12 +51,13 @@
   </div>
 
   <div class="cell">
-    <span class="label">Fleet bandwidth</span>
+    <span class="label">Live fleet bandwidth</span>
     <dl class="rates">
       <div><dt>In</dt><dd class="tabular">{formatNetworkRate(download)}</dd></div>
       <div><dt>Out</dt><dd class="tabular">{formatNetworkRate(upload)}</dd></div>
     </dl>
     <span class="note">Current rate across connected servers</span>
+    <a class="text-button" href="/fleet-traffic" onclick={(event) => followLink(event, onOpenTraffic)}>View traffic history</a>
   </div>
 </section>
 

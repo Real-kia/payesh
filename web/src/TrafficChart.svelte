@@ -6,11 +6,13 @@
   import 'uplot/dist/uPlot.min.css';
   import { chartColors, areaFill, hoverValues } from './lib/chart';
 
-  let { data, timezone = 'UTC', fleetMode, daily = true }: {
+  let { data, timezone = 'UTC', fleetMode, daily = true, bucketSeconds = 3600, coverage }: {
     data: { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
     timezone?: string;
     daily?: boolean;
+    bucketSeconds?: number;
     fleetMode?: 'bandwidth' | 'traffic';
+    coverage?: (timestamp: number) => string | undefined;
   } = $props();
   let host: HTMLDivElement;
   let plot: uPlot | undefined;
@@ -25,7 +27,8 @@
     const showBytes = fleetMode === 'traffic';
     const dailyBuckets = showBytes && daily;
     const chartTimezone = dailyBuckets ? 'UTC' : timezone;
-    const bucketSeconds = dailyBuckets ? 86400 : 3600;
+    const bandwidthPoints = bucketSeconds < 3600 ? { points: { show: true, size: 3 } } : {};
+    const padding = (dailyBuckets ? 86400 : bucketSeconds) / 2;
     const { muted, line, surface, read } = chartColors(host);
     const accent = read('--accent', '#2f6bd8');
     const secondary = read('--muted', '#66666e');
@@ -34,10 +37,11 @@
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
-      plugins: [hoverValues(chartTimezone, dailyBuckets)],
+      plugins: [hoverValues(chartTimezone, dailyBuckets, (timestamp) => coverage?.(timestamp))],
+      tzDate: (timestamp) => uPlot.tzDate(new Date(timestamp * 1000), chartTimezone),
       scales: {
         x: fleetMode
-          ? { time: true, range: (_u, min, max) => [min - bucketSeconds / 2, max + bucketSeconds / 2] }
+          ? { time: true, range: (_u, min, max) => [min - padding, max + padding] }
           : { time: true },
         ...(fleetMode ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : showBytes ? 1 : 125000] as [number, number] } } : {})
       },
@@ -58,7 +62,7 @@
           grid: { stroke: line, width: 1 },
           ticks: { show: false },
           font: '11px system-ui, -apple-system, Segoe UI, sans-serif',
-          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleString([], dailyBuckets || (fleetMode === 'bandwidth' && data.timestamps.length > 24)
+          values: (_u, values) => values.map((v) => new Date(Number(v) * 1000).toLocaleString([], dailyBuckets || (fleetMode === 'bandwidth' && daily)
             ? { month: 'short', day: 'numeric', timeZone: chartTimezone }
             : { hour: '2-digit', minute: '2-digit', timeZone: chartTimezone }))
         },
@@ -83,18 +87,18 @@
       series: [
         {},
         {
-          label: 'Download',
+          label: fleetMode === 'bandwidth' ? 'Avg. download' : 'Download',
           stroke: accent,
           width: showBytes ? 0 : 1.5,
           fill: showBytes ? accent : areaFill(accent),
-          ...(showBytes ? { paths: bars(-1), points: { show: false } } : {}),
+          ...(showBytes ? { paths: bars(-1), points: { show: false } } : bandwidthPoints),
           value
         },
         {
-          label: 'Upload',
+          label: fleetMode === 'bandwidth' ? 'Avg. upload' : 'Upload',
           stroke: secondary,
           width: showBytes ? 0 : 1.5,
-          ...(showBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : {}),
+          ...(showBytes ? { paths: bars(1), fill: secondary, points: { show: false } } : bandwidthPoints),
           value
         }
       ]

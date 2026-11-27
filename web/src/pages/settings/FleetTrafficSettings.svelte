@@ -44,7 +44,7 @@
   <div class="panel-heading">
     <div>
       <h2>Fleet traffic history</h2>
-      <span class="muted">Save hourly fleet totals on the hub for 30 days. Turning saving off leaves existing hours available until they expire.</span>
+      <span class="muted">Keep five-minute records for 24 hours and hourly totals for 30 days. Turning saving off leaves existing records available until they expire.</span>
     </div>
     {#if !PREVIEW_MODE && enabled !== null}
       <button class="button ghost small" type="button" role="switch" aria-checked={enabled} disabled={!isOwner || busy} onclick={() => void setEnabled(!enabled)}>

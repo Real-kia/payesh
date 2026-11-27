@@ -37,7 +37,7 @@
   import { applyAppearance, loadAppearance, resolveTheme, saveAppearance, type Appearance } from './lib/appearance';
   import type { ConfirmOptions, DialogTone } from './lib/dialogs';
 
-  type Page = 'overview' | 'monitoring' | 'servers' | 'server' | 'alerts' | 'logs' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
+  type Page = 'overview' | 'monitoring' | 'fleet-traffic' | 'servers' | 'server' | 'alerts' | 'logs' | 'packages' | 'settings' | 'add-server' | 'install-progress' | 'onboarding';
   type DetailTab = 'resources' | 'network' | 'packages' | 'processes' | 'logs' | 'metrics' | 'traffic';
   type ChartRange = '15m' | '1h' | '24h';
   type PreviewState = 'ready' | 'loading' | 'empty' | 'error';
@@ -267,6 +267,7 @@
     ResourcesPanel: () => import('./pages/server/ResourcesPanel.svelte'),
     NetworkPanel: () => import('./pages/server/NetworkPanel.svelte'),
     PackagesPanel: () => import('./pages/server/PackagesPanel.svelte'),
+    FleetTrafficPage: () => import('./pages/FleetTrafficPage.svelte'),
     LogsPage: () => import('./pages/LogsPage.svelte'),
     GeneralSettings: () => import('./pages/settings/GeneralSettings.svelte'),
     FleetTrafficSettings: () => import('./pages/settings/FleetTrafficSettings.svelte'),
@@ -477,7 +478,7 @@
   $: filteredServers = filterServers(displayServers, serversFilter);
   $: hubVersion = servers.find((server) => server.role !== 'node')?.version ?? '';
   $: attentionCount = displayServers.filter((server) => server.displayState !== 'healthy').length;
-  const pageTitles: Record<Page, string> = { overview: 'Overview', monitoring: 'Server monitoring', servers: 'Servers', server: 'Server', alerts: 'Alerts', logs: 'Logs', packages: 'Packages', settings: 'Settings', 'add-server': 'Add server', 'install-progress': 'Installation', onboarding: 'Setup' };
+  const pageTitles: Record<Page, string> = { overview: 'Overview', monitoring: 'Server monitoring', 'fleet-traffic': 'Fleet traffic', servers: 'Servers', server: 'Server', alerts: 'Alerts', logs: 'Logs', packages: 'Packages', settings: 'Settings', 'add-server': 'Add server', 'install-progress': 'Installation', onboarding: 'Setup' };
   $: pageTitle = activePage === 'server' ? (selectedServer?.name || 'Server details') : activePage === 'install-progress' && activeInstall ? activeInstall.serverName : pageTitles[activePage];
   const settingsSections: { id: SettingsSection; label: string; icon: string }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
@@ -491,7 +492,7 @@
 
   let paletteOpen = false;
   $: paletteCommands = [
-    ...(['overview', 'monitoring', 'servers', 'alerts', 'logs', 'packages', 'settings'] as Page[]).map((page): Command => ({ id: `page:${page}`, label: pageTitles[page], icon: page === 'monitoring' ? 'activity' : page === 'logs' ? 'terminal' : page, group: 'Pages', run: () => navigate(page) })),
+    ...(['overview', 'monitoring', 'fleet-traffic', 'servers', 'alerts', 'logs', 'packages', 'settings'] as Page[]).map((page): Command => ({ id: `page:${page}`, label: pageTitles[page], icon: page === 'monitoring' ? 'activity' : page === 'logs' ? 'terminal' : page === 'fleet-traffic' ? 'globe' : page, group: 'Pages', run: () => navigate(page) })),
     ...settingsSections.filter((section) => section.id !== 'users' || myAccount?.role === 'owner').map((section): Command => ({ id: `settings:${section.id}`, label: section.label, icon: section.icon, group: 'Settings', keywords: section.id === 'general' ? 'appearance theme accent timezone density animations' : section.id === 'api' ? 'api token mcp ai agent claude bearer' : section.id, run: () => openSettings(section.id) })),
     ...(myAccount?.permission !== 'read' ? [{ id: 'action:add-server', label: 'Add a server', icon: 'plus', group: 'Actions', keywords: 'install ssh join new node', run: () => openAddServer() } satisfies Command] : []),
     { id: 'action:theme', label: `Switch to ${theme === 'light' ? 'dark' : 'light'} theme`, icon: theme === 'light' ? 'moon' : 'sun', group: 'Actions', keywords: 'theme dark light mode appearance', run: toggleTheme } satisfies Command,
@@ -536,7 +537,7 @@
     if (parts[0] === 'servers' && parts[1] === 'new' && parts.length === 2) return { activePage: 'add-server' };
     if (parts[0] === 'servers' && parts[1] && parts.length === 2) return { activePage: 'server', selectedServerId: decodeURIComponent(parts[1]) };
     if (parts[0] === 'servers' && parts.length === 1) return { activePage: 'servers' };
-    if (parts.length === 1 && ['monitoring', 'alerts', 'logs', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
+    if (parts.length === 1 && ['monitoring', 'fleet-traffic', 'alerts', 'logs', 'packages', 'settings', 'onboarding'].includes(parts[0])) return { activePage: parts[0] as Page };
     return { activePage: 'overview' };
   }
 
@@ -562,14 +563,19 @@
   function navigate(page: Page, serverId = selectedServerId, fromMobileMenu = false) {
     const changed = page !== activePage || serverId !== selectedServerId;
     activePage = page;
-    if (fromMobileMenu) void tick().then(() => document.querySelector<HTMLElement>('main h1')?.focus());
+    if (fromMobileMenu) {
+      const ready = page === 'fleet-traffic' ? lazy.FleetTrafficPage() : Promise.resolve();
+      void ready.then(tick).then(() => {
+        if (activePage === page) document.querySelector<HTMLElement>('main h1')?.focus();
+      }).catch(() => { /* The page shows its load error. */ });
+    }
     selectedServerId = serverId;
     saveUiState();
     if (typeof window !== 'undefined') {
       window.history.pushState({ activePage, selectedServerId, detailTab }, '', pageLocation(activePage, selectedServerId));
       if (changed) window.scrollTo({ top: 0 });
     }
-    if (changed && ['overview', 'monitoring', 'servers'].includes(page)) void refreshMonitoring();
+    if (changed && ['overview', 'monitoring', 'fleet-traffic', 'servers'].includes(page)) void refreshMonitoring();
     if (page === 'server' && !PREVIEW_MODE) void refreshSelectedServer();
     if (page === 'packages' && !PREVIEW_MODE) void loadModules();
     if (page === 'alerts' && !PREVIEW_MODE) void loadAlerts();
@@ -1580,7 +1586,7 @@
 
   // State and values settle independently so a slow list cannot hold up metrics.
   async function refreshMonitoring(refreshServers = true, parentSignal?: AbortSignal): Promise<void> {
-    if (parentSignal?.aborted || liveRefreshBusy || previewState === 'loading' || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || (refreshServers && !['overview', 'monitoring', 'servers'].includes(activePage)) || document.hidden) return;
+    if (parentSignal?.aborted || liveRefreshBusy || previewState === 'loading' || PREVIEW_MODE || sessionState !== 'authenticated' || authExpired || (refreshServers && !['overview', 'monitoring', 'fleet-traffic', 'servers'].includes(activePage)) || document.hidden) return;
     liveRefreshBusy = true;
     const controller = new AbortController();
     const onParentAbort = () => controller.abort();
@@ -1758,7 +1764,7 @@
 
   function restoreState(state: { activePage?: Page; selectedServerId?: string; detailTab?: DetailTab } | null) {
     if (!state) return;
-    if (state.activePage && ['overview', 'monitoring', 'servers', 'server', 'alerts', 'logs', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
+    if (state.activePage && ['overview', 'monitoring', 'fleet-traffic', 'servers', 'server', 'alerts', 'logs', 'packages', 'settings', 'add-server', 'onboarding'].includes(state.activePage)) activePage = state.activePage;
     if (state.activePage === 'server') activePage = servers.some((server) => server.id === state.selectedServerId) ? 'server' : 'overview';
     if (state.selectedServerId && servers.some((server) => server.id === state.selectedServerId)) selectedServerId = state.selectedServerId;
     if (state.detailTab) detailTab = state.detailTab === 'metrics' ? 'resources' : state.detailTab === 'traffic' ? 'network' : state.detailTab;
@@ -1809,7 +1815,7 @@
     if (PREVIEW_MODE) void loadPreviewData(); else void loadApiData();
     const onPopState = (event: PopStateEvent) => {
       restoreState({ ...(event.state ?? {}), ...stateFromLocation() });
-      if (['overview', 'monitoring', 'servers'].includes(activePage)) void refreshMonitoring();
+      if (['overview', 'monitoring', 'fleet-traffic', 'servers'].includes(activePage)) void refreshMonitoring();
       if (activePage === 'packages' && !PREVIEW_MODE) void loadModules();
       if (activePage === 'alerts' && !PREVIEW_MODE) void loadAlerts();
       saveUiState();
@@ -1947,6 +1953,12 @@
           </form>
         </div>
       </section>
+    {:else if activePage === 'fleet-traffic'}
+      {#await lazy.FleetTrafficPage() then { default: FleetTrafficPage }}
+        <FleetTrafficPage servers={displayServers} timezone={currentTimezone} {theme}
+          refreshing={liveRefreshBusy} updatedAt={liveUpdatedAt} onAuthExpired={() => (authExpired = true)}
+          onOpenStorage={myAccount?.role === 'owner' ? () => openSettings('storage') : undefined} />
+      {:catch}{@render chunkFailed()}{/await}
     {:else if activePage === 'monitoring'}
       <MonitoringPage servers={displayServers} timezone={currentTimezone} onSelect={selectServer} refreshing={liveRefreshBusy} updatedAt={liveUpdatedAt} />
     {:else if activePage === 'servers'}
@@ -2342,7 +2354,7 @@
       </section>
 
     {:else}
-      <OverviewPage firingAlerts={firingAlertCount} onOpenStorage={myAccount?.role === 'owner' ? () => openSettings('storage') : undefined} {theme} onAuthExpired={() => (authExpired = true)}
+      <OverviewPage firingAlerts={firingAlertCount}
         servers={displayServers}
         refreshing={liveRefreshBusy}
         updatedAt={liveUpdatedAt}

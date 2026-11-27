@@ -116,3 +116,73 @@ func TestFleetTrafficOptInAndHourlyCoverage(t *testing.T) {
 		t.Fatalf("expired tagged history still returned: %+v", filtered)
 	}
 }
+
+func TestFleetTrafficFiveMinuteCoverageAndRetention(t *testing.T) {
+	ctx := t.Context()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "fleet.db"), StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	server := testServer()
+	check(store.EnsureServer(ctx, server))
+	_, err = store.SetServerTags(ctx, server.ID, []string{"Edge"})
+	check(err)
+	for _, start := range []time.Time{base, base.Add(5 * time.Minute), base.Add(10 * time.Minute)} {
+		check(store.PutRollups(ctx, []Rollup{{
+			ServerID: server.ID, Metric: "net.billing.rx_bytes", BucketStart: start,
+			BucketSeconds: MidRollupSeconds, CounterDelta: "2700000000", SampleCount: 2, Coverage: "complete",
+		}}))
+	}
+	check(store.SetFleetTrafficEnabled(ctx, true, base.Add(time.Minute)))
+	read := func(now time.Time, tag string) FleetTrafficHistory {
+		t.Helper()
+		history, err := store.FleetTrafficHistoryByTag(ctx, now, tag)
+		check(err)
+		return history
+	}
+	now := base.Add(10 * time.Minute)
+	check(store.captureFleetTraffic(ctx, now))
+	if history := read(now, ""); len(history.FiveMinutes) != 0 {
+		t.Fatalf("included a bucket before opt-in or before the grace period: %+v", history)
+	}
+	now = now.Add(time.Minute)
+	check(store.captureFleetTraffic(ctx, now))
+	check(store.captureFleetTraffic(ctx, now))
+	for _, tag := range []string{"", "EDGE"} {
+		history := read(now, tag)
+		if len(history.Hours) != 0 || len(history.FiveMinutes) != 1 ||
+			history.FiveMinuteEnd == nil || !history.FiveMinuteEnd.Equal(base.Add(10*time.Minute)) {
+			t.Fatalf("expected one five-minute bucket for %q: %+v", tag, history)
+		}
+		point := history.FiveMinutes[0]
+		if !point.Start.Equal(base.Add(5*time.Minute)) || point.DownloadBytes == nil ||
+			*point.DownloadBytes != "2700000000" || point.DownloadServers != 1 ||
+			point.ServerCount != 1 || point.UploadBytes != nil {
+			t.Fatalf("incorrect fine-resolution point for %q: %+v", tag, point)
+		}
+	}
+	check(store.SetFleetTrafficEnabled(ctx, false, now))
+	now = now.Add(5 * time.Minute)
+	check(store.captureFleetTraffic(ctx, now))
+	if history := read(now, ""); history.Enabled || len(history.FiveMinutes) != 1 {
+		t.Fatalf("disabling should keep the previously recorded bucket only: %+v", history)
+	}
+	now = now.Add(24 * time.Hour)
+	check(store.captureFleetTraffic(ctx, now))
+	if history := read(now, "edge"); len(history.FiveMinutes) != 0 {
+		t.Fatalf("expired five-minute bucket was returned: %+v", history)
+	}
+	var saved int
+	check(store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fleet_traffic_five_minutes").Scan(&saved))
+	if saved != 0 {
+		t.Fatalf("retention left %d expired five-minute rows", saved)
+	}
+}

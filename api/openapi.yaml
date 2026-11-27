@@ -859,11 +859,11 @@ paths:
   /fleet/traffic:
     get:
       operationId: getFleetTrafficHistory
-      summary: Read up to 30 days of saved hourly fleet traffic totals
+      summary: Read saved hourly and five-minute fleet traffic totals
       security: [{ SessionCookie: [] }, { BearerAuth: [] }]
       responses:
         '200':
-          description: Hourly totals from reliable host counter rollups, with per-direction coverage. Missing hours are omitted.
+          description: Totals from reliable host counter rollups, with per-direction coverage. Missing intervals are omitted.
           content:
             application/json:
               schema:
@@ -875,7 +875,7 @@ paths:
                   hours:
                     type: array
                     maxItems: 720
-                    items:
+                    items: &fleet_traffic_bucket
                       type: object
                       required: [start, download_bytes, upload_bytes, download_servers, upload_servers, server_count]
                       properties:
@@ -884,7 +884,12 @@ paths:
                         upload_bytes: { type: string, nullable: true, pattern: '^[0-9]+$' }
                         download_servers: { type: integer, minimum: 0 }
                         upload_servers: { type: integer, minimum: 0 }
-                        server_count: { type: integer, minimum: 0, description: Servers listed on the hub when the hourly total was saved. }
+                        server_count: { type: integer, minimum: 0, description: Servers in the requested scope when the total was saved. }
+                  five_minute_end: { type: string, format: date-time, description: Exclusive end of the completed five-minute range. }
+                  five_minutes:
+                    type: array
+                    maxItems: 288
+                    items: *fleet_traffic_bucket
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /settings/fleet-traffic:
@@ -898,7 +903,7 @@ paths:
     put:
       operationId: updateFleetTrafficSettings
       summary: Change the hub owner's fleet traffic saving preference
-      description: Starts saving with the first full hour after enabling. Disabling stops new saves. Previously saved hours expire after 30 days.
+      description: Starts saving with the first full interval after enabling. Disabling stops new saves. Five-minute records expire after 24 hours and hourly records after 30 days.
       security: [{ SessionCookie: [], CSRFToken: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CSRFHeader' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTrafficSettings' } } } }

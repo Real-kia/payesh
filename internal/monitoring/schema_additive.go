@@ -116,9 +116,20 @@ var additiveTables = []additiveTable{
   server_count INTEGER NOT NULL,
   PRIMARY KEY (tag, bucket_start)
 )`},
+	{name: "fleet_traffic_five_minutes", ddl: `CREATE TABLE IF NOT EXISTS fleet_traffic_five_minutes (
+  tag TEXT NOT NULL,
+  bucket_start TEXT NOT NULL,
+  download_bytes TEXT,
+  upload_bytes TEXT,
+  download_servers INTEGER NOT NULL,
+  upload_servers INTEGER NOT NULL,
+  server_count INTEGER NOT NULL,
+  PRIMARY KEY (tag, bucket_start)
+)`},
 }
 
 var additiveColumns = []additiveColumn{
+	{table: "fleet_traffic_settings", column: "next_five_minutes", ddl: `ALTER TABLE fleet_traffic_settings ADD COLUMN next_five_minutes TEXT NOT NULL DEFAULT ''`},
 	// Days after which relay access a node no longer uses is removed; 0 keeps it.
 	{table: "storage_settings", column: "relay_cleanup_days", ddl: `ALTER TABLE storage_settings ADD COLUMN relay_cleanup_days INTEGER NOT NULL DEFAULT 30`},
 	// Lifetime of one-line join commands and pairing tokens in hours (default: 24 = 1 day).
@@ -134,6 +145,7 @@ var additiveColumns = []additiveColumn{
 // read indexes start with server_id and cannot satisfy this global ordering.
 // SQLite includes rowid in these indexes, also covering the eviction tie-break.
 var additiveIndexes = []additiveIndex{
+	{name: "fleet_traffic_five_minutes_retention", ddl: `CREATE INDEX IF NOT EXISTS fleet_traffic_five_minutes_retention ON fleet_traffic_five_minutes(bucket_start)`},
 	{name: "fleet_traffic_tag_hours_retention", ddl: `CREATE INDEX IF NOT EXISTS fleet_traffic_tag_hours_retention ON fleet_traffic_tag_hours(bucket_start)`},
 	{name: "metric_samples_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_samples_retention ON metric_samples(observed_at)`},
 	{name: "metric_rollups_retention", ddl: `CREATE INDEX IF NOT EXISTS metric_rollups_retention ON metric_rollups(bucket_start)`},

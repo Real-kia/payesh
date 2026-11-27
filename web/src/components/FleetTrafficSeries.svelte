@@ -22,7 +22,7 @@
 
   const loadChart = () => import('../TrafficChart.svelte');
   const hour = 3600000;
-  const taggedServers = $derived(servers.filter((server) => server.tags?.some((label) => label.toLowerCase() === tag)));
+  const scopedServers = $derived(tag ? servers.filter((server) => server.tags?.some((label) => label.toLowerCase() === tag)) : servers);
   let history = $state<FleetTrafficHistory | null>(null);
   let error = $state('');
   let retry = $state(0);
@@ -51,11 +51,20 @@
     return () => { controller.abort(); window.clearInterval(timer); };
   });
 
-  const hasSavedTraffic = $derived(history?.hours.some((entry) => entry.download_bytes !== null || entry.upload_bytes !== null) ?? false);
+  const hasSavedTraffic = $derived(!!history && (!!history.five_minutes?.length || history.hours.some((entry) => entry.download_bytes !== null || entry.upload_bytes !== null)));
+
+  const fiveMinute = $derived(mode === 'Bandwidth' && range === 24 && !!history?.five_minute_end && !!history.five_minutes?.length);
+  const interval = $derived(fiveMinute ? 5 * 60 * 1000 : hour);
+  const points = $derived(new Map((fiveMinute ? history?.five_minutes : history?.hours)?.map((entry) => [Date.parse(entry.start), entry])));
+
+  function bucketCoverage(timestamp: number): string | undefined {
+    const entry = points.get(timestamp * 1000 - (fiveMinute ? interval : 0));
+    if (!entry || (entry.download_bytes === null && entry.upload_bytes === null)) return;
+    return `Servers recorded · In ${entry.download_servers}/${entry.server_count} · Out ${entry.upload_servers}/${entry.server_count}`;
+  }
 
   const view = $derived.by(() => {
-    const end = Date.parse(history?.end ?? '');
-    const points = new Map(history?.hours.map((entry) => [Date.parse(entry.start), entry]));
+    const end = Date.parse((fiveMinute ? history?.five_minute_end : history?.end) ?? '');
     const timestamps: number[] = [];
     const networkRx: (number | null)[] = [];
     const networkTx: (number | null)[] = [];
@@ -66,13 +75,13 @@
     let recorded = 0;
     let complete = 0;
     if (Number.isFinite(end)) {
-      for (let start = end - range * hour; start < end; start += hour) {
+      for (let start = end - range * hour; start < end; start += interval) {
         const entry = points.get(start);
         const rx = entry?.download_bytes ?? null;
         const tx = entry?.upload_bytes ?? null;
         if (mode === 'Bandwidth' || range === 24) {
-          const divisor = mode === 'Bandwidth' ? hour / 1000 : 1;
-          timestamps.push(start / 1000);
+          const divisor = mode === 'Bandwidth' ? interval / 1000 : 1;
+          timestamps.push((start + (fiveMinute ? interval : 0)) / 1000);
           networkRx.push(rx === null ? null : Number(rx) / divisor);
           networkTx.push(tx === null ? null : Number(tx) / divisor);
         } else {
@@ -106,11 +115,11 @@
 
 {#if visible}
   <section class:tagged={!!label} aria-label={label}>
-      {#if label}<h3>{label}</h3>{/if}
-    {#if tag}
+    {#if label}<h3>{label}</h3>{/if}
+    {#if scopedServers.length}
       <dl class="totals">
-        <div><dt>Current download rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(taggedServers, 'download'))}</dd></div>
-        <div><dt>Current upload rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(taggedServers, 'upload'))}</dd></div>
+        <div><dt>Live download rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(scopedServers, 'download'))}</dd></div>
+        <div><dt>Live upload rate</dt><dd class="tabular">{formatNetworkRate(sumNetworkRate(scopedServers, 'upload'))}</dd></div>
       </dl>
     {/if}
     {#if PREVIEW_MODE}
@@ -129,19 +138,23 @@
         </div>
       {/if}
       {#if view.recorded}
+        {#if mode === 'Bandwidth'}
+          <p class="muted resolution">{fiveMinute ? '5-minute averages · Times mark the end of each interval' : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
+        {/if}
         <dl class="totals">
-          <div><dt>Download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>
-          <div><dt>Upload</dt><dd class="tabular">{view.upload === null ? 'Unavailable' : formatBytes(view.upload)}</dd></div>
+          <div><dt>Recorded download</dt><dd class="tabular">{view.download === null ? 'Unavailable' : formatBytes(view.download)}</dd></div>
+          <div><dt>Recorded upload</dt><dd class="tabular">{view.upload === null ? 'Unavailable' : formatBytes(view.upload)}</dd></div>
           <div><dt>Total recorded</dt><dd class="tabular">{formatBytes((view.download ?? 0n) + (view.upload ?? 0n))}</dd></div>
         </dl>
-        {#key `${mode}-${range}-${timezone}-${theme}`}
+        {#key `${mode}-${range}-${timezone}-${theme}-${interval}`}
           {#await loadChart() then { default: TrafficChart }}
-            <TrafficChart data={view.data} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} daily={range !== 24} />
+            <TrafficChart data={view.data} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} daily={range !== 24}
+              bucketSeconds={interval / 1000} coverage={mode === 'Bandwidth' || range === 24 ? bucketCoverage : undefined} />
           {:catch}
             <p role="alert">Could not load the chart. Reload the page to try again.</p>
           {/await}
         {/key}
-        <p class="muted">{view.recorded} of {range} hours have data. {view.complete} of those hours include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
+        <p class="muted">{view.recorded} of {range * hour / interval} {fiveMinute ? 'five-minute intervals' : 'hours'} have recorded data. {view.complete} of those include download and upload from every {tag ? 'server with this tag' : 'server'} at the time of recording.</p>
       {:else if tag && (history.enabled || hasSavedTraffic)}
         <p class="muted">No traffic recorded for this tag in this range.</p>
       {:else if history.enabled}
@@ -163,4 +176,5 @@
   dt { color: var(--muted); font-size: 12px; }
   dd { margin: 3px 0 0; font-size: 17px; font-weight: 600; }
   p { margin: 10px 0 0; }
+  .resolution { margin-bottom: 10px; }
 </style>

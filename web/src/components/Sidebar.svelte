@@ -2,7 +2,7 @@
   import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
 
-  type NavPage = 'overview' | 'monitoring' | 'servers' | 'alerts' | 'logs' | 'packages' | 'settings';
+  type NavPage = 'overview' | 'monitoring' | 'fleet-traffic' | 'servers' | 'alerts' | 'logs' | 'packages' | 'settings';
 
   let { activePage, serverCount, firingAlerts, statusLabel, statusTone, user, inert = false, onNavigate }: {
     activePage: string;
@@ -21,6 +21,7 @@
     { label: 'Monitor', items: [
       { page: 'overview', label: 'Overview', icon: 'overview' },
       { page: 'monitoring', label: 'Server monitoring', icon: 'activity' },
+      { page: 'fleet-traffic', label: 'Fleet traffic', icon: 'globe' },
       { page: 'servers', label: 'Servers', icon: 'servers' },
       { page: 'alerts', label: 'Alerts', icon: 'alerts' },
       { page: 'logs', label: 'Logs', icon: 'terminal' }

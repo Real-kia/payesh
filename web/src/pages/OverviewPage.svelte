@@ -1,7 +1,6 @@
 <script lang="ts">
   import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
-  import FleetTrafficHistory from '../components/FleetTrafficHistory.svelte';
   import FleetSummary from '../components/FleetSummary.svelte';
   import { filterServers, defaultFilter } from '../lib/serverFilter';
   import { serverLabel } from '../lib/flags';
@@ -19,9 +18,6 @@
     apiError,
     readOnly,
     timezone,
-    theme,
-    onAuthExpired,
-    onOpenStorage,
     download,
     upload,
     trafficBytes,
@@ -44,9 +40,6 @@
     apiError: string;
     readOnly: boolean;
     timezone: string;
-    theme: string;
-    onAuthExpired: () => void;
-    onOpenStorage?: () => void;
     download: number | null;
     upload: number | null;
     trafficBytes: string;
@@ -56,7 +49,7 @@
     jobBusy: boolean;
     onSelect: (server: PreviewServer) => void;
     onAddServer: () => void;
-    onNavigate: (page: 'monitoring' | 'alerts' | 'servers') => void;
+    onNavigate: (page: 'monitoring' | 'alerts' | 'servers' | 'fleet-traffic') => void;
     onRetry: () => void;
     onCancelJob: () => void;
     onReloadJob: () => void;
@@ -100,7 +93,6 @@
         <li><span>3</span><div><strong>Monitor live metrics</strong><small>See health and resource data after enrollment.</small></div></li>
       </ol>
     </div>
-    <FleetTrafficHistory {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
   {:else if loadState === 'error'}
     <div class="state-panel error-state">
       <div class="state-icon"><Icon name="alert-triangle" size={22} /></div>
@@ -109,8 +101,7 @@
       <button class="button primary" type="button" onclick={onRetry}><Icon name="refresh" size={14} />Retry connection</button>
     </div>
   {:else}
-    <FleetSummary {servers} {download} {upload} />
-    <FleetTrafficHistory {servers} {timezone} {theme} {onAuthExpired} {onOpenStorage} />
+    <FleetSummary {servers} {download} {upload} onOpenTraffic={() => onNavigate('fleet-traffic')} />
 
     <article class="panel attention-panel">
       <div class="panel-heading">
