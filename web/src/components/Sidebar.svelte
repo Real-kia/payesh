@@ -46,7 +46,7 @@
 
 <aside class="sidebar" aria-label="Primary navigation" {inert}>
   <div class="brand">
-    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" /><path d="M6 18h4.2l2.6-6.5 4.4 11 3-7.5H26" /></svg>
+    <img class="brand-mark" src="/favicon.svg" alt="" width="28" height="28" />
     <div class="brand-text"><strong>Payesh</strong><small>Fleet monitor</small></div>
     <button class="menu-toggle icon-button" type="button" aria-expanded={menuOpen} aria-controls="primary-navigation" aria-label={menuOpen ? 'Close menu' : 'Open menu'} onclick={() => (menuOpen = !menuOpen)}>
       <Icon name={menuOpen ? 'x' : 'menu'} size={18} />
@@ -90,9 +90,7 @@
     background: var(--surface);
   }
   .brand { display: flex; align-items: center; gap: 11px; padding: 4px 8px; }
-  .brand-mark { width: 28px; height: 28px; flex-shrink: 0; }
-  .brand-mark rect { fill: var(--ink); }
-  .brand-mark path { fill: none; stroke: var(--accent-contrast); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+  .brand-mark { flex-shrink: 0; }
   .brand-text { display: grid; line-height: 1.15; }
   .brand-text strong { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
   .brand-text small { color: var(--muted); font-size: 12px; }

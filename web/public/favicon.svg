@@ -1,1 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4c86ec"/><stop offset="1" stop-color="#2458b8"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="url(#g)"/><path d="M6 18h4.2l2.6-6.5 4.4 11 3-7.5H26" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path fill="#2f6bd8" fill-rule="evenodd" d="M5 1h3a1.4 1.4 0 0 1 1.4 1.4v11.2A1.4 1.4 0 0 1 8 15H5a1.4 1.4 0 0 1-1.4-1.4V2.4A1.4 1.4 0 0 1 5 1Zm.7 2h1.6a.6.6 0 0 1 0 1.2H5.7a.6.6 0 0 1 0-1.2Zm0 2.5h1.6a.6.6 0 0 1 0 1.2H5.7a.6.6 0 0 1 0-1.2ZM5 17h3a1.4 1.4 0 0 1 1.4 1.4v11.2A1.4 1.4 0 0 1 8 31H5a1.4 1.4 0 0 1-1.4-1.4V18.4A1.4 1.4 0 0 1 5 17Zm.7 2h1.6a.6.6 0 0 1 0 1.2H5.7a.6.6 0 0 1 0-1.2Zm0 2.5h1.6a.6.6 0 0 1 0 1.2H5.7a.6.6 0 0 1 0-1.2Z"/>
+  <path fill="#2f6bd8" d="M11.5 1h9.3a10.2 10.2 0 0 1 0 20.4h-9.3V17h9.3a5.8 5.8 0 0 0 0-11.6h-9.3Z"/>
+  <path fill="#64748b" d="M11.5 7.5h5.7v6.1a1.4 1.4 0 0 1-1.4 1.4h-2.9a1.4 1.4 0 0 1-1.4-1.4Zm0 16h5.7v6.1a1.4 1.4 0 0 1-1.4 1.4h-2.9a1.4 1.4 0 0 1-1.4-1.4Z"/>
+</svg>

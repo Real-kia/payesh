@@ -1933,7 +1933,7 @@
     {#if !PREVIEW_MODE && authExpired}
       <section class="login-screen" aria-label="Sign in">
         <div class="login-card">
-          <svg class="login-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" /><path d="M6 18h4.2l2.6-6.5 4.4 11 3-7.5H26" /></svg>
+          <img class="login-mark" src="/favicon.svg" alt="" width="40" height="40" />
           <h1>Sign in to Payesh</h1>
           <p class="muted center">Authenticate to access fleet operations.</p>
           <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>
@@ -2530,9 +2530,7 @@
     border-radius: var(--radius-lg);
     background: var(--surface);
   }
-  .login-mark { display: block; width: 32px; height: 32px; margin: 0 auto 16px; }
-  .login-mark rect { fill: var(--ink); }
-  .login-mark path { fill: none; stroke: var(--accent-contrast); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+  .login-mark { display: block; margin: 0 auto 16px; }
   .login-card h1 { margin-bottom: 4px; font-size: 20px; text-align: center; }
   .auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 24px; }
   .auth-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 550; }
