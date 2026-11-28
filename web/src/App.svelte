@@ -5,6 +5,7 @@
   import ProcessTable from './ProcessTable.svelte';
   import { networkRates, networkRollupRate } from './network';
   import Icon from './Icon.svelte';
+  import payeshMark from './assets/payesh-mark.svg?no-inline';
   import Modal from './Modal.svelte';
   import LoadingModal from './components/LoadingModal.svelte';
   import type { InstallProgressData, InstallStage } from './InstallProgress.svelte';
@@ -1933,7 +1934,7 @@
     {#if !PREVIEW_MODE && authExpired}
       <section class="login-screen" aria-label="Sign in">
         <div class="login-card">
-          <img class="login-mark" src="/favicon.svg" alt="" width="40" height="40" />
+          <img class="login-mark" src={payeshMark} alt="" width="40" height="40" />
           <h1>Sign in to Payesh</h1>
           <p class="muted center">Authenticate to access fleet operations.</p>
           <form class="auth-form" on:submit|preventDefault={() => void submitLogin()}>

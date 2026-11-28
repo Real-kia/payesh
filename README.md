@@ -1,4 +1,4 @@
-# <img src="web/public/favicon.svg" width="32" height="32" alt=""> Payesh
+# <img src="web/src/assets/payesh-mark.svg" width="32" height="32" alt=""> Payesh
 
 Payesh is an open-source Linux VPS monitoring prototype for one or multiple
 servers. The current source includes a Go agent, SQLite-backed server/API,

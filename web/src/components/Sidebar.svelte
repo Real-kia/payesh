@@ -1,6 +1,7 @@
 <script lang="ts">
   import { followLink } from '../lib/navigation';
   import Icon from '../Icon.svelte';
+  import payeshMark from '../assets/payesh-mark.svg?no-inline';
 
   type NavPage = 'overview' | 'monitoring' | 'fleet-traffic' | 'servers' | 'alerts' | 'logs' | 'packages' | 'settings';
 
@@ -46,7 +47,7 @@
 
 <aside class="sidebar" aria-label="Primary navigation" {inert}>
   <div class="brand">
-    <img class="brand-mark" src="/favicon.svg" alt="" width="28" height="28" />
+    <img class="brand-mark" src={payeshMark} alt="" width="28" height="28" />
     <div class="brand-text"><strong>Payesh</strong><small>Fleet monitor</small></div>
     <button class="menu-toggle icon-button" type="button" aria-expanded={menuOpen} aria-controls="primary-navigation" aria-label={menuOpen ? 'Close menu' : 'Open menu'} onclick={() => (menuOpen = !menuOpen)}>
       <Icon name={menuOpen ? 'x' : 'menu'} size={18} />
