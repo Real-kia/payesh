@@ -6,9 +6,11 @@
   import 'uplot/dist/uPlot.min.css';
   import { chartColors, areaFill, hoverValues } from './lib/chart';
 
-  let { data, livePoint, timezone = 'UTC', fleetMode, daily = true, bucketSeconds = 3600, coverage }: {
-    data: { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
-    livePoint?: { timestamp: number; download: number | null; upload: number | null };
+  type NetworkData = { timestamps: number[]; networkRx?: (number | null)[]; networkTx?: (number | null)[] };
+
+  let { data, liveData, timezone = 'UTC', fleetMode, daily = true, bucketSeconds = 3600, coverage }: {
+    data: NetworkData;
+    liveData?: Required<NetworkData>;
     timezone?: string;
     daily?: boolean;
     bucketSeconds?: number;
@@ -16,6 +18,7 @@
     coverage?: (timestamp: number) => string | undefined;
   } = $props();
   let host: HTMLDivElement;
+  let coverageText = $state<HTMLDivElement>();
   let plot: uPlot | undefined;
 
   const chartData = $derived.by((): uPlot.AlignedData => {
@@ -25,17 +28,12 @@
     const tx = data.networkTx ?? blanks;
     if (fleetMode !== 'bandwidth') return [timestamps, rx, tx];
 
-    const lastTimestamp = timestamps.at(-1);
-    if (!livePoint || (lastTimestamp !== undefined && livePoint.timestamp <= lastTimestamp)) {
-      return [timestamps, rx, tx, blanks, blanks];
-    }
-    return [
-      [...timestamps, livePoint.timestamp],
-      [...rx, null],
-      [...tx, null],
-      [...blanks, livePoint.download],
-      [...blanks, livePoint.upload]
-    ];
+    if (!liveData) return [timestamps, rx, tx, blanks, blanks];
+
+    return uPlot.join([
+      [timestamps, rx, tx],
+      [liveData.timestamps, liveData.networkRx, liveData.networkTx]
+    ]);
   });
 
   $effect(() => {
@@ -56,21 +54,33 @@
     const secondary = read('--muted', '#66666e');
     const bars = (align: -1 | 1) => uPlot.paths.bars?.({ align, size: [0.4, 14], gap: 1 });
     const value = (_u: uPlot, raw: number | null) => raw == null || !Number.isFinite(raw) ? '—' : showBytes ? formatBytes(raw) : formatNetworkRate(raw);
+    const formatTime = new Intl.DateTimeFormat(undefined, dailyBuckets
+      ? { dateStyle: 'medium', timeZone: chartTimezone }
+      : { dateStyle: 'medium', timeStyle: 'medium', timeZone: chartTimezone });
     const liveSeries = (label: string, stroke: string): uPlot.Series => ({
       label,
-      paths: () => null,
       stroke,
-      points: { show: true, size: 9, width: 2, stroke, fill: surface },
+      width: 1.5,
+      dash: [4, 3],
+      points: {
+        show: true, size: 8, width: 2, stroke, fill: surface,
+        filter: (chart, index) => chart.data[index].at(-1) == null ? [] : [chart.data[0].length - 1]
+      },
       value
     });
     plot = new uPlot({
       width: Math.max(240, host.clientWidth),
       height: 240,
-      plugins: [hoverValues(chartTimezone, dailyBuckets, (timestamp) => coverage?.(timestamp))],
+      plugins: fleetMode ? [] : [hoverValues(chartTimezone)],
+      hooks: coverage ? { setCursor: [(chart) => {
+        const { idx } = chart.cursor;
+        const timestamp = idx == null ? undefined : chart.data[0][idx];
+        if (coverageText) coverageText.textContent = timestamp === undefined ? '' : coverage?.(timestamp) ?? '';
+      }] } : undefined,
       tzDate: (timestamp) => uPlot.tzDate(new Date(timestamp * 1000), chartTimezone),
       scales: {
         x: fleetMode
-          ? { time: true, range: (_u, min, max) => [min - padding, max + Math.max(padding, (max - min) * livePadding / _u.width)] }
+          ? { time: true, range: (_u, min, max) => [min - padding, max + (liveData ? Math.max(1, (max - min) * livePadding / _u.width) : padding)] }
           : { time: true },
         ...(fleetMode ? { y: { range: (_u: uPlot, _min: number, max: number) => [0, max > 0 ? max * 1.1 : showBytes ? 1 : 125000] as [number, number] } } : {})
       },
@@ -105,7 +115,7 @@
         }
       ],
       cursor: {
-        focus: { prox: 30 },
+        ...(fleetMode ? { dataIdx: (_chart: uPlot, _series: number, index: number) => index } : { focus: { prox: 30 } }),
         points: {
           show: !showBytes,
           size: 6,
@@ -114,7 +124,7 @@
         }
       },
       series: [
-        {},
+        fleetMode ? { value: (_u, timestamp) => timestamp == null ? '—' : formatTime.format(timestamp * 1000) } : {},
         {
           label: fleetMode === 'bandwidth' ? 'Avg. download' : 'Download',
           stroke: accent,
@@ -140,6 +150,7 @@
 </script>
 
 <div bind:this={host} class="chart-host" role="img" aria-label={fleetMode === 'traffic' ? `Fleet download and upload bytes per ${daily ? 'day' : bucketSeconds < 3600 ? 'recorded interval' : 'hour'}` : 'Network download and upload rate history'}></div>
+{#if fleetMode && coverage}<div bind:this={coverageText} class="coverage muted"></div>{/if}
 
 <style>
   .chart-host { min-height: 240px; width: 100%; }
@@ -150,4 +161,5 @@
   .chart-host :global(.u-legend .u-marker) { width: 9px; height: 9px; border-radius: 50%; }
   .chart-host :global(.u-legend th) { font-weight: 500; }
   .chart-host :global(.u-legend .u-value) { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .coverage { min-height: 18px; font-size: 12px; text-align: center; }
 </style>

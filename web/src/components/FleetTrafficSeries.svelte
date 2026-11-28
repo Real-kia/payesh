@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ApiError, apiClient, type FleetTrafficHistory, type FleetTrafficHour } from '../api';
   import { PREVIEW_MODE } from '../lib/env';
+  import { recentFleetBandwidth } from '../lib/fleet-bandwidth';
   import { formatBytes, sumNetworkRate } from '../lib/format';
   import { formatNetworkRate } from '../network';
   import type { PreviewServer } from '../preview/fixtures';
@@ -26,9 +27,6 @@
   const scopedServers = $derived(tag ? servers.filter((server) => server.tags?.some((label) => label.toLowerCase() === tag)) : servers);
   const liveDownload = $derived(sumNetworkRate(scopedServers, 'download'));
   const liveUpload = $derived(sumNetworkRate(scopedServers, 'upload'));
-  const livePoint = $derived(mode === 'Bandwidth' && updatedAt !== null && (liveDownload !== null || liveUpload !== null)
-    ? { timestamp: updatedAt / 1000, download: liveDownload, upload: liveUpload }
-    : undefined);
   let history = $state<FleetTrafficHistory | null>(null);
   let error = $state('');
   let retry = $state(0);
@@ -99,13 +97,14 @@
     let complete = 0;
     let recordedHours = 0;
     let recordedFiveMinutes = 0;
+    let savedLength = 0;
     let latest: FleetTrafficHour | undefined;
     for (const { start, duration, entry } of buckets) {
       const rx = entry?.download_bytes ?? null;
       const tx = entry?.upload_bytes ?? null;
       if (mode === 'Bandwidth' || !daily) {
         const divisor = mode === 'Bandwidth' ? duration / 1000 : 1;
-        const timestamp = (start + (fiveMinute ? duration : 0)) / 1000;
+        const timestamp = (start + (fiveMinute || mode === 'Bandwidth' ? duration : 0)) / 1000;
         timestamps.push(timestamp);
         if (entry && (rx !== null || tx !== null)) {
           const measure = mode === 'Bandwidth' ? 'average' : 'total';
@@ -130,6 +129,7 @@
       if (tx !== null) upload += BigInt(tx);
       if (rx !== null || tx !== null) {
         latest = entry;
+        savedLength = timestamps.length;
         recorded++;
         if (duration === hour) recordedHours++;
         else recordedFiveMinutes++;
@@ -141,10 +141,24 @@
       networkRx.push(totals.download === null ? null : Number(totals.download));
       networkTx.push(totals.upload === null ? null : Number(totals.upload));
     }
-    return { data: { timestamps, networkRx, networkTx }, coverage, recorded, complete, recordedHours, recordedFiveMinutes, latest,
+    return { data: { timestamps, networkRx, networkTx }, coverage, recorded, complete, recordedHours, recordedFiveMinutes, latest, savedLength,
       download: networkRx.some((value) => value !== null) ? download : null,
       upload: networkTx.some((value) => value !== null) ? upload : null };
   });
+
+  const liveData = $derived.by(() => {
+    if (mode !== 'Bandwidth' || updatedAt === null) return undefined;
+    const recordedThrough = view.data.timestamps[view.savedLength - 1] ?? -Infinity;
+    const recent = recentFleetBandwidth(scopedServers, recordedThrough, (updatedAt - range * hour) / 1000);
+    return recent.networkRx.some((value) => value !== null) || recent.networkTx.some((value) => value !== null) ? recent : undefined;
+  });
+
+  // Incoming samples take over after the last recorded interval with data.
+  const chartData = $derived(liveData ? {
+    timestamps: view.data.timestamps.slice(0, view.savedLength),
+    networkRx: view.data.networkRx.slice(0, view.savedLength),
+    networkTx: view.data.networkTx.slice(0, view.savedLength)
+  } : view.data);
 </script>
 
 {#if visible}
@@ -171,7 +185,7 @@
           {/if}
         </div>
       {/if}
-      {#if view.recorded || livePoint}
+      {#if view.recorded || liveData}
         {#if view.recorded && (mode === 'Bandwidth' || range < 24)}
           {@const measure = mode === 'Bandwidth' ? 'averages' : 'totals'}
           <p class="muted resolution">{#if fiveMinute}{view.recordedHours ? 'Hourly and 5-minute' : '5-minute'} {measure} · Times mark the end of each interval{:else if !daily}Hourly {measure} · Five-minute records appear as they are collected{:else}Hourly {measure}{/if}</p>
@@ -188,9 +202,10 @@
         {:else}
           <p class="muted resolution">Showing live rates. No recorded history is available for this range.</p>
         {/if}
+        {#if liveData}<p class="muted resolution">{view.recorded ? 'Solid lines show recorded averages. ' : ''}Dashed lines and end markers show live rates from connected servers.</p>{/if}
         {#key `${mode}-${range}-${timezone}-${theme}-${interval}`}
           {#await loadChart() then { default: TrafficChart }}
-            <TrafficChart data={view.data} {livePoint} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} {daily}
+            <TrafficChart data={chartData} {liveData} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} {daily}
               bucketSeconds={interval / 1000} coverage={mode === 'Bandwidth' || !daily ? bucketCoverage : undefined} />
           {:catch}
             <p role="alert">Could not load the chart. Reload the page to try again.</p>
