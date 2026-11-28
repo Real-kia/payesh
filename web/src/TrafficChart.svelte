@@ -79,7 +79,7 @@
           stroke: muted,
           space: 70,
           ...(fleetMode ? {
-            incrs: dailyBuckets ? [86400, 172800, 345600, 604800, 1209600, 2419200] : [3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800],
+            incrs: dailyBuckets ? [86400, 172800, 345600, 604800, 1209600, 2419200] : [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 345600, 604800],
             splits: (_u: uPlot, _axis: number, min: number, max: number, increment: number) => {
               const ticks: number[] = [];
               for (let tick = Math.ceil(min / increment) * increment; tick <= max; tick += increment) {
@@ -139,7 +139,7 @@
   });
 </script>
 
-<div bind:this={host} class="chart-host" role="img" aria-label={fleetMode === 'traffic' ? `Fleet download and upload bytes per ${daily ? 'day' : 'hour'}` : 'Network download and upload rate history'}></div>
+<div bind:this={host} class="chart-host" role="img" aria-label={fleetMode === 'traffic' ? `Fleet download and upload bytes per ${daily ? 'day' : bucketSeconds < 3600 ? 'recorded interval' : 'hour'}` : 'Network download and upload rate history'}></div>
 
 <style>
   .chart-host { min-height: 240px; width: 100%; }

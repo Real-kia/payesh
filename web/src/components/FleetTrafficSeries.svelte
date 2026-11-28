@@ -59,7 +59,8 @@
 
   const hasSavedTraffic = $derived(!!history && (!!history.five_minutes?.length || history.hours.some((entry) => entry.download_bytes !== null || entry.upload_bytes !== null)));
 
-  const fiveMinute = $derived(mode === 'Bandwidth' && range === 24 && !!history?.five_minute_end && !!history.five_minutes?.length);
+  const daily = $derived(range > 24);
+  const fiveMinute = $derived((range < 24 || (mode === 'Bandwidth' && !daily)) && !!history?.five_minute_end && !!history.five_minutes?.length);
   const interval = $derived(fiveMinute ? 5 * 60 * 1000 : hour);
   function bucketCoverage(timestamp: number): string | undefined {
     return view.coverage.get(timestamp);
@@ -102,12 +103,13 @@
     for (const { start, duration, entry } of buckets) {
       const rx = entry?.download_bytes ?? null;
       const tx = entry?.upload_bytes ?? null;
-      if (mode === 'Bandwidth' || range === 24) {
+      if (mode === 'Bandwidth' || !daily) {
         const divisor = mode === 'Bandwidth' ? duration / 1000 : 1;
         const timestamp = (start + (fiveMinute ? duration : 0)) / 1000;
         timestamps.push(timestamp);
         if (entry && (rx !== null || tx !== null)) {
-          const resolution = fiveMinute ? (duration === hour ? 'Hourly average · ' : '5-minute average · ') : '';
+          const measure = mode === 'Bandwidth' ? 'average' : 'total';
+          const resolution = fiveMinute ? `${duration === hour ? 'Hourly' : '5-minute'} ${measure} · ` : '';
           coverage.set(timestamp, `${resolution}Servers recorded · In ${entry.download_servers}/${entry.server_count} · Out ${entry.upload_servers}/${entry.server_count}`);
         }
         networkRx.push(rx === null ? null : Number(rx) / divisor);
@@ -170,10 +172,11 @@
         </div>
       {/if}
       {#if view.recorded || livePoint}
-        {#if view.recorded && mode === 'Bandwidth'}
-          <p class="muted resolution">{fiveMinute ? (view.recordedHours ? 'Hourly and 5-minute averages · Times mark the end of each interval' : '5-minute averages · Times mark the end of each interval') : range === 24 ? 'Hourly history · Five-minute records appear as they are collected' : 'Hourly averages'}</p>
+        {#if view.recorded && (mode === 'Bandwidth' || range < 24)}
+          {@const measure = mode === 'Bandwidth' ? 'averages' : 'totals'}
+          <p class="muted resolution">{#if fiveMinute}{view.recordedHours ? 'Hourly and 5-minute' : '5-minute'} {measure} · Times mark the end of each interval{:else if !daily}Hourly {measure} · Five-minute records appear as they are collected{:else}Hourly {measure}{/if}</p>
           {#if view.latest && (view.latest.download_servers < view.latest.server_count || view.latest.upload_servers < view.latest.server_count)}
-            <p class="muted resolution">Latest recorded interval has partial coverage. Download includes {view.latest.download_servers}/{view.latest.server_count} servers and upload includes {view.latest.upload_servers}/{view.latest.server_count}. The recorded averages include only those servers.</p>
+            <p class="muted resolution">Latest recorded interval has partial coverage. Download includes {view.latest.download_servers}/{view.latest.server_count} servers and upload includes {view.latest.upload_servers}/{view.latest.server_count}.</p>
           {/if}
         {/if}
         {#if view.recorded}
@@ -187,8 +190,8 @@
         {/if}
         {#key `${mode}-${range}-${timezone}-${theme}-${interval}`}
           {#await loadChart() then { default: TrafficChart }}
-            <TrafficChart data={view.data} {livePoint} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} daily={range !== 24}
-              bucketSeconds={interval / 1000} coverage={mode === 'Bandwidth' || range === 24 ? bucketCoverage : undefined} />
+            <TrafficChart data={view.data} {livePoint} {timezone} fleetMode={mode === 'Traffic' ? 'traffic' : 'bandwidth'} {daily}
+              bucketSeconds={interval / 1000} coverage={mode === 'Bandwidth' || !daily ? bucketCoverage : undefined} />
           {:catch}
             <p role="alert">Could not load the chart. Reload the page to try again.</p>
           {/await}

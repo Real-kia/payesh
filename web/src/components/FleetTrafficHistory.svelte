@@ -8,7 +8,7 @@
 
   const modes = ['Bandwidth', 'Traffic'] as const;
   let mode = $state<(typeof modes)[number]>('Bandwidth');
-  const ranges = [[24, '24 hours'], [168, '7 days'], [720, '30 days']] as const;
+  const ranges = [[1, '1 hour'], [3, '3 hours'], [6, '6 hours'], [12, '12 hours'], [24, '24 hours'], [168, '7 days'], [720, '30 days']] as const;
   let range = $state(24);
   let tagQuery = $state('');
   let selectedTags = $state<string[]>([]);
@@ -35,7 +35,7 @@
 
 <article class="panel fleet-traffic">
   <div class="panel-heading">
-    <div><h2>Fleet traffic history</h2><span class="muted">{mode === 'Bandwidth' ? 'Recorded bandwidth · Mbit/s' : range === 24 ? 'Recorded hourly totals' : 'Recorded daily totals'} · {timezone}</span></div>
+    <div><h2>Fleet traffic history</h2><span class="muted">{mode === 'Bandwidth' ? 'Recorded bandwidth · Mbit/s' : range < 24 ? 'Recorded traffic' : range === 24 ? 'Recorded hourly totals' : 'Recorded daily totals'} · {timezone}</span></div>
     <div class="filters">
       {#if !PREVIEW_MODE && tagOptions.length}
         <details class="tag-picker">
@@ -67,11 +67,11 @@
             <button type="button" aria-pressed={mode === option} onclick={() => (mode = option)}>{option}</button>
           {/each}
         </div>
-        <div class="segmented" role="group" aria-label="Fleet traffic range">
+        <select aria-label="Fleet traffic range" bind:value={range}>
           {#each ranges as [hours, label]}
-            <button type="button" aria-pressed={range === hours} onclick={() => (range = hours)}>{label}</button>
+            <option value={hours}>Last {label}</option>
           {/each}
-        </div>
+        </select>
       {/if}
     </div>
   </div>
